@@ -454,6 +454,9 @@ impl Transport for BotTransport {
         let info = self.bot.get_webhook_info().await.map_err(map_error)?;
         Ok(WebhookInfo {
             url: info.url.map(|url| url.to_string()).unwrap_or_default(),
+            pending_update_count: info.pending_update_count,
+            last_error_message: info.last_error_message,
+            last_error_date: info.last_error_date.map(|date| date.timestamp()),
         })
     }
 

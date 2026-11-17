@@ -148,14 +148,42 @@ pub struct CopiedMessage {
     pub files: Vec<BotFile>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WebhookInfo {
     pub url: String,
+    /// Updates Telegram still has queued for delivery.
+    pub pending_update_count: u32,
+    /// Human readable reason of the most recent failed delivery.
+    pub last_error_message: Option<String>,
+    /// Unix seconds of that failure.
+    pub last_error_date: Option<i64>,
 }
 
 impl WebhookInfo {
     pub fn is_set(&self) -> bool {
         !self.url.trim().is_empty()
+    }
+
+    /// Why Telegram cannot deliver, in one line (`None` when delivery is fine).
+    pub fn delivery_problem(&self, now: i64) -> Option<String> {
+        let message = self.last_error_message.as_deref()?.trim();
+        if message.is_empty() {
+            return None;
+        }
+        Some(match self.last_error_date {
+            Some(ts) => format!("{message} ({} ago)", human_age(now.saturating_sub(ts))),
+            None => message.to_string(),
+        })
+    }
+}
+
+/// Coarse age label: "a moment", "7 min", "3 h", "2 d".
+pub fn human_age(secs: i64) -> String {
+    match secs.max(0) {
+        0..=59 => "a moment".to_string(),
+        60..=3599 => format!("{} min", secs / 60),
+        3600..=86_399 => format!("{} h", secs / 3600),
+        _ => format!("{} d", secs / 86_400),
     }
 }
 
@@ -223,13 +251,56 @@ mod tests {
 
     #[test]
     fn webhook_detection() {
-        assert!(
-            WebhookInfo {
-                url: "https://x/hook".into()
-            }
-            .is_set()
+        let set = WebhookInfo {
+            url: "https://x/hook".into(),
+            ..Default::default()
+        };
+        assert!(set.is_set());
+        assert!(!WebhookInfo::default().is_set());
+    }
+
+    #[test]
+    fn webhook_reports_the_last_delivery_failure() {
+        let healthy = WebhookInfo {
+            url: "https://x/hook".into(),
+            pending_update_count: 0,
+            ..Default::default()
+        };
+        assert_eq!(healthy.delivery_problem(1_000), None);
+
+        let broken = WebhookInfo {
+            url: "https://x/hook".into(),
+            pending_update_count: 4,
+            last_error_message: Some("Wrong response from the webhook: 502 Bad Gateway".into()),
+            last_error_date: Some(1_000 - 180),
+        };
+        assert_eq!(
+            broken.delivery_problem(1_000).as_deref(),
+            Some("Wrong response from the webhook: 502 Bad Gateway (3 min ago)")
         );
-        assert!(!WebhookInfo { url: String::new() }.is_set());
+
+        // a blank error is no error, and a missing date keeps the bare message
+        let blank = WebhookInfo {
+            last_error_message: Some("   ".into()),
+            last_error_date: Some(1),
+            ..Default::default()
+        };
+        assert_eq!(blank.delivery_problem(1_000), None);
+        let undated = WebhookInfo {
+            last_error_message: Some("timeout".into()),
+            ..Default::default()
+        };
+        assert_eq!(undated.delivery_problem(1_000).as_deref(), Some("timeout"));
+    }
+
+    #[test]
+    fn human_age_is_coarse() {
+        assert_eq!(human_age(0), "a moment");
+        assert_eq!(human_age(59), "a moment");
+        assert_eq!(human_age(60), "1 min");
+        assert_eq!(human_age(3_600), "1 h");
+        assert_eq!(human_age(90_000), "1 d");
+        assert_eq!(human_age(-5), "a moment");
     }
 
     #[test]

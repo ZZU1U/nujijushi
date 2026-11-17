@@ -73,7 +73,7 @@ impl MockTransport {
                 files: HashMap::new(),
                 downloads: Vec::new(),
                 deleted: Vec::new(),
-                webhook: WebhookInfo { url: String::new() },
+                webhook: WebhookInfo::default(),
                 commands_set: false,
                 webhook_secret: None,
                 webhook_calls: 0,
@@ -103,6 +103,7 @@ impl MockTransport {
     pub fn with_webhook(self, url: &str) -> Self {
         self.inner.lock().unwrap().webhook = WebhookInfo {
             url: url.to_string(),
+            ..Default::default()
         };
         self
     }
@@ -350,6 +351,7 @@ impl Transport for MockTransport {
         let mut state = self.inner.lock().unwrap();
         state.webhook = WebhookInfo {
             url: url.to_string(),
+            ..Default::default()
         };
         state.webhook_secret = Some(secret.to_string());
         state.webhook_calls += 1;
@@ -358,7 +360,7 @@ impl Transport for MockTransport {
 
     async fn delete_webhook(&self) -> TgResult<()> {
         let mut state = self.inner.lock().unwrap();
-        state.webhook = WebhookInfo { url: String::new() };
+        state.webhook = WebhookInfo::default();
         state.webhook_deletes += 1;
         Ok(())
     }

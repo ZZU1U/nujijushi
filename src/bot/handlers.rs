@@ -15,7 +15,11 @@ impl<'a> Bot<'a> {
         match update.kind {
             UpdateKind::Message(message) => self.handle_message(message).await,
             UpdateKind::MemberChange(change) => self.handle_member_change(change).await,
-            UpdateKind::Other => Ok(()),
+            UpdateKind::Other => {
+                // channel posts, edits and callback queries all land here
+                tracing::debug!("ignoring an update kind the bot does not handle");
+                Ok(())
+            }
         }
     }
 
@@ -28,6 +32,7 @@ impl<'a> Bot<'a> {
         }
         // the interface is a private conversation; group chatter is ignored
         if !message.chat_is_private {
+            tracing::debug!("ignoring a non-private chat update (commands only work in a DM)");
             return Ok(());
         }
 
@@ -43,7 +48,10 @@ impl<'a> Bot<'a> {
 
         let body = message.body().unwrap_or_default().to_string();
         match commands::parse(&body, self.username.as_deref()) {
-            Parsed::Empty => Ok(()),
+            Parsed::Empty => {
+                tracing::debug!("ignoring a message without text (nothing to dispatch)");
+                Ok(())
+            }
             Parsed::Command(command) => self.dispatch(&message, &from, role, command).await,
             Parsed::Text(text) => match commands::import_target(&text) {
                 Some(target) => self.import_link(&message, &from, role, vec![target]).await,

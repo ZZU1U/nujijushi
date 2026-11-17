@@ -71,6 +71,9 @@ impl<'a> Bot<'a> {
             .transport
             .parse_update(body)
             .map_err(|err| crate::error::Error::Telegram(err.to_string()))?;
+        // one line per delivery: "no reaction" must be distinguishable from
+        // "Telegram never called us" when a webhook silently fails
+        tracing::info!(update = update.id, "webhook update received");
         self.handle(update).await
     }
 

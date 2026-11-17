@@ -473,6 +473,7 @@ scheduled slot. CLI equivalents: `nujijushi push --channel <alias> --force`.
 | `not enough rights to send photos` | bot is not an admin with "post messages" in that channel |
 | `chat not found` | wrong id; use the numeric `-100…` id for private channels |
 | `curl: tlsv1 unrecognized name` when testing your own domain | a local proxy (Clash/sing-box TUN, fake-IP) is intercepting it: the handshake never reaches your server. Test from the VPS, or add `DOMAIN-SUFFIX,<your-domain>,DIRECT` + a `fake-ip-filter` entry and reload the profile |
+| `webhook registered` but the bot never answers | registration only stores the URL — Telegram only fails *later*, when it POSTs. `nujijushi doctor` prints a `webhook delivery` line with Telegram's last error (e.g. `Wrong response from the webhook: 502 Bad Gateway`); no error but still silence means nothing reaches nginx. Also: commands only work in a **private chat** with the bot, channel posts are ignored by design |
 | nothing published | `nujijushi channel ls` shows the reason: paused, outside active hours, daily cap, next slot |
 | channel paused itself | 3 consecutive send failures — fix the cause, then `nujijushi channel resume` |
 | unconfirmed send after a crash | check the channel, then resolve it in the dashboard |
@@ -486,7 +487,7 @@ CI runs on every push and pull request (`.github/workflows/ci.yml`: `fmt`, `clip
 and attaches them to the GitHub release (`.github/workflows/release.yml`).
 
 ```bash
-cargo test                     # 231 tests: units, snapshots, flows, bot, webhook, storage, proxy
+cargo test                     # 233 tests: units, snapshots, flows, bot, webhook, storage, proxy
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```

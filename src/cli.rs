@@ -1100,7 +1100,8 @@ async fn cmd_doctor(cfg: Config, strict: bool, offline: bool) -> Result<()> {
                 checks.push(check_channel_rights(&channels, transport.as_ref()).await);
                 let mode = cfg.bot_mode;
                 let target = crate::bot::webhook_target(&cfg);
-                checks.push(match (mode, transport.webhook_info().await) {
+                let webhook = transport.webhook_info().await;
+                checks.push(match (mode, &webhook) {
                     (crate::config::BotMode::Webhook, Ok(info)) => match &target {
                         Ok(expected) if info.url == *expected => Check {
                             level: Level::Ok,
@@ -1149,6 +1150,33 @@ async fn cmd_doctor(cfg: Config, strict: bool, offline: bool) -> Result<()> {
                         detail: err.to_string(),
                     },
                 });
+                // A registered URL proves nothing: Telegram only learns that it
+                // cannot deliver when it POSTs (502, 404, bad secret, TLS).
+                if mode == crate::config::BotMode::Webhook
+                    && let Ok(info) = &webhook
+                {
+                    let now = chrono::Utc::now().timestamp();
+                    checks.push(match info.delivery_problem(now) {
+                        Some(problem) => Check {
+                            level: Level::Fail,
+                            label: "webhook delivery".into(),
+                            detail: format!(
+                                "{problem} - {} update(s) queued; check nginx, the port in webhook_url and the secret",
+                                info.pending_update_count
+                            ),
+                        },
+                        None if info.pending_update_count > 0 => Check {
+                            level: Level::Warn,
+                            label: "webhook delivery".into(),
+                            detail: format!("{} update(s) still queued", info.pending_update_count),
+                        },
+                        None => Check {
+                            level: Level::Ok,
+                            label: "webhook delivery".into(),
+                            detail: "Telegram reports no delivery errors".into(),
+                        },
+                    });
+                }
             }
             Ok(None) => checks.push(Check {
                 level: Level::Warn,
