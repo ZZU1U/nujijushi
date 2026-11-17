@@ -75,6 +75,33 @@ fn first_string(value: &Value, keys: &[&str]) -> Option<String> {
     None
 }
 
+/// `first_string` that also accepts dotted paths, for the shapes where gallery-dl
+/// nests the author (`{"user": {"name": …, "nick": …}}`).
+fn first_string_path(value: &Value, paths: &[&str]) -> Option<String> {
+    for path in paths {
+        let mut cursor = value;
+        let mut resolved = true;
+        for key in path.split('.') {
+            match cursor.get(key) {
+                Some(next) => cursor = next,
+                None => {
+                    resolved = false;
+                    break;
+                }
+            }
+        }
+        if !resolved {
+            continue;
+        }
+        match cursor {
+            Value::String(s) if !s.trim().is_empty() => return Some(s.trim().to_string()),
+            Value::Number(n) => return Some(n.to_string()),
+            _ => {}
+        }
+    }
+    None
+}
+
 fn first_bool(value: &Value, keys: &[&str]) -> Option<bool> {
     for key in keys {
         match value.get(*key) {
@@ -320,27 +347,44 @@ pub fn from_gallery_metadata(
         ],
     );
 
-    let author_name = first_string(
+    // gallery-dl's twitter extractor reports the handle as `username` and the
+    // display name as `fullname` / `user.name`. The handle is the stable ASCII
+    // identity (and the only thing present for some tweets), so on twitter the
+    // artist *is* the handle: name stays empty and `Author::display` falls back.
+    let twitter = source == "twitter";
+    let author_handle = first_string_path(
         meta,
         &[
-            "user_name",
-            "artist_name",
-            "creator_name",
-            "author_name",
-            "display_name",
-            "nick",
-            "full_name",
+            "screen_name",
+            "user_account",
+            "handle",
+            "user_nick",
             "username",
-            "artist",
-            "uploader",
-            "user",
+            "user.screen_name",
+            "user.username",
+            "user.nick",
         ],
     );
-    let author_handle = first_string(
-        meta,
-        &["user_account", "screen_name", "handle", "user_nick", "user"],
-    );
-    let author_id = first_string(
+    let author_name = if twitter {
+        None
+    } else {
+        first_string_path(
+            meta,
+            &[
+                "user_name",
+                "artist_name",
+                "creator_name",
+                "author_name",
+                "display_name",
+                "nick",
+                "full_name",
+                "artist",
+                "uploader",
+                "user.name",
+            ],
+        )
+    };
+    let author_id = first_string_path(
         meta,
         &[
             "user_id",
@@ -349,6 +393,7 @@ pub fn from_gallery_metadata(
             "creator_id",
             "uid",
             "author_id",
+            "user.id",
         ],
     )
     .or_else(|| author_handle.clone());
@@ -462,6 +507,56 @@ mod tests {
         assert_eq!(post.source_id, "99");
         assert_eq!(post.rating, Rating::Explicit);
         assert_eq!(post.description.as_deref(), Some("line one"));
+        // the handle is the artist, and doubles as the id without a user_id
+        let author = post.author.as_ref().unwrap();
+        assert_eq!(author.handle.as_deref(), Some("handle"));
+        assert_eq!(author.name, None);
+        assert_eq!(author.source_id, "handle");
+        assert_eq!(author.display(), "handle");
+    }
+
+    #[test]
+    fn twitter_author_survives_both_gallery_dl_shapes() {
+        // modern shape: flat user_id plus a display name we deliberately ignore
+        let flat = json!({
+            "category": "twitter",
+            "tweet_id": 1,
+            "username": "asobinin",
+            "fullname": "アソビニン",
+            "user_id": 4242,
+        });
+        let post = from_gallery_metadata(&flat, vec![], "twitter", None).unwrap();
+        let author = post.author.unwrap();
+        assert_eq!(author.source_id, "4242");
+        assert_eq!(author.handle.as_deref(), Some("asobinin"));
+        assert_eq!(
+            author.name, None,
+            "twitter keeps the handle, not the display name"
+        );
+
+        // older shape: everything nested under `user`
+        let nested = json!({
+            "category": "twitter",
+            "tweet_id": 2,
+            "user": { "id": 77, "nick": "nested_handle", "name": "Nested Name" },
+        });
+        let post = from_gallery_metadata(&nested, vec![], "twitter", None).unwrap();
+        let label = post.author.as_ref().unwrap().display();
+        let author = post.author.unwrap();
+        assert_eq!(author.source_id, "77");
+        assert_eq!(author.handle.as_deref(), Some("nested_handle"));
+        assert_eq!(label, "nested_handle");
+
+        // other sources still prefer the human name
+        let pixiv = json!({
+            "category": "pixiv",
+            "illust_id": 5,
+            "user_name": "Nightjar",
+            "user_account": "nightjar_",
+            "user_id": 9,
+        });
+        let post = from_gallery_metadata(&pixiv, vec![], "pixiv", None).unwrap();
+        assert_eq!(post.author.as_ref().unwrap().display(), "Nightjar");
     }
 
     #[test]

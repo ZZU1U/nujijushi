@@ -22,6 +22,16 @@ pub struct PostAuthor {
     pub url: Option<String>,
 }
 
+impl PostAuthor {
+    /// Same fallback as `model::Author::display`: name, else handle.
+    pub fn display(&self) -> String {
+        self.name
+            .clone()
+            .or_else(|| self.handle.clone())
+            .unwrap_or_else(|| "unknown artist".to_string())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PostFile {
     /// File staged on local disk (staging dir); consumed by the blob store.
