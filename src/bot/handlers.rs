@@ -216,22 +216,36 @@ impl<'a> Bot<'a> {
         reply::send(self.transport.as_ref(), &chat_id.to_string(), html).await
     }
 
-    async fn deny(&self, message: &BotMessage, perm: Perm) -> Result<()> {
-        self.reply(
-            message,
-            &format!(
+    async fn deny(&self, message: &BotMessage, role: Role, perm: Perm) -> Result<()> {
+        // publish is the one gate with two different fixes, so name the right one
+        let text = match (perm, role.is_admin()) {
+            (Perm::Publish, false) => format!(
+                "Publishing from Telegram belongs to the bot owner.\n\
+                 Your id is <code>{}</code> — an admin adds it to <code>[access] admins</code> \
+                 and sets <code>allow_publish = true</code>.",
+                message
+                    .from
+                    .as_ref()
+                    .map(|user| user.id)
+                    .unwrap_or_default()
+            ),
+            (Perm::Publish, true) => String::from(
+                "Publishing is switched off: set <code>[access] allow_publish = true</code> \
+                 in config.toml and restart.",
+            ),
+            _ => format!(
                 "You are not allowed to use <code>{}</code> here.",
                 perm.as_str()
             ),
-        )
-        .await
+        };
+        self.reply(message, &text).await
     }
 
     async fn allow(&self, message: &BotMessage, role: Role, perm: Perm) -> Result<bool> {
         if self.access.allows(role, perm) {
             return Ok(true);
         }
-        self.deny(message, perm).await?;
+        self.deny(message, role, perm).await?;
         Ok(false)
     }
 

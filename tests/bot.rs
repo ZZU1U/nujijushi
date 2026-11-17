@@ -354,9 +354,11 @@ async fn guest_cannot_publish_but_admin_can() {
     harness
         .send(private_message(GUEST, 1, "/publish main"))
         .await;
+    let refusal = harness.last_text();
+    assert!(refusal.contains("bot owner"), "guest is refused: {refusal}");
     assert!(
-        harness.last_text().contains("not allowed"),
-        "guest is refused"
+        refusal.contains("admins") && refusal.contains("allow_publish"),
+        "the refusal names both switches: {refusal}"
     );
     assert_eq!(harness.mock.send_count(), 0);
 
@@ -720,4 +722,42 @@ async fn admins_manage_roles_from_the_chat() {
         .send(private_message(ADMIN, 4, "/grant 1 banned"))
         .await;
     assert!(harness.last_text().contains("config.toml"));
+}
+
+const LOCKED_CONFIG: &str = r#"
+[telegram]
+bot_token = "1:test"
+[access]
+admins = [1]
+public = false
+"#;
+
+#[tokio::test]
+async fn publishing_needs_allow_publish_even_for_the_admin() {
+    let harness = harness(MockTransport::new(), LOCKED_CONFIG);
+    harness
+        .send(private_message(ADMIN, 1, "/publish main"))
+        .await;
+    let text = harness.last_text();
+    assert!(text.contains("switched off"), "got: {text}");
+    assert!(text.contains("allow_publish"), "names the switch: {text}");
+    assert_eq!(harness.mock.send_count(), 0);
+}
+
+#[tokio::test]
+async fn a_config_admin_is_told_that_config_owns_their_role() {
+    let harness = harness(MockTransport::new(), OPEN_CONFIG);
+    // config admins win at runtime even if the users row says guest
+    harness
+        .state
+        .db
+        .call(|conn| nujijushi::db::users::set_role(conn, ADMIN, "guest"))
+        .await
+        .unwrap();
+    harness.send(private_message(ADMIN, 1, "/whoami")).await;
+    assert!(
+        harness.last_text().contains("role admin"),
+        "got: {}",
+        harness.last_text()
+    );
 }
