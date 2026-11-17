@@ -6,6 +6,9 @@ A single Rust binary that keeps a **local artwork archive** and publishes it to 
 **Telegram channels on a schedule**, with tidy captions built from the post's artist,
 description, tags and NSFW state.
 
+> New to the code? [AGENTS.md](AGENTS.md) has the working rules and invariants;
+> [codebase.md](codebase.md) walks through how a URL becomes a channel post.
+
 ```
 URLs / folders ──▶ gallery-dl ──▶ blob store + SQLite ──▶ queue ──▶ caption + album ──▶ Bot API
                                         ▲                              ▲
