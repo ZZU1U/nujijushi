@@ -1,0 +1,5 @@
+---
+source: tests/captions.rs
+expression: "rendered.chars().rev().take(60).collect::<String>()"
+---
+>a/<vixiP>"654321/skrowtra/ten.vixip.www//:sptth"=ferh a< ai

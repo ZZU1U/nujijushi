@@ -1,0 +1,50 @@
+[package]
+name = "nujijushi"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Local artwork archive with a scheduled Telegram channel publisher"
+license = "MIT"
+
+[dependencies]
+async-trait = "0.1"
+anyhow = "1"
+axum = "0.8"
+blake3 = "1"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+clap = { version = "4", features = ["derive", "env"] }
+directories = "6"
+htmlescape = "0.3"
+image = { version = "0.25", default-features = false, features = [
+    "jpeg",
+    "png",
+    "webp",
+    "gif",
+] }
+minijinja = "3"
+rand = "0.9"
+rusqlite = { version = "0.43", features = ["bundled", "chrono"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+teloxide = "0.17"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+toml = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+insta = "1"
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

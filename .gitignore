@@ -1,0 +1,14 @@
+/target
+# local data never belongs in git
+/data
+/.nujijushi
+nujijushi.sqlite3
+nujijushi.sqlite3-wal
+nujijushi.sqlite3-shm
+cookies/
+.env
+*.session
+.DS_Store
+
+# host tooling state
+.pi/

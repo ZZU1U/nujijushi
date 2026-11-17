@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}post #{{ post.id }}{% endblock %}
+{% block body %}
+<div class="detail">
+  <section class="panel">
+    <h2>#{{ post.id }} <span class="hint">{{ post.source }} / {{ post.source_id }}</span></h2>
+    <div class="media-grid">
+      {% for m in media %}
+      <figure>
+        {% if m.is_video %}
+        <video controls preload="none" poster="/thumb/{{ m.thumb }}" src="/media/{{ m.hash }}"></video>
+        {% else %}
+        <a href="/media/{{ m.hash }}" target="_blank"><img loading="lazy" src="/media/{{ m.hash }}" alt=""></a>
+        {% endif %}
+        <figcaption class="hint">{{ m.ext }} {{ m.width }}×{{ m.height }} · {{ m.kib }} KiB</figcaption>
+      </figure>
+      {% endfor %}
+    </div>
+
+    <dl class="facts">
+      <dt>artist</dt><dd>{% if post.artist_url %}<a href="{{ post.artist_url }}" target="_blank">{{ post.artist }}</a>{% else %}{{ post.artist }}{% endif %}</dd>
+      {% if post.title %}<dt>title</dt><dd>{{ post.title }}</dd>{% endif %}
+      {% if post.url %}<dt>source</dt><dd><a href="{{ post.url }}" target="_blank">{{ post.url }}</a></dd>{% endif %}
+      <dt>rating</dt><dd>{{ post.rating }} {% if post.nsfw %}<span class="badge red">nsfw</span>{% else %}<span class="badge green">sfw</span>{% endif %} <span class="hint">override: {{ post.nsfw_override }}</span></dd>
+      <dt>imported</dt><dd class="hint">{{ post.imported }}{% if submitted_by %} · via telegram user <code>{{ submitted_by }}</code>{% endif %}</dd>
+      {% if post.description %}<dt>description</dt><dd class="prose">{{ post.description }}</dd>{% endif %}
+    </dl>
+
+    <div class="tagcloud">
+      {% for t in post.tags %}<a href="/posts?tag={{ t }}">#{{ t }}</a>{% endfor %}
+    </div>
+
+    <form method="post" action="/posts/{{ post.id }}" class="panel inset">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <div class="fieldrow">
+        <label>rating
+          <select name="rating">
+            {% for r in ratings %}<option value="{{ r }}" {{ 'selected' if post.rating == r else '' }}>{{ r }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>nsfw
+          <select name="nsfw">
+            <option value="auto" {{ 'selected' if post.nsfw_override == 'auto' else '' }}>auto</option>
+            <option value="yes" {{ 'selected' if post.nsfw_override == 'yes' else '' }}>force nsfw</option>
+            <option value="no" {{ 'selected' if post.nsfw_override == 'no' else '' }}>force sfw</option>
+          </select>
+        </label>
+        <label>state
+          <select name="state">
+            {% for s in states %}<option value="{{ s }}" {{ 'selected' if post.state == s else '' }}>{{ s }}</option>{% endfor %}
+          </select>
+        </label>
+      </div>
+      <label>manual tags (comma separated, replaces manual tags)
+        <input name="tags" value="">
+      </label>
+      <label>notes
+        <input name="notes" value="{{ post.notes }}">
+      </label>
+      <button type="submit">save</button>
+      <span class="hint">queue it from <a href="/posts">the posts grid</a></span>
+    </form>
+  </section>
+
+  <aside class="panel">
+    <h2>caption preview</h2>
+    {% if captions %}
+      {% for c in captions %}
+      <div class="caption-box">
+        <div class="row">
+          <strong>{{ c.channel }}</strong>
+          {% if c.allowed %}<span class="badge green">sendable</span>{% else %}<span class="badge red">vetoed</span>{% endif %}
+          {% if c.spoiler %}<span class="badge">spoiler</span>{% endif %}
+          <span class="hint">{{ c.length }} chars · {{ c.messages }} message(s)</span>
+        </div>
+        <pre class="caption">{{ c.caption | safe }}</pre>
+        <div class="hint">{{ c.verdict }}</div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <p class="hint">Add a channel to see how this post would be captioned.</p>
+    {% endif %}
+  </aside>
+</div>
+{% endblock %}

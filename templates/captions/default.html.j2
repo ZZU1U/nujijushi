@@ -1,0 +1,16 @@
+{%- if author.name -%}
+<b>{{ author.name }}</b>{% if author.handle %} ({{ author.handle }}){% endif %}{% if source_link and attribution_inline %} · {{ source_link }}{% endif %}
+{% endif -%}
+{%- if post.description -%}
+{% if author.name %}
+
+{% endif %}{{ post.description | truncate_words(200) }}
+{% endif -%}
+{%- if hashtags %}
+
+{{ hashtags }}
+{% endif -%}
+{%- if source_link and attribution_footer %}
+
+{{ source_link }}
+{% endif -%}

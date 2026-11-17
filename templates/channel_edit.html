@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}{{ channel.title }}{% endblock %}
+{% block body %}
+<div class="cols wide-left">
+  <section class="panel">
+    <h2>{{ channel.title }} <span class="hint">{{ channel.tg_id }}</span> <code>{{ channel.alias }}</code></h2>
+    <p class="hint">
+      <a href="/channels/{{ channel.id }}/queue">open queue</a> ·
+      <a href="/channels/{{ channel.id }}/preview">preview next slots</a>
+      {% if channel.paused %}<span class="badge red">paused after {{ channel.failures }} failures</span>{% endif %}
+    </p>
+    <form method="post" action="/channels/{{ channel.id }}/edit">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <div class="grid-form">
+        <label>alias<input name="alias" value="{{ channel.alias }}" required pattern="[A-Za-z0-9_\-]+"></label>
+        <label>title<input name="title" value="{{ channel.title }}" required></label>
+        <label>channel id<input name="tg_id" value="{{ channel.tg_id }}" required></label>
+        <label>interval (minutes)<input name="interval_minutes" type="number" min="1" value="{{ channel.interval_minutes }}"></label>
+        <label>active from<input name="active_from" value="{{ channel.active_from }}"></label>
+        <label>active to<input name="active_to" value="{{ channel.active_to }}"></label>
+        <label>timezone<input name="tz" value="{{ channel.tz }}"></label>
+        <label>daily cap (0 = off)<input name="daily_cap" type="number" min="0" value="{{ channel.daily_cap }}"></label>
+        <label>jitter (seconds)<input name="jitter_secs" type="number" min="0" value="{{ channel.jitter_secs }}"></label>
+        <label>artist cooldown<input name="artist_cooldown" type="number" min="0" value="{{ channel.artist_cooldown }}"></label>
+        <label>nsfw policy
+          <select name="nsfw_policy">
+            {% for p in policies %}<option value="{{ p }}" {{ 'selected' if channel.nsfw_policy == p else '' }}>{{ p }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>min media<input name="min_media" type="number" min="0" value="{{ channel.min_media }}"></label>
+        <label>tag style
+          <select name="tag_style">
+            {% for t in tag_styles %}<option value="{{ t }}" {{ 'selected' if channel.tag_style == t else '' }}>{{ t }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>max tags<input name="max_tags" type="number" min="0" value="{{ channel.max_tags }}"></label>
+        <label>attribution
+          <select name="attribution">
+            {% for a in attributions %}<option value="{{ a }}" {{ 'selected' if channel.attribution == a else '' }}>{{ a }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>parse mode
+          <select name="parse_mode">
+            {% for m in parse_modes %}<option value="{{ m }}" {{ 'selected' if channel.parse_mode == m else '' }}>{{ m }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>blocked tags (csv)<input name="blocked_tags" value="{{ channel.blocked_tags }}"></label>
+        <label>required tags (csv)<input name="required_tags" value="{{ channel.required_tags }}"></label>
+        <label>built-in template
+          <select name="template_name">
+            {% for t in templates %}<option value="{{ t }}" {{ 'selected' if channel.template_name == t else '' }}>{{ t }}</option>{% endfor %}
+          </select>
+        </label>
+      </div>
+
+      <label>caption template (leave empty to use the built-in one)
+        <textarea name="template" rows="12" spellcheck="false" placeholder="{{ default_template }}">{{ channel.template }}</textarea>
+      </label>
+      <p class="hint">
+        Available: <code>author.name</code>, <code>author.handle</code>, <code>author.url</code>,
+        <code>post.title</code>, <code>post.description</code>, <code>post.url</code>,
+        <code>post.date</code>, <code>post.media_count</code>, <code>tags</code>, <code>hashtags</code>,
+        <code>source_label</code>, <code>source_link</code>, <code>nsfw</code>, <code>spoiler</code>.
+        Filters: <code>truncate_words(n)</code>, <code>hashtags</code>, <code>one_line</code>.
+      </p>
+
+      <div class="checks">
+        <label class="check"><input type="checkbox" name="enabled" {{ 'checked' if channel.enabled else '' }}> enabled</label>
+        <label class="check"><input type="checkbox" name="include_source_tag" {{ 'checked' if channel.include_source_tag else '' }}> source hashtag</label>
+        <label class="check"><input type="checkbox" name="silent" {{ 'checked' if channel.silent else '' }}> silent</label>
+        <label class="check"><input type="checkbox" name="protect" {{ 'checked' if channel.protect else '' }}> protect content</label>
+      </div>
+      <div class="form-actions"><button type="submit">save channel</button></div>
+    </form>
+  </section>
+
+  <aside class="panel">
+    <h2>next slot preview</h2>
+    {% if sample %}
+      <div class="hint">{{ sample.reason }} · {{ sample.media }} media · {{ sample.messages }} message(s){% if sample.spoiler %} · spoiler{% endif %}</div>
+      <pre class="caption">{{ sample.caption | safe }}</pre>
+    {% else %}
+      <p class="hint">Nothing queued for this channel yet.</p>
+    {% endif %}
+  </aside>
+</div>
+{% endblock %}

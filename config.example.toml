@@ -1,0 +1,57 @@
+# nujijushi configuration — copy to $NUJIJUSHI_HOME/config.toml (default ~/.nujijushi/config.toml)
+# Environment overrides: TG_BOT_TOKEN, NUJIJUSHI_UI_TOKEN, NUJIJUSHI_BIND, NUJIJUSHI_HOME, NUJIJUSHI_GALLERY_DL
+
+[telegram]
+# From @BotFather. The bot must be an administrator of every channel it posts to.
+bot_token = "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ"
+
+[web]
+# The admin UI binds here. Keep it on loopback unless you know what you are doing.
+bind = "127.0.0.1:8788"
+# Password for the admin UI. `nujijushi init` generates one if this file is created by nujijushi.
+token = "change-me-to-a-long-random-string"
+
+[import]
+# External helpers. `nujijushi doctor` verifies both.
+gallery_dl = "gallery-dl"
+ffmpeg = "ffmpeg"
+# Hard limit for one gallery-dl run.
+timeout_secs = 1800
+# Parallel imports (web UI / worker).
+max_concurrent = 2
+# When the bot cannot read a t.me post, scrape its public embed page instead
+# (single image, reduced resolution, marked "public embed (degraded)").
+public_telegram_fallback = true
+
+[bot]
+# Telegram command interface (started by `nujijushi run`; `--no-bot` disables it per run).
+enabled = true
+# polling: ask Telegram for updates (works anywhere, no public address needed).
+# webhook: Telegram POSTs to /tg/webhook on the web server; needs a public HTTPS URL
+#          (put a TLS proxy in front of [web] bind) and reaches it with a secret header.
+mode = "polling"
+poll_timeout_secs = 30
+# webhook_url = "https://bot.example.com"
+# webhook_secret = "generated and stored in the database when left empty"
+
+[access]
+# Telegram user ids allowed to administer the bot. Find yours with /whoami in the chat.
+admins = []
+# Extra ids allowed in as guests (they are auto-registered on first contact anyway).
+guests = []
+# false: only the ids above may use the bot. true: anyone may, as a limited guest.
+public = false
+allow_import = true       # guests may send links / forward posts
+allow_browse = false      # /ls, /show, /queue, /channels
+allow_queue = false       # /push (queues only - never publishes)
+allow_publish = false     # /publish, admins only, off by default
+allow_curate = false      # /approve, /reject, /nsfw, /rate, /tag
+allow_nsfw_browse = false # let guests see NSFW posts in /ls
+import_quota_per_day = 20
+queue_quota_per_day = 20
+
+[limits]
+# Telegram caption limit; nujijushi clips and closes tags to fit.
+caption_chars = 1024
+# Bot API upload limit per file.
+max_upload_bytes = 52428800

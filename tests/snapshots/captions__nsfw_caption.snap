@@ -1,0 +1,10 @@
+---
+source: tests/captions.rs
+expression: "render(&channel, &post, true, true)"
+---
+<b>Nightjar</b> (@nightjar) · <a href="https://www.pixiv.net/artworks/123456">Pixiv</a>
+
+Harbour at 4am, still water, one lamp still burning.
+Painted for the night shift crowd.
+
+original, landscape, digital_art, nsfw, pixiv

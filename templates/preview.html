@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}preview · {{ channel.title }}{% endblock %}
+{% block body %}
+<section class="panel">
+  <h2>next slots · {{ channel.title }} <span class="hint">{{ channel.tg_id }}</span></h2>
+  <p class="hint"><a href="/channels/{{ channel.id }}/edit">settings</a> · <a href="/channels/{{ channel.id }}/queue">queue</a></p>
+  {% if items %}
+    {% for item in items %}
+    <article class="slot">
+      <header>
+        <span class="badge">slot {{ item.slot }}</span>
+        <a href="/posts/{{ item.post_id }}">#{{ item.post_id }}</a>
+        <span class="hint">{{ item.media }} media · {{ item.messages }} message(s) · {{ item.reason }}</span>
+        {% if item.spoiler %}<span class="badge">spoiler</span>{% endif %}
+        {% if item.nsfw %}<span class="badge red">nsfw</span>{% endif %}
+      </header>
+      <pre class="caption">{{ item.caption | safe }}</pre>
+    </article>
+    {% endfor %}
+  {% else %}
+    <p class="hint">Nothing would be published — the queue is empty or every item is vetoed.</p>
+  {% endif %}
+</section>
+{% endblock %}

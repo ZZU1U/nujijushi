@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}dashboard{% endblock %}
+{% block body %}
+<section class="stats">
+  <div class="stat"><span class="num">{{ stats.posts }}</span><span class="lbl">posts</span></div>
+  <div class="stat"><span class="num">{{ stats.approved }}</span><span class="lbl">approved</span></div>
+  <div class="stat"><span class="num">{{ stats.queued }}</span><span class="lbl">queued</span></div>
+  <div class="stat"><span class="num">{{ stats.sent }}</span><span class="lbl">sent</span></div>
+  <div class="stat {{ 'warn' if stats.unknown > 0 else '' }}"><span class="num">{{ stats.unknown }}</span><span class="lbl">unconfirmed</span></div>
+</section>
+
+{% if recent_unknown %}
+<section class="panel alert">
+  <h2>unconfirmed sends</h2>
+  <p class="hint">These were interrupted mid-publish. Check the channel, then mark them delivered or not — nujijushi will never guess.</p>
+  <table>
+    <tr><th>queue</th><th>channel</th><th>post</th><th>note</th><th></th></tr>
+    {% for item in recent_unknown %}
+    <tr>
+      <td>#{{ item.id }}</td>
+      <td>{{ item.channel }}</td>
+      <td><a href="/posts/{{ item.post_id }}">#{{ item.post_id }}</a></td>
+      <td class="hint">{{ item.error }}</td>
+      <td class="actions">
+        <form method="post" action="/queue/action" class="inline">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="id" value="{{ item.id }}">
+          <input type="hidden" name="channel" value="{{ item.channel_id }}">
+          <button name="action" value="delivered" class="small">delivered</button>
+          <button name="action" value="not_delivered" class="small ghost">not delivered</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</section>
+{% endif %}
+
+<section class="panel">
+  <h2>channels</h2>
+  {% if channels %}
+  <table>
+    <tr><th>channel</th><th>queue</th><th>every</th><th>nsfw</th><th>next</th><th></th></tr>
+    {% for c in channels %}
+    <tr>
+      <td>
+        <a href="/channels/{{ c.id }}/edit">{{ c.title }}</a>
+        <span class="hint">{{ c.tg_id }}</span>
+        {% if c.paused %}<span class="badge red">paused</span>{% endif %}
+        {% if c.failures > 0 %}<span class="badge red">{{ c.failures }} fails</span>{% endif %}
+      </td>
+      <td>{{ c.queued }}</td>
+      <td>{{ c.interval }}m</td>
+      <td><span class="badge">{{ c.nsfw_policy }}</span></td>
+      <td class="hint">{{ c.reason }}</td>
+      <td class="actions">
+        <a class="button small" href="/channels/{{ c.id }}/queue">queue</a>
+        <a class="button small ghost" href="/channels/{{ c.id }}/preview">preview</a>
+        <form method="post" action="/publish" class="inline"
+              onsubmit="return confirm('Publish the next queued post to {{ c.title }} right now? This ignores the schedule.')">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="channel_id" value="{{ c.id }}">
+          <input type="hidden" name="back" value="/">
+          <button class="small" type="submit" title="publish the next queued post, ignoring the schedule">publish next</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="hint">No channels yet. <a href="/channels">Create one</a> — you need the bot as an admin in it.</p>
+  {% endif %}
+</section>
+
+<div class="cols">
+  <section class="panel">
+    <h2>recent sends</h2>
+    {% if sends %}
+    <table class="compact">
+      {% for s in sends %}
+      <tr>
+        <td>{{ s.at }}</td>
+        <td>ch #{{ s.channel_id }}</td>
+        <td><a href="/posts/{{ s.post_id }}">#{{ s.post_id }}</a></td>
+        <td>{% if s.ok %}<span class="badge green">ok</span>{% else %}<span class="badge red">fail</span>{% endif %}</td>
+        <td class="hint">{{ s.error }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}<p class="hint">Nothing sent yet.</p>{% endif %}
+  </section>
+
+  <section class="panel">
+    <h2>import jobs</h2>
+    {% if jobs %}
+    <table class="compact">
+      {% for j in jobs %}
+      <tr>
+        <td>#{{ j.id }}</td>
+        <td><span class="badge">{{ j.state }}</span></td>
+        <td class="hint">{{ j.payload }}</td>
+        <td class="hint">{{ j.message }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}<p class="hint">No imports yet. <a href="/import">Import something</a>.</p>{% endif %}
+  </section>
+</div>
+{% endblock %}

@@ -1,0 +1,7 @@
+---
+source: tests/captions.rs
+expression: "render(&channel, &post, false, false)"
+---
+<b>unknown artist</b>
+
+#original #landscape #digital_art #harbour

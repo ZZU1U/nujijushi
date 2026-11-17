@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>nujijushi · {% block title %}admin{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/"><span class="dot"></span>nujijushi</a>
+    <nav>
+      <a href="/" class="{{ 'active' if page == 'dashboard' else '' }}">dashboard</a>
+      <a href="/posts" class="{{ 'active' if page == 'posts' else '' }}">posts</a>
+      <a href="/channels" class="{{ 'active' if page == 'channels' else '' }}">channels</a>
+      <a href="/import" class="{{ 'active' if page == 'import' else '' }}">import</a>
+      <a href="/users" class="{{ 'active' if page == 'users' else '' }}">users</a>
+    </nav>
+    <form method="post" action="/logout" class="inline">
+      <button class="link" type="submit">log out</button>
+    </form>
+  </header>
+  {% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
+  <main>{% block body %}{% endblock %}</main>
+  <footer class="foot">nujijushi · local archive · publishes to Telegram via the Bot API</footer>
+</body>
+</html>
