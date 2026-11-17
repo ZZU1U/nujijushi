@@ -49,8 +49,22 @@ jobs:
         with:
           name: nujijushi-${{ matrix.target }}
           path: nujijushi-${{ github.ref_name || 'snapshot' }}-${{ matrix.target }}.tar.gz
-      - uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+          if-no-files-found: error
+
+  # One release per tag: the uploads from the matrix are collected here, so the
+  # release body is written once instead of being overwritten by each build job.
+  publish:
+    name: publish
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
         with:
-          files: nujijushi-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz
           generate_release_notes: true
+          fail_on_unmatched_files: true
