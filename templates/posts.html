@@ -47,7 +47,7 @@
   {% if cards %}
   <div class="grid">
     {% for c in cards %}
-    <label class="card post">
+    <label class="card post{{ ' pushed' if c.pushed else '' }}">
       <input type="checkbox" name="sel_{{ c.id }}" class="pick">
       <a class="thumb" href="/posts/{{ c.id }}">
         {% if c.thumb %}<img loading="lazy" src="/thumb/{{ c.thumb }}" alt="">{% else %}<span class="noimg">no media</span>{% endif %}
@@ -58,6 +58,8 @@
         <div class="row">
           <a href="/posts/{{ c.id }}">#{{ c.id }}</a>
           <span class="badge">{{ c.state }}</span>
+          {% if c.delivered %}<span class="badge green" title="sent to {{ c.channels }}">sent · {{ c.channels }}</span>
+          {% elif c.pushed %}<span class="badge" title="queued for {{ c.channels }}">queued · {{ c.channels }}</span>{% endif %}
           <span class="badge">{{ c.rating }}</span>
         </div>
         <div class="hint">{{ c.artist }}</div>

@@ -10,14 +10,15 @@
   </p>
   {% if users %}
   <table>
-    <tr><th>user</th><th>id</th><th>role</th><th>imports today</th><th>queued today</th><th>last seen</th><th></th></tr>
+    <tr><th>user</th><th>id</th><th>role</th><th title="posts this user imported">archived</th><th title="channel pushes of those posts">pushed</th><th title="pushes that already reached Telegram">sent</th><th>last seen</th><th></th></tr>
     {% for u in users %}
     <tr>
       <td>{{ u.label }}{% if u.config_admin %} <span class="badge">config</span>{% endif %}</td>
       <td class="hint">{{ u.tg_id }}</td>
       <td><span class="badge {{ 'red' if u.role == 'banned' else ('green' if u.role == 'admin' else '') }}">{{ u.role }}</span></td>
-      <td>{{ u.imports }}</td>
-      <td>{{ u.queue }}</td>
+      <td>{{ u.archived }}</td>
+      <td>{{ u.pushed }}</td>
+      <td>{{ u.sent }}</td>
       <td class="hint">{{ u.last_seen }}</td>
       <td class="actions">
         {% if not u.config_admin %}

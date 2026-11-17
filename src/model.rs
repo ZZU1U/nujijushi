@@ -230,6 +230,12 @@ pub struct PostCard {
     pub media_count: i64,
     pub thumb_hash: Option<String>,
     pub snippet: Option<String>,
+    /// How many channels this post was pushed to.
+    pub pushed: i64,
+    /// How many of those pushes already reached Telegram.
+    pub delivered: i64,
+    /// Channel aliases it was pushed to, comma separated (`night-shift,main`).
+    pub channels: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

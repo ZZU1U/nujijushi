@@ -135,4 +135,100 @@ mod tests {
         assert!(html.contains("recent sends"));
         assert!(html.contains(r#"class="num">3"#));
     }
+
+    #[test]
+    fn renders_users_with_effective_role_and_real_counts() {
+        let renderer = PageRenderer::new().unwrap();
+        let html = renderer
+            .render(
+                "users.html",
+                &json!({
+                    "page": "users",
+                    "csrf": "tok",
+                    "flash": null,
+                    "users": [
+                        {
+                            "tg_id": 7,
+                            "label": "@owner",
+                            "role": "admin",
+                            "db_role": "guest",
+                            "archived": 12,
+                            "pushed": 5,
+                            "sent": 3,
+                            "config_admin": true,
+                            "last_seen": "2026-01-01 10:00",
+                        },
+                        {
+                            "tg_id": 8,
+                            "label": "@spammer",
+                            "role": "banned",
+                            "db_role": "banned",
+                            "archived": 0,
+                            "pushed": 0,
+                            "sent": 0,
+                            "config_admin": false,
+                            "last_seen": "",
+                        }
+                    ],
+                }),
+            )
+            .unwrap();
+        // a config admin is shown as admin even while the db row still says guest
+        assert!(html.contains(">admin</span>"), "{html}");
+        assert!(!html.contains(">guest</span>"), "the stale db role leaks");
+        assert!(html.contains(">12</td>"));
+        assert!(html.contains(">banned</span>"));
+    }
+
+    #[test]
+    fn renders_pushed_cards_dimmed_with_a_channel_badge() {
+        let renderer = PageRenderer::new().unwrap();
+        let card = |id: i64, pushed: i64, delivered: i64, channels: Option<&str>| {
+            json!({
+                "id": id,
+                "source": "twitter",
+                "rating": "sfw",
+                "state": "approved",
+                "artist": "asobinin",
+                "media_count": 1,
+                "thumb": null,
+                "nsfw": false,
+                "snippet": "hello",
+                "pushed": pushed,
+                "delivered": delivered,
+                "channels": channels,
+                "imported": "01-01 10:00",
+            })
+        };
+        let html = renderer
+            .render(
+                "posts.html",
+                &json!({
+                    "page": "posts",
+                    "csrf": "tok",
+                    "flash": null,
+                    "cards": [
+                        card(1, 0, 0, None),
+                        card(2, 1, 0, Some("night-shift")),
+                        card(3, 1, 1, Some("main")),
+                    ],
+                    "total": 3,
+                    "page_no": 1,
+                    "has_next": false,
+                    "filters": {"state": null, "source": null, "tag": null, "nsfw": null, "search": null},
+                    "sources": [],
+                    "top_tags": [],
+                    "channels": [],
+                    "states": [],
+                }),
+            )
+            .unwrap();
+        assert_eq!(
+            html.matches("card post pushed").count(),
+            2,
+            "only the two pushed cards are dimmed"
+        );
+        assert!(html.contains("queued · night-shift"), "{html}");
+        assert!(html.contains("sent · main"));
+    }
 }

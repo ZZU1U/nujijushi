@@ -470,25 +470,12 @@ async fn posts_page(
         .db
         .call(move |conn| post_db::cards(conn, &filter))
         .await?;
-    let total = {
-        let source = query.source.clone();
-        let state = filter_for_count.state;
-        let tag = filter_for_count.tag.clone();
-        app.db
-            .call(move |conn| {
-                let mut filter = post_db::PostFilter {
-                    state,
-                    source,
-                    tag,
-                    limit: 100_000,
-                    ..Default::default()
-                };
-                filter.nsfw = None;
-                let rows = post_db::cards(conn, &filter)?;
-                Ok(rows.len() as i64)
-            })
-            .await?
-    };
+    // a real COUNT over the same filter: fetching up to 100k cards just to
+    // size the pager was wrong for search/nsfw filters and slow either way
+    let total = app
+        .db
+        .call(move |conn| post_db::count_cards(conn, &filter_for_count))
+        .await?;
     let sources = app.db.call(|conn| post_db::sources(conn)).await?;
     let tags = app.db.call(|conn| tag_db::most_used(conn, 30)).await?;
     let channels = app.db.call(|conn| channel_db::list(conn)).await?;
@@ -506,6 +493,9 @@ async fn posts_page(
                 "thumb": card.thumb_hash,
                 "nsfw": card.rating.is_nsfw(),
                 "snippet": card.snippet,
+                "pushed": card.pushed,
+                "delivered": card.delivered,
+                "channels": card.channels,
                 "imported": card.imported_at.with_timezone(&chrono::Local).format("%m-%d %H:%M").to_string(),
             })
         })
@@ -1279,21 +1269,30 @@ async fn users_page(
     let mut views = Vec::new();
     for user in &users {
         let tg_id = user.tg_id;
-        let (imports, queued) = app
+        let (archived, pushed, sent) = app
             .db
             .call(move |conn| {
-                let imports = crate::db::usage::count(conn, tg_id, "import")?;
-                let queued = crate::db::usage::count(conn, tg_id, "queue")?;
-                Ok((imports, queued))
+                let archived = post_db::count_submitted(conn, tg_id)?;
+                let (pushed, sent) = crate::db::queue::counts_submitted(conn, tg_id)?;
+                Ok((archived, pushed, sent))
             })
             .await?;
+        let config_admin = app.cfg.access.is_admin(user.tg_id);
+        // config wins at runtime, so show the role the bot will actually use
+        let role = if config_admin {
+            "admin"
+        } else {
+            user.role.as_str()
+        };
         views.push(json!({
             "tg_id": user.tg_id,
             "label": user.label(),
-            "role": user.role,
-            "imports": imports,
-            "queue": queued,
-            "config_admin": app.cfg.access.is_admin(user.tg_id),
+            "role": role,
+            "db_role": user.role,
+            "archived": archived,
+            "pushed": pushed,
+            "sent": sent,
+            "config_admin": config_admin,
             "last_seen": user.last_seen_at
                 .as_deref()
                 .and_then(crate::db::parse_ts)

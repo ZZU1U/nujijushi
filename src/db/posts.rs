@@ -266,7 +266,12 @@ const CARD_SELECT: &str = "
            COALESCE(p.nsfw_override, CASE WHEN p.rating = 'sfw' THEN 0 ELSE 1 END) AS nsfw,
            (SELECT COUNT(*) FROM media m WHERE m.post_id = p.id) AS media_count,
            (SELECT COALESCE(m2.poster_hash, m2.blob_hash) FROM media m2 WHERE m2.post_id = p.id
-             ORDER BY m2.ordinal LIMIT 1) AS thumb_hash
+             ORDER BY m2.ordinal LIMIT 1) AS thumb_hash,
+           (SELECT COUNT(*) FROM queue q WHERE q.post_id = p.id) AS pushed,
+           (SELECT COUNT(*) FROM queue q2 WHERE q2.post_id = p.id
+             AND q2.state IN ('sent', 'sending', 'unknown')) AS delivered,
+           (SELECT GROUP_CONCAT(ch.alias, ',') FROM queue q3
+             JOIN channels ch ON ch.id = q3.channel_id WHERE q3.post_id = p.id) AS channels
     FROM posts p LEFT JOIN authors a ON a.id = p.author_id";
 
 fn card_from_row(row: &Row<'_>) -> rusqlite::Result<PostCard> {
@@ -281,11 +286,16 @@ fn card_from_row(row: &Row<'_>) -> rusqlite::Result<PostCard> {
         imported_at: get_ts_required(row, "imported_at")?,
         media_count: row.get("media_count")?,
         thumb_hash: row.get("thumb_hash")?,
+        pushed: row.get("pushed")?,
+        delivered: row.get("delivered")?,
+        channels: row.get("channels")?,
         snippet: description.map(|d| d.lines().next().unwrap_or_default().to_string()),
     })
 }
 
-pub fn cards(conn: &Connection, filter: &PostFilter) -> Result<Vec<PostCard>> {
+/// `(WHERE …, bound values)` for a card filter; every clause only touches `posts p`,
+/// so `count_cards` can reuse it without the joins.
+fn filter_sql(filter: &PostFilter) -> (String, Vec<Value>) {
     let mut clauses: Vec<String> = Vec::new();
     let mut values: Vec<Value> = Vec::new();
 
@@ -331,6 +341,11 @@ pub fn cards(conn: &Connection, filter: &PostFilter) -> Result<Vec<PostCard>> {
     } else {
         format!(" WHERE {}", clauses.join(" AND "))
     };
+    (where_sql, values)
+}
+
+pub fn cards(conn: &Connection, filter: &PostFilter) -> Result<Vec<PostCard>> {
+    let (where_sql, values) = filter_sql(filter);
     let limit = if filter.limit > 0 { filter.limit } else { 60 };
     let sql = format!(
         "{CARD_SELECT}{where_sql} ORDER BY p.imported_at DESC, p.id DESC LIMIT {limit} OFFSET {}",
@@ -345,6 +360,21 @@ pub fn cards(conn: &Connection, filter: &PostFilter) -> Result<Vec<PostCard>> {
     Ok(out)
 }
 
+/// How many posts match the filter (the pager total); `limit`/`offset` are ignored.
+pub fn count_cards(conn: &Connection, filter: &PostFilter) -> Result<i64> {
+    let (where_sql, values) = filter_sql(filter);
+    let sql = format!("SELECT COUNT(*) FROM posts p{where_sql}");
+    Ok(conn.query_row(&sql, params_from_iter(values), |row| row.get(0))?)
+}
+
+/// Posts imported through this Telegram user (`posts.submitted_by`).
+pub fn count_submitted(conn: &Connection, tg_id: i64) -> Result<i64> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM posts WHERE submitted_by = ?1",
+        [tg_id],
+        |row| row.get(0),
+    )?)
+}
 pub fn count(conn: &Connection, state: Option<PostState>) -> Result<i64> {
     let n = match state {
         Some(state) => conn.query_row(
@@ -449,4 +479,34 @@ pub fn next_unenqueued(conn: &Connection, channel_id: i64) -> Result<Option<i64>
             |row| row.get(0),
         )
         .optional()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filter_sql_feeds_both_cards_and_count() {
+        assert_eq!(filter_sql(&PostFilter::default()).0, "");
+
+        let filter = PostFilter {
+            state: Some(PostState::Approved),
+            search: Some("cat".into()),
+            ..Default::default()
+        };
+        let (sql, values) = filter_sql(&filter);
+        assert!(sql.starts_with(" WHERE p.state = ?"), "{sql}");
+        assert!(sql.contains("p.title LIKE ?"), "{sql}");
+        // state + two LIKE patterns + the exact source_id match
+        assert_eq!(values.len(), 4);
+
+        // a tag filter is normalised before it reaches SQL
+        let tagged = PostFilter {
+            tag: Some("Night Sky".into()),
+            ..Default::default()
+        };
+        let (sql, values) = filter_sql(&tagged);
+        assert!(sql.contains("FROM post_tags"), "{sql}");
+        assert_eq!(values.len(), 1);
+    }
 }

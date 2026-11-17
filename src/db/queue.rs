@@ -247,6 +247,18 @@ pub fn count_state(conn: &Connection, channel_id: i64, state: QueueState) -> Res
     )?)
 }
 
+/// `(pushed, sent)` channel slots belonging to this user's own imports: how many
+/// times their posts were pushed, and how many of those already went out.
+pub fn counts_submitted(conn: &Connection, tg_id: i64) -> Result<(i64, i64)> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*),
+                COALESCE(SUM(CASE WHEN q.state IN ('sent', 'sending', 'unknown') THEN 1 ELSE 0 END), 0)
+           FROM queue q JOIN posts p ON p.id = q.post_id
+          WHERE p.submitted_by = ?1",
+        [tg_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?)
+}
 pub fn counts(conn: &Connection, channel_id: i64) -> Result<Vec<(String, i64)>> {
     let mut stmt = conn.prepare(
         "SELECT state, COUNT(*) FROM queue WHERE channel_id = ?1 GROUP BY state ORDER BY state",
