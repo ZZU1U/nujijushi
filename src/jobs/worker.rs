@@ -35,6 +35,10 @@ impl JobWorker {
             .call(move |conn| job_db::claim_pending(conn, free))
             .await?;
         if jobs.is_empty() {
+            // no imports to run, but storage mirrors may still be waiting
+            if let Err(err) = crate::storage::drain(&self.state, 5).await {
+                tracing::warn!("storage drain failed: {err}");
+            }
             return Ok(0);
         }
 
@@ -49,6 +53,9 @@ impl JobWorker {
             });
         }
         while set.join_next().await.is_some() {}
+        if let Err(err) = crate::storage::drain(&self.state, 10).await {
+            tracing::warn!("storage drain failed: {err}");
+        }
         Ok(jobs.len())
     }
 

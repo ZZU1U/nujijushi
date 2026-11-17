@@ -79,6 +79,36 @@ pub async fn run_with_timeout(program: &str, args: &[String], timeout_secs: u64)
     }
 }
 
+/// Command line for one import. Extracted so the proxy/cookie wiring is testable.
+pub fn download_args(
+    staging: &Path,
+    target: &str,
+    cookies: Option<&Path>,
+    proxy: Option<&str>,
+) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "-d".into(),
+        staging.display().to_string(),
+        "--write-metadata".into(),
+        "--no-mtime".into(),
+        "--retries".into(),
+        "3".into(),
+        // gallery-dl has no --timeout flag; it is a config key
+        "-o".into(),
+        "timeout=30.0".into(),
+    ];
+    if let Some(cookies) = cookies {
+        args.push("--cookies".into());
+        args.push(cookies.display().to_string());
+    }
+    if let Some(proxy) = proxy {
+        args.push("--proxy".into());
+        args.push(proxy.to_string());
+    }
+    args.push(target.to_string());
+    args
+}
+
 fn stderr_tail(output: &Output, lines: usize) -> String {
     let text = String::from_utf8_lossy(&output.stderr);
     let collected: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -142,23 +172,12 @@ impl Source for GalleryDlSource {
             .join(format!("gdl-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&staging)?;
 
-        let mut args: Vec<String> = vec![
-            "-d".into(),
-            staging.display().to_string(),
-            "--write-metadata".into(),
-            "--no-mtime".into(),
-            "--retries".into(),
-            "3".into(),
-            // gallery-dl has no --timeout flag; it is a config key
-            "-o".into(),
-            "timeout=30.0".into(),
-        ];
-        if let Some(cookies) = self.cookie_file(target) {
-            tracing::debug!(cookies = %cookies.display(), "using cookies");
-            args.push("--cookies".into());
-            args.push(cookies.display().to_string());
-        }
-        args.push(target.to_string());
+        let args = download_args(
+            &staging,
+            target,
+            self.cookie_file(target).as_deref(),
+            self.cfg.proxy_url.as_deref(),
+        );
 
         tracing::info!(program = %self.cfg.gallery_dl, "running import");
         let output =
@@ -244,6 +263,29 @@ mod tests {
         assert_eq!(cookie_site("twitter.com"), Some("twitter"));
         assert_eq!(cookie_site("danbooru.donmai.us"), Some("danbooru"));
         assert_eq!(cookie_site("example.com"), None);
+    }
+
+    #[test]
+    fn args_carry_cookies_and_proxy() {
+        let staging = Path::new("/tmp/stage");
+        let cookies = Path::new("/home/me/cookies/pixiv.txt");
+        let args = download_args(
+            staging,
+            "https://www.pixiv.net/artworks/1",
+            Some(cookies),
+            Some("socks5h://127.0.0.1:1080"),
+        );
+        assert_eq!(args[0], "-d");
+        assert!(args.contains(&"--write-metadata".to_string()));
+        let cookies_at = args.iter().position(|a| a == "--cookies").unwrap();
+        assert_eq!(args[cookies_at + 1], "/home/me/cookies/pixiv.txt");
+        let proxy_at = args.iter().position(|a| a == "--proxy").unwrap();
+        assert_eq!(args[proxy_at + 1], "socks5h://127.0.0.1:1080");
+        assert_eq!(args.last().unwrap(), "https://www.pixiv.net/artworks/1");
+
+        let plain = download_args(staging, "https://x.com/a/status/1", None, None);
+        assert!(!plain.iter().any(|a| a == "--cookies"));
+        assert!(!plain.iter().any(|a| a == "--proxy"));
     }
 
     #[test]

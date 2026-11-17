@@ -98,6 +98,18 @@ pub async fn import_posts(
                 .push((post.source_id.clone(), err.to_string())),
         }
     }
+
+    // mirror to the configured storage sinks; the worker uploads them
+    if state.cfg.storage.on_import
+        && state.cfg.storage.any_enabled()
+        && !outcome.post_ids.is_empty()
+    {
+        match crate::storage::enqueue(state, &outcome.post_ids).await {
+            Ok(queued) if queued > 0 => tracing::info!(queued, "queued for external storage"),
+            Ok(_) => {}
+            Err(err) => tracing::warn!("cannot queue storage mirrors: {err}"),
+        }
+    }
     Ok(outcome)
 }
 

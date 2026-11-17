@@ -447,9 +447,40 @@ pub fn slugify(raw: &str) -> String {
     }
 }
 
+/// A path component: lowercase, digits kept as-is (unlike [`slugify`], which
+/// prefixes numeric chat ids), anything unsafe collapsed into `-`.
+pub fn path_slug(raw: &str) -> String {
+    let lowered = raw.trim().to_ascii_lowercase();
+    let mut out = String::with_capacity(lowered.len());
+    for ch in lowered.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            out.push(ch);
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    let capped: String = trimmed.chars().take(48).collect();
+    let trimmed = capped.trim_matches('-');
+    if trimmed.is_empty() {
+        "unknown".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 #[cfg(test)]
 mod slug_tests {
     use super::slugify;
+
+    #[test]
+    fn path_slugs_keep_numbers() {
+        assert_eq!(super::path_slug("123456"), "123456");
+        assert_eq!(super::path_slug("Nightjar"), "nightjar");
+        assert_eq!(super::path_slug("a b/c"), "a-b-c");
+        assert_eq!(super::path_slug("  "), "unknown");
+        assert_eq!(super::path_slug("x".repeat(80).as_str()).len(), 48);
+    }
 
     #[test]
     fn slugs_are_stable_and_safe() {

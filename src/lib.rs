@@ -6,6 +6,7 @@ pub mod cli;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod http;
 pub mod jobs;
 pub mod media;
 pub mod model;
@@ -14,6 +15,7 @@ pub mod queue;
 pub mod render;
 pub mod source;
 pub mod state;
+pub mod storage;
 pub mod tg;
 pub mod web;
 

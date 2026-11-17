@@ -3,6 +3,7 @@
 pub mod channels;
 pub mod jobs;
 pub mod migrate;
+pub mod mirrors;
 pub mod posts;
 pub mod queue;
 pub mod tags;

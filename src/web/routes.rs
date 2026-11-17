@@ -67,6 +67,7 @@ pub fn router(ws: Arc<WebState>) -> Router {
         .route("/channels/{id}/preview", get(preview_page))
         .route("/queue/action", post(queue_action))
         .route("/publish", post(publish_action))
+        .route("/storage/drain", post(storage_drain))
         .route("/import", get(import_page).post(import_submit))
         .route("/users", get(users_page).post(users_action))
         .route("/logout", post(logout))
@@ -351,6 +352,32 @@ async fn dashboard(
         })
         .collect();
 
+    let mirrors = app
+        .db
+        .call(|conn| crate::db::mirrors::summary(conn))
+        .await?;
+    let mut storage_views: Vec<Value> = Vec::new();
+    for sink in crate::storage::sinks(app) {
+        let counts: Vec<&(String, String, i64)> = mirrors
+            .iter()
+            .filter(|(name, _, _)| name == sink.name())
+            .collect();
+        let get = |state: &str| {
+            counts
+                .iter()
+                .filter(|(_, name, _)| name == state)
+                .map(|(_, _, count)| *count)
+                .sum::<i64>()
+        };
+        storage_views.push(json!({
+            "name": sink.name(),
+            "where": sink.describe(),
+            "done": get("done"),
+            "pending": get("pending"),
+            "failed": get("failed"),
+        }));
+    }
+
     let jobs = app.db.call(|conn| job_db::list(conn, 6)).await?;
     let job_views: Vec<Value> = jobs
         .iter()
@@ -401,6 +428,7 @@ async fn dashboard(
             "sends": send_views,
             "jobs": job_views,
             "recent_unknown": unknown,
+            "storage": storage_views,
         }),
     )?;
     Ok(Html(html))
@@ -1123,6 +1151,15 @@ async fn preview_page(
         }),
     )?;
     Ok(Html(html))
+}
+
+// ---------------------------------------------------------------- storage
+
+async fn storage_drain(State(ws): State<Arc<WebState>>) -> Response {
+    match crate::storage::drain(&ws.app, 25).await {
+        Ok(uploaded) => flash_redirect("/", &format!("{uploaded} mirror(s) uploaded")),
+        Err(err) => flash_redirect("/", &format!("storage failed: {err}")),
+    }
 }
 
 // ---------------------------------------------------------------- publish

@@ -23,6 +23,12 @@ pub struct Config {
     pub public_telegram_fallback: bool,
     pub ui_token: Option<String>,
     pub bind: String,
+    /// Where imported posts are mirrored (local folder, WebDAV, Telegram).
+    pub storage: StorageConfig,
+    /// Proxy for Telegram, storage uploads and the t.me embed fallback.
+    pub proxy_url: Option<String>,
+    /// Hosts that must bypass the proxy (comma separated).
+    pub proxy_no_proxy: Option<String>,
     pub gallery_dl: String,
     pub ffmpeg: String,
     pub import_timeout_secs: u64,
@@ -52,6 +58,41 @@ impl BotMode {
             _ => None,
         }
     }
+}
+
+/// External copy of the archive: which sinks are on, and with what settings.
+#[derive(Debug, Clone, Default)]
+pub struct StorageConfig {
+    /// Mirror posts right after they are imported.
+    pub on_import: bool,
+    /// Optional subfolder inside every sink (e.g. `nujijushi`).
+    pub root: String,
+    pub local: Option<LocalSinkConfig>,
+    pub webdav: Option<WebdavSinkConfig>,
+    pub telegram: Option<TelegramSinkConfig>,
+}
+
+impl StorageConfig {
+    pub fn any_enabled(&self) -> bool {
+        self.local.is_some() || self.webdav.is_some() || self.telegram.is_some()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalSinkConfig {
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct WebdavSinkConfig {
+    pub url: String,
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct TelegramSinkConfig {
+    pub chat_id: String,
 }
 
 /// Who may talk to the bot and what they may do.
@@ -113,6 +154,10 @@ struct FileConfig {
     #[serde(default)]
     bot: BotSection,
     #[serde(default)]
+    proxy: ProxySection,
+    #[serde(default)]
+    storage: StorageSection,
+    #[serde(default)]
     access: AccessSection,
 }
 
@@ -134,6 +179,44 @@ struct ImportSection {
     timeout_secs: Option<u64>,
     max_concurrent: Option<usize>,
     public_telegram_fallback: Option<bool>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct StorageSection {
+    on_import: Option<bool>,
+    root: Option<String>,
+    #[serde(default)]
+    local: Option<StorageLocalSection>,
+    #[serde(default)]
+    webdav: Option<StorageWebdavSection>,
+    #[serde(default)]
+    telegram: Option<StorageTelegramSection>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct StorageLocalSection {
+    enabled: Option<bool>,
+    path: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct StorageWebdavSection {
+    enabled: Option<bool>,
+    url: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct StorageTelegramSection {
+    enabled: Option<bool>,
+    chat_id: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ProxySection {
+    url: Option<String>,
+    no_proxy: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -255,6 +338,15 @@ impl Config {
             public_telegram_fallback: file.import.public_telegram_fallback.unwrap_or(true),
             ui_token,
             bind,
+            storage: parse_storage(&file.storage)?,
+            proxy_url: env_str("NUJIJUSHI_PROXY")
+                .or(file.proxy.url)
+                .map(|url| url.trim().to_string())
+                .filter(|url| !url.is_empty()),
+            proxy_no_proxy: env_str("NUJIJUSHI_NO_PROXY")
+                .or(file.proxy.no_proxy)
+                .map(|hosts| hosts.trim().to_string())
+                .filter(|hosts| !hosts.is_empty()),
             gallery_dl: env_str("NUJIJUSHI_GALLERY_DL")
                 .or(file.import.gallery_dl)
                 .unwrap_or_else(|| "gallery-dl".to_string()),
@@ -264,6 +356,15 @@ impl Config {
             caption_limit: file.limits.caption_chars.unwrap_or(1024),
             max_upload_bytes: file.limits.max_upload_bytes.unwrap_or(50 * 1024 * 1024),
         })
+    }
+
+    /// Subfolder used by every storage sink (may be empty).
+    pub fn storage_root(&self) -> String {
+        self.storage.root.clone()
+    }
+
+    pub fn proxy_enabled(&self) -> bool {
+        self.proxy_url.is_some()
     }
 
     pub fn db_path(&self) -> PathBuf {
@@ -351,6 +452,32 @@ max_concurrent = 2
 caption_chars = 1024
 max_upload_bytes = 52428800
 
+[storage]
+# Mirror every imported post to the sinks below (`nujijushi storage sync` backfills).
+on_import = true
+# Optional subfolder inside each sink, e.g. "nujijushi".
+root = ""
+
+# [storage.local]
+# enabled = false
+# path = "/Users/me/Google Drive/art"     # any mounted/synced folder
+
+# [storage.webdav]
+# enabled = false
+# url = "https://cloud.example.com/remote.php/dav/files/me/art"
+# username = "me"
+# password = "app-password"
+
+# [storage.telegram]
+# enabled = false
+# chat_id = "-1001234567890"             # a private channel used as a backup drive
+
+[proxy]
+# Optional HTTP(S) or SOCKS proxy. Applies to Telegram, storage uploads and the
+# t.me embed fallback; gallery-dl receives the same proxy on its command line.
+# url = "socks5h://127.0.0.1:1080"
+# no_proxy = "localhost,127.0.0.1,.lan"
+
 [bot]
 # Telegram command interface (started by `nujijushi run`).
 enabled = true
@@ -401,6 +528,75 @@ queue_quota_per_day = 20
         restrict_permissions(&path)?;
         Ok(true)
     }
+}
+
+fn parse_storage(section: &StorageSection) -> Result<StorageConfig> {
+    let enabled = |flag: Option<bool>| flag.unwrap_or(false);
+
+    let local = section
+        .local
+        .as_ref()
+        .filter(|local| enabled(local.enabled))
+        .and_then(|local| {
+            local
+                .path
+                .as_deref()
+                .filter(|path| !path.trim().is_empty())
+                .map(|path| LocalSinkConfig {
+                    path: absolutize(Path::new(path.trim())),
+                })
+        });
+
+    let webdav = section
+        .webdav
+        .as_ref()
+        .filter(|webdav| enabled(webdav.enabled))
+        .map(|webdav| {
+            let url = webdav.url.as_deref().unwrap_or_default().trim().to_string();
+            if url.is_empty() {
+                return Err(Error::config(
+                    "[storage.webdav] needs a url (e.g. https://cloud.example.com/remote.php/dav/files/me/art)",
+                ));
+            }
+            Ok(WebdavSinkConfig {
+                url,
+                username: webdav.username.clone().unwrap_or_default(),
+                password: webdav.password.clone().unwrap_or_default(),
+            })
+        })
+        .transpose()?;
+
+    let telegram = section
+        .telegram
+        .as_ref()
+        .filter(|telegram| enabled(telegram.enabled))
+        .map(|telegram| {
+            let chat_id = telegram
+                .chat_id
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if chat_id.is_empty() {
+                return Err(Error::config(
+                    "[storage.telegram] needs a chat_id (a private backup channel)",
+                ));
+            }
+            Ok(TelegramSinkConfig { chat_id })
+        })
+        .transpose()?;
+
+    Ok(StorageConfig {
+        on_import: section.on_import.unwrap_or(true),
+        root: section
+            .root
+            .as_deref()
+            .map(|root| root.trim().trim_matches('/').to_string())
+            .unwrap_or_default(),
+        local,
+        webdav,
+        telegram,
+    })
 }
 
 /// `123, 456` -> [123, 456]
@@ -455,6 +651,7 @@ mod tests {
         assert_eq!(cfg.caption_limit, 1024);
         assert_eq!(cfg.gallery_dl, "gallery-dl");
         assert!(cfg.bot_token.is_none());
+        assert!(!cfg.proxy_enabled());
         assert!(cfg.bot_enabled);
         assert_eq!(cfg.bot_mode, BotMode::Polling);
         assert!(cfg.webhook_url.is_none());
@@ -508,6 +705,20 @@ mod tests {
         // a typo must not silently fall back to polling
         std::fs::write(dir.path().join("config.toml"), "[bot]\nmode = \"webhok\"\n").unwrap();
         assert!(Config::load_from_home(dir.path().to_path_buf()).is_err());
+    }
+
+    #[test]
+    fn proxy_section_parses() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[proxy]\nurl = \"socks5h://127.0.0.1:1080\"\nno_proxy = \"localhost,127.0.0.1\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from_home(dir.path().to_path_buf()).unwrap();
+        assert_eq!(cfg.proxy_url.as_deref(), Some("socks5h://127.0.0.1:1080"));
+        assert_eq!(cfg.proxy_no_proxy.as_deref(), Some("localhost,127.0.0.1"));
+        assert!(cfg.proxy_enabled());
     }
 
     #[test]

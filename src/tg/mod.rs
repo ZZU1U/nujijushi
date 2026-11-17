@@ -24,9 +24,13 @@ use crate::error::Result;
 /// Build the real transport when a bot token is configured.
 pub fn build_transport(cfg: &Config) -> Result<Option<Arc<dyn Transport>>> {
     match cfg.bot_token.as_deref() {
-        Some(token) if !token.trim().is_empty() => Ok(Some(Arc::new(
-            teloxide_impl::BotTransport::new(token.trim())?,
-        ))),
+        Some(token) if !token.trim().is_empty() => {
+            let client = crate::http::client(cfg)?;
+            Ok(Some(Arc::new(teloxide_impl::BotTransport::new(
+                token.trim(),
+                client,
+            )?)))
+        }
         _ => Ok(None),
     }
 }

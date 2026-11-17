@@ -194,6 +194,12 @@ pub enum Command {
         once: bool,
     },
 
+    /// External storage mirrors (local folder, WebDAV, Telegram)
+    Storage {
+        #[command(subcommand)]
+        cmd: StorageCmd,
+    },
+
     /// Bot users and their roles
     Users {
         #[command(subcommand)]
@@ -319,6 +325,29 @@ pub enum QueueCmd {
     Reset { id: i64 },
     /// Remove an item from the queue
     Rm { id: i64 },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum StorageCmd {
+    /// Configured sinks and how many posts each one holds
+    Ls,
+    /// Check that every sink is reachable and writable
+    Test,
+    /// Queue and upload posts that are not mirrored yet
+    Sync {
+        /// Only for this sink name (local, webdav, telegram)
+        #[arg(long)]
+        sink: Option<String>,
+        /// Only this post
+        #[arg(long)]
+        post: Option<i64>,
+        /// How many posts to consider
+        #[arg(long, default_value_t = 500)]
+        limit: i64,
+        /// Report what would happen without uploading
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -558,6 +587,10 @@ pub async fn run() -> Result<()> {
             let state = open_state(cfg)?;
             cmd_users(&state, cmd).await
         }
+        Command::Storage { cmd } => {
+            let state = open_state(cfg)?;
+            cmd_storage(&state, cmd).await
+        }
         other => {
             let state = open_state(cfg)?;
             dispatch(&state, other).await
@@ -622,7 +655,8 @@ async fn dispatch(state: &AppState, cmd: Command) -> Result<()> {
         | Command::Alias { .. }
         | Command::Rule { .. }
         | Command::Bot { .. }
-        | Command::Users { .. } => {
+        | Command::Users { .. }
+        | Command::Storage { .. } => {
             unreachable!("handled before dispatch")
         }
     }
@@ -913,6 +947,74 @@ async fn cmd_doctor(cfg: Config, strict: bool, offline: bool) -> Result<()> {
         },
     });
 
+    checks.push(match crate::http::client(&cfg) {
+        Ok(_) if cfg.proxy_enabled() => Check {
+            level: Level::Ok,
+            label: "proxy".into(),
+            detail: format!(
+                "{} (telegram, storage uploads and t.me fetches)",
+                cfg.proxy_url.as_deref().unwrap_or_default()
+            ),
+        },
+        Ok(_) => Check {
+            level: Level::Ok,
+            label: "proxy".into(),
+            detail: "none configured (direct; the http client still honours HTTPS_PROXY)".into(),
+        },
+        Err(err) => Check {
+            level: Level::Fail,
+            label: "proxy".into(),
+            detail: err.to_string(),
+        },
+    });
+    if cfg
+        .proxy_url
+        .as_deref()
+        .map(|url| url.starts_with("socks"))
+        .unwrap_or(false)
+    {
+        checks.push(Check {
+            level: Level::Warn,
+            label: "proxy note".into(),
+            detail: "gallery-dl needs PySocks for socks proxies: pipx inject gallery-dl PySocks"
+                .into(),
+        });
+    }
+
+    let mut storage_notes: Vec<String> = Vec::new();
+    if let Some(local) = &cfg.storage.local {
+        storage_notes.push(format!("local:{}", local.path.display()));
+    }
+    if let Some(webdav) = &cfg.storage.webdav {
+        storage_notes.push(format!("webdav:{}", webdav.url));
+    }
+    if let Some(telegram) = &cfg.storage.telegram {
+        storage_notes.push(format!("telegram:{}", telegram.chat_id));
+    }
+    checks.push(Check {
+        level: if storage_notes.is_empty() {
+            Level::Warn
+        } else {
+            Level::Ok
+        },
+        label: "storage sinks".into(),
+        detail: if storage_notes.is_empty() {
+            "none enabled (mirrors stay local); set [storage.local] and friends".into()
+        } else {
+            format!(
+                "{} (on_import = {})",
+                storage_notes.join(", "),
+                cfg.storage.on_import
+            )
+        },
+    });
+    if cfg.storage.telegram.is_some() && cfg.bot_token.is_none() {
+        checks.push(Check {
+            level: Level::Fail,
+            label: "telegram storage".into(),
+            detail: "enabled but TG_BOT_TOKEN is missing".into(),
+        });
+    }
     checks.push(Check {
         level: if cfg.access.admins.is_empty() && !cfg.access.public {
             Level::Warn
@@ -2294,6 +2396,130 @@ async fn cmd_users(state: &AppState, cmd: UsersCmd) -> Result<()> {
                 .call(move |conn| crate::db::users::set_role(conn, tg_id, "banned"))
                 .await?;
             println!("{tg_id} banned");
+            Ok(())
+        }
+    }
+}
+
+// ---------------------------------------------------------------- storage
+
+async fn cmd_storage(state: &AppState, cmd: StorageCmd) -> Result<()> {
+    let sinks = crate::storage::sinks(state);
+    let totals = crate::storage::summary(state).unwrap_or_default();
+
+    let counts = |sink: &str, wanted: &str| -> i64 {
+        totals
+            .iter()
+            .filter(|(name, state, _)| name == sink && state == wanted)
+            .map(|(_, _, count)| *count)
+            .sum()
+    };
+
+    match cmd {
+        StorageCmd::Ls => {
+            if sinks.is_empty() {
+                println!("no storage sink enabled - see [storage] in config.toml");
+                println!("  [storage.local] enabled = true / path = \"/path/to/folder\"");
+                println!("  [storage.webdav] enabled = true / url = \"https://…\"");
+                println!("  [storage.telegram] enabled = true / chat_id = \"-100…\"");
+                return Ok(());
+            }
+            println!(
+                "{:<10} {:<44} {:>6} {:>8} {:>6}",
+                "sink", "where", "done", "pending", "failed"
+            );
+            for sink in &sinks {
+                println!(
+                    "{:<10} {:<44} {:>6} {:>8} {:>6}",
+                    sink.name(),
+                    sink.describe().chars().take(44).collect::<String>(),
+                    counts(sink.name(), "done"),
+                    counts(sink.name(), "pending"),
+                    counts(sink.name(), "failed"),
+                );
+            }
+            let done: i64 = totals
+                .iter()
+                .filter(|(_, state, _)| state == "done")
+                .map(|(_, _, count)| *count)
+                .sum();
+            println!(
+                "\n{done} mirror(s) complete · {} sink(s) enabled",
+                sinks.len()
+            );
+            println!("`nujijushi storage sync` uploads everything still missing");
+            Ok(())
+        }
+        StorageCmd::Test => {
+            if sinks.is_empty() {
+                println!("no storage sink enabled");
+                return Ok(());
+            }
+            let mut failures = 0;
+            for sink in &sinks {
+                match sink.check().await {
+                    Ok(detail) => println!("  [ok  ] {:<10} {detail}", sink.name()),
+                    Err(err) => {
+                        failures += 1;
+                        println!("  [FAIL] {:<10} {err}", sink.name());
+                    }
+                }
+            }
+            if failures > 0 {
+                return Err(Error::other(format!("{failures} storage sink(s) failed")));
+            }
+            Ok(())
+        }
+        StorageCmd::Sync {
+            sink,
+            post,
+            limit,
+            dry_run,
+        } => {
+            if sinks.is_empty() {
+                println!("no storage sink enabled");
+                return Ok(());
+            }
+            if let Some(name) = &sink
+                && !sinks.iter().any(|s| s.name() == name)
+            {
+                return Err(Error::invalid(format!(
+                    "no such sink: {name} (enabled: {})",
+                    sinks
+                        .iter()
+                        .map(|s| s.name())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
+            if dry_run {
+                let pending_limit = limit;
+                let pending = state
+                    .db
+                    .call(move |conn| crate::db::mirrors::pending(conn, None, pending_limit))
+                    .await?;
+                println!(
+                    "would upload {} pending mirror(s) to {}",
+                    pending.len(),
+                    sinks
+                        .iter()
+                        .map(|s| s.name())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                return Ok(());
+            }
+            let summary = crate::storage::sync(state, post, limit, false).await?;
+            println!(
+                "queued {} · uploaded {} · {} post(s) considered",
+                summary.queued, summary.uploaded, limit
+            );
+            let totals = crate::storage::summary(state)?;
+            for (name, state_name, count) in totals {
+                if state_name == "failed" {
+                    println!("  {name}: {count} failed mirror(s) - see the dashboard or the logs");
+                }
+            }
             Ok(())
         }
     }

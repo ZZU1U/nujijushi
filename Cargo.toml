@@ -9,6 +9,7 @@ license = "MIT"
 [dependencies]
 async-trait = "0.1"
 anyhow = "1"
+base64 = "0.22"
 axum = "0.8"
 blake3 = "1"
 chrono = { version = "0.4", features = ["serde"] }
@@ -24,6 +25,12 @@ image = { version = "0.25", default-features = false, features = [
 ] }
 minijinja = "3"
 rand = "0.9"
+# same version teloxide-core uses, so the two unify
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "socks",
+    "json",
+] }
 rusqlite = { version = "0.43", features = ["bundled", "chrono"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -25,13 +25,15 @@ pub struct BotTransport {
 }
 
 impl BotTransport {
-    pub fn new(token: &str) -> crate::error::Result<Self> {
+    /// `client` carries the proxy configuration, so every Bot API call goes
+    /// through it.
+    pub fn new(token: &str, client: reqwest::Client) -> crate::error::Result<Self> {
         let token = token.trim();
         if token.is_empty() {
             return Err(Error::config("empty bot token"));
         }
         Ok(Self {
-            bot: Bot::new(token),
+            bot: Bot::with_client(token, client),
             identity: tokio::sync::OnceCell::new(),
         })
     }

@@ -8,6 +8,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0001_init.sql"),
     include_str!("../../migrations/0002_queue.sql"),
     include_str!("../../migrations/0003_bot.sql"),
+    include_str!("../../migrations/0004_storage.sql"),
 ];
 
 pub fn schema_version(conn: &Connection) -> Result<i64> {

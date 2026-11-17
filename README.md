@@ -113,6 +113,28 @@ gallery_dl = "gallery-dl"
 ffmpeg     = "ffmpeg"
 timeout_secs = 1800
 
+[proxy]
+url = "socks5h://127.0.0.1:1080"      # optional; also NUJIJUSHI_PROXY
+no_proxy = "localhost,127.0.0.1"      # hosts that bypass it
+
+[storage]
+on_import = true                      # mirror every imported post
+root = "nujijushi"                    # subfolder inside each sink
+
+[storage.local]
+enabled = true
+path = "/Users/you/Google Drive/art"
+
+[storage.webdav]
+enabled = false
+url = "https://cloud.example.com/remote.php/dav/files/you/art"
+username = "you"
+password = "app-password"
+
+[storage.telegram]
+enabled = false
+chat_id = "-1001234567890"            # private channel used as a backup drive
+
 [limits]
 caption_chars   = 1024
 max_upload_bytes = 52428800    # Bot API hard limit is 50 MB
@@ -235,6 +257,60 @@ Switching back to `polling` deletes the webhook on the next start (a leftover we
 otherwise swallow every update), and `nujijushi doctor` reports a mismatch between the
 registered URL and your config. Webhook mode requires the web server — `nujijushi run --no-web`
 refuses to start that way.
+
+---
+
+## Behind a proxy
+
+```toml
+[proxy]
+url = "socks5h://127.0.0.1:1080"   # or http://10.0.0.5:8080
+no_proxy = "localhost,127.0.0.1"   # LAN storage stays direct
+```
+
+Everything that talks to the network honours it: the Telegram Bot API (polling **and**
+webhooks, media uploads/downloads), storage uploads, and the `t.me` embed fallback.
+`gallery-dl` receives the same proxy via `--proxy`, so imports are routed too.
+
+* Schemes: `http://`, `https://`, `socks5://`, `socks5h://` (`socks5h` resolves DNS
+  through the proxy — usually what you want when the resolver is poisoned).
+* `NUJIJUSHI_PROXY` / `NUJIJUSHI_NO_PROXY` override the file, and with no `[proxy]` at all
+  the HTTP client still honours the usual `HTTPS_PROXY`/`ALL_PROXY` variables.
+* For **socks** proxies `gallery-dl` additionally needs PySocks:
+  `pipx inject gallery-dl PySocks` (`nujijushi doctor` reminds you).
+* `nujijushi doctor` builds the client and reports the proxy, so a typo fails there and
+  not at the first publish.
+
+---
+
+## External storage (mirrors)
+
+Every imported post can be copied to one or more sinks, independently of publishing:
+
+| sink | good for |
+|---|---|
+| `local` | any mounted/synced folder — Dropbox, iCloud Drive, Google Drive, an external disk |
+| `webdav` | Nextcloud, ownCloud, Synology, HiDrive, Box, pCloud, … (plain PUT, basic auth) |
+| `telegram` | a private channel used as an image drive (albums of ≤10, one message group per post) |
+
+Each sink gets the same portable layout plus a sidecar, so exports are interchangeable:
+
+```
+<payload>/nujijushi/pixiv/nightjar/123456/00.png
+                                           01.mp4
+                                           post.json   # id, source, url, tags, rating, artist
+```
+
+* `[storage] on_import = true` queues a mirror as soon as a post is imported; the
+  background worker uploads it (failures are recorded per post/sink and retried).
+* `nujijushi storage ls` — sinks, target, and done/pending/failed counts.
+* `nujijushi storage test` — reachability + credentials (writable folder, WebDAV
+  `PROPFIND`/`MKCOL`, Telegram `getChat`).
+* `nujijushi storage sync [--post ID] [--limit N] [--dry-run]` — backfill everything that
+  is not mirrored yet (this is the "send my whole existing archive" command).
+* The dashboard shows mirror counts per sink and has an **upload pending** button.
+
+Post publishing is untouched by this: a sink is an archive copy, not a channel.
 
 ---
 
@@ -381,7 +457,7 @@ CI runs on every push and pull request (`.github/workflows/ci.yml`: `fmt`, `clip
 and attaches them to the GitHub release (`.github/workflows/release.yml`).
 
 ```bash
-cargo test                     # 204 tests: units, snapshots, end-to-end flows, bot interface, webhook
+cargo test                     # 231 tests: units, snapshots, flows, bot, webhook, storage, proxy
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```

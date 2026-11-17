@@ -330,13 +330,12 @@ pub fn looks_like_post_page(html: &str) -> bool {
 
 async fn fetch_embed(state: &AppState, link: &TelegramLink, name: &str) -> Result<NormalizedPost> {
     let page_url = format!("https://t.me/{name}/{}", link.message_id);
-    let output = run_with_timeout(
-        "curl",
-        &curl_args(&["-sSL", "--max-time", "30", &page_url]),
-        60,
-    )
-    .await
-    .map_err(|err| Error::other(format!("embed fetch failed: {err}")))?;
+    let mut page_args: Vec<String> = vec!["-sSL".into(), "--max-time".into(), "30".into()];
+    page_args.extend(crate::http::proxy_args(&state.cfg, "-x"));
+    page_args.push(page_url);
+    let output = run_with_timeout("curl", &page_args, 60)
+        .await
+        .map_err(|err| Error::other(format!("embed fetch failed: {err}")))?;
     if !output.status.success() {
         return Err(Error::other(
             "the public embed page is not reachable (is the channel public?)",
@@ -357,19 +356,16 @@ async fn fetch_embed(state: &AppState, link: &TelegramLink, name: &str) -> Resul
         .join(format!("tg-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir)?;
     let dest: PathBuf = dir.join("embed.jpg");
-    let output = run_with_timeout(
-        "curl",
-        &curl_args(&[
-            "-sSL",
-            "--max-time",
-            "60",
-            "-o",
-            &dest.display().to_string(),
-            &image,
-        ]),
-        120,
-    )
-    .await?;
+    let mut image_args: Vec<String> = vec![
+        "-sSL".into(),
+        "--max-time".into(),
+        "60".into(),
+        "-o".into(),
+        dest.display().to_string(),
+    ];
+    image_args.extend(crate::http::proxy_args(&state.cfg, "-x"));
+    image_args.push(image);
+    let output = run_with_timeout("curl", &image_args, 120).await?;
     if !output.status.success() || !dest.exists() {
         let _ = std::fs::remove_dir_all(&dir);
         return Err(Error::other("cannot download the embed image"));
@@ -392,10 +388,6 @@ async fn fetch_embed(state: &AppState, link: &TelegramLink, name: &str) -> Resul
     post.raw_json =
         Some(serde_json::json!({ "degraded": true, "source": "t.me embed page" }).to_string());
     Ok(post)
-}
-
-fn curl_args(args: &[&str]) -> Vec<String> {
-    args.iter().map(|arg| arg.to_string()).collect()
 }
 
 /// Import a post the user forwarded to the bot (its media is already readable).
