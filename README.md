@@ -233,6 +233,12 @@ which nujijushi does not do.
 
 By default nujijushi asks Telegram for updates (`getUpdates`, long polling) — no public
 address needed. If you would rather have Telegram push to you, switch the mode:
+Webhook only works if the host is reachable **from the internet** on 443, 80, 88 or 8443 —
+Telegram delivers to those four ports and nothing else. Behind CGNAT, a home router you cannot
+forward, or an ISP that filters them, it cannot work at all: keep `mode = "polling"`, which opens
+only *outbound* connections and runs fine through `[proxy]`. Webhook is an optimisation for hosts
+that already serve HTTPS publicly.
+
 
 ```toml
 [bot]
@@ -474,6 +480,7 @@ scheduled slot. CLI equivalents: `nujijushi push --channel <alias> --force`.
 | `chat not found` | wrong id; use the numeric `-100…` id for private channels |
 | `curl: tlsv1 unrecognized name` when testing your own domain | a local proxy (Clash/sing-box TUN, fake-IP) is intercepting it: the handshake never reaches your server. Test from the VPS, or add `DOMAIN-SUFFIX,<your-domain>,DIRECT` + a `fake-ip-filter` entry and reload the profile |
 | `webhook registered` but the bot never answers | registration only stores the URL — Telegram only fails *later*, when it POSTs. `nujijushi doctor` prints a `webhook delivery` line with Telegram's last error (e.g. `Wrong response from the webhook: 502 Bad Gateway`); no error but still silence means nothing reaches nginx. Also: commands only work in a **private chat** with the bot, channel posts are ignored by design |
+| webhook cannot work at all | the host must accept inbound HTTPS from Telegram. If you are behind CGNAT, cannot port-forward, or your ISP blocks 80/88/443/8443, use `[bot] mode = "polling"` (the default): outbound only, works anywhere, and the next `nujijushi run` deletes the stale webhook |
 | nothing published | `nujijushi channel ls` shows the reason: paused, outside active hours, daily cap, next slot |
 | channel paused itself | 3 consecutive send failures — fix the cause, then `nujijushi channel resume` |
 | unconfirmed send after a crash | check the channel, then resolve it in the dashboard |

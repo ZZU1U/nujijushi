@@ -29,6 +29,8 @@ enabled = true
 # polling: ask Telegram for updates (works anywhere, no public address needed).
 # webhook: Telegram POSTs to /tg/webhook on the web server; needs a public HTTPS URL
 #          (put a TLS proxy in front of [web] bind) and reaches it with a secret header.
+#          Telegram only delivers to 443, 80, 88 or 8443 - behind CGNAT or an ISP that
+#          filters them, keep polling: it needs no inbound port.
 mode = "polling"
 poll_timeout_secs = 30
 # webhook_url = "https://bot.example.com"
