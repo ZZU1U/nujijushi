@@ -256,6 +256,31 @@ bot.example.com {
 }
 ```
 
+nginx, exposing *only* the webhook path (the UI stays private):
+
+```nginx
+server {
+    listen 8443 ssl;
+    server_name bot.example.com;
+    ssl_certificate     /etc/nginx/ssl/bot.example.com.crt;
+    ssl_certificate_key /etc/nginx/ssl/bot.example.com.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    location = /tg/webhook {                 # exact match: do not rewrite the path
+        proxy_pass http://127.0.0.1:8788;    # 127.0.0.1, not localhost
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_buffering off;
+    }
+    location / { return 404; }
+}
+```
+
+Telegram accepts webhooks on ports 443, 80, 88 and 8443, so a non-standard port must
+appear in `webhook_url` too (`https://bot.example.com:8443`). A `curl -X POST` against the
+path should answer **403** — that is the secret gate, and it proves the route reaches the app.
+
 Switching back to `polling` deletes the webhook on the next start (a leftover webhook would
 otherwise swallow every update), and `nujijushi doctor` reports a mismatch between the
 registered URL and your config. Webhook mode requires the web server — `nujijushi run --no-web`
