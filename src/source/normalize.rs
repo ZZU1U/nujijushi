@@ -102,20 +102,39 @@ fn first_string_path(value: &Value, paths: &[&str]) -> Option<String> {
     None
 }
 
-fn first_bool(value: &Value, keys: &[&str]) -> Option<bool> {
-    for key in keys {
-        match value.get(*key) {
-            Some(Value::Bool(b)) => return Some(*b),
-            Some(Value::Number(n)) => return Some(n.as_i64().unwrap_or(0) != 0),
-            Some(Value::String(s)) => match s.trim().to_ascii_lowercase().as_str() {
-                "true" | "yes" | "1" => return Some(true),
-                "false" | "no" | "0" => return Some(false),
-                _ => {}
-            },
-            _ => {}
-        }
+/// Any truthy "this one is sensitive" flag anywhere in the metadata. gallery-dl
+/// nests them (a retweet or quote carries its own object, media items carry a
+/// `sensitive` flag of their own), and the cost of missing one is adult media
+/// reaching a channel that believed the post was sfw — so scan the whole tree.
+fn flagged_sensitive(value: &Value) -> bool {
+    const KEYS: &[&str] = &[
+        "possibly_sensitive",
+        "sensitive",
+        "nsfw",
+        "is_nsfw",
+        "adult",
+        "explicit_content",
+    ];
+    match value {
+        Value::Object(map) => map.iter().any(|(key, val)| {
+            (KEYS.contains(&key.to_ascii_lowercase().as_str()) && truthy(val))
+                || flagged_sensitive(val)
+        }),
+        Value::Array(items) => items.iter().any(flagged_sensitive),
+        _ => false,
     }
-    None
+}
+
+fn truthy(value: &Value) -> bool {
+    match value {
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_i64().unwrap_or_default() != 0,
+        Value::String(s) => matches!(
+            s.trim().to_ascii_lowercase().as_str(),
+            "true" | "yes" | "1" | "sensitive" | "nsfw"
+        ),
+        _ => false,
+    }
 }
 
 /// Tags may be an array, a comma/space separated string, or an object with arrays.
@@ -306,23 +325,8 @@ pub fn from_gallery_metadata(
     // rating: explicit field first, then flags, then tag heuristics
     let mut rating = first_string(meta, &["rating", "x_restrict", "safety", "rating_general"])
         .and_then(|r| rating_from_words(&r))
-        .or_else(|| {
-            if first_bool(
-                meta,
-                &[
-                    "possibly_sensitive",
-                    "sensitive",
-                    "nsfw",
-                    "is_nsfw",
-                    "adult",
-                ],
-            ) == Some(true)
-            {
-                Some(Rating::Explicit)
-            } else {
-                None
-            }
-        });
+        // the platform's own "sensitive" flag beats guessing from tags
+        .or_else(|| flagged_sensitive(meta).then_some(Rating::Explicit));
     if rating.is_none()
         && let Some(x) = meta.get("x_restrict").and_then(|v| v.as_i64())
     {
@@ -557,6 +561,53 @@ mod tests {
         });
         let post = from_gallery_metadata(&pixiv, vec![], "pixiv", None).unwrap();
         assert_eq!(post.author.as_ref().unwrap().display(), "Nightjar");
+    }
+
+    #[test]
+    fn sensitive_flag_is_found_where_gallery_dl_nests_it() {
+        let rating = |meta: Value| {
+            from_gallery_metadata(&meta, vec![], "twitter", None)
+                .unwrap()
+                .rating
+        };
+
+        // flat, the usual tweet shape
+        assert_eq!(
+            rating(json!({"tweet_id": 1, "possibly_sensitive": true})),
+            Rating::Explicit
+        );
+        // a retweet carries the original tweet in its own object
+        assert_eq!(
+            rating(json!({
+                "tweet_id": 2,
+                "retweet": {"tweet_id": 1, "possibly_sensitive": true},
+            })),
+            Rating::Explicit,
+            "a nested retweet flag must not be lost"
+        );
+        // media items can be flagged one by one
+        assert_eq!(
+            rating(json!({
+                "tweet_id": 3,
+                "media": [{"url": "a.jpg", "sensitive": true}],
+            })),
+            Rating::Explicit
+        );
+        // extractors that hand the flag over as a string
+        assert_eq!(
+            rating(json!({"tweet_id": 4, "possibly_sensitive": "true"})),
+            Rating::Explicit
+        );
+
+        // and an explicit "no" stays sfw: no false positives
+        assert_eq!(
+            rating(json!({
+                "tweet_id": 5,
+                "possibly_sensitive": false,
+                "media": [{"sensitive": "no"}],
+            })),
+            Rating::Sfw
+        );
     }
 
     #[test]
