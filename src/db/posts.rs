@@ -375,6 +375,15 @@ pub fn count_submitted(conn: &Connection, tg_id: i64) -> Result<i64> {
         |row| row.get(0),
     )?)
 }
+/// `(raw_json, submitted_by)` for one post — what `show --raw` reports.
+pub fn diagnostics(conn: &Connection, id: i64) -> Result<(Option<String>, Option<i64>)> {
+    Ok(conn.query_row(
+        "SELECT raw_json, submitted_by FROM posts WHERE id = ?1",
+        [id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?)
+}
+
 pub fn count(conn: &Connection, state: Option<PostState>) -> Result<i64> {
     let n = match state {
         Some(state) => conn.query_row(

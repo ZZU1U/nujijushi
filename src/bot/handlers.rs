@@ -222,16 +222,19 @@ impl<'a> Bot<'a> {
             (Perm::Publish, false) => format!(
                 "Publishing from Telegram belongs to the bot owner.\n\
                  Your id is <code>{}</code> — an admin adds it to <code>[access] admins</code> \
-                 and sets <code>allow_publish = true</code>.",
+                 and sets <code>allow_publish = true</code>.\n\
+                 Config file: <code>{}</code>",
                 message
                     .from
                     .as_ref()
                     .map(|user| user.id)
-                    .unwrap_or_default()
+                    .unwrap_or_default(),
+                self.state.cfg.home.join("config.toml").display()
             ),
-            (Perm::Publish, true) => String::from(
+            (Perm::Publish, true) => format!(
                 "Publishing is switched off: set <code>[access] allow_publish = true</code> \
-                 in config.toml and restart.",
+                 in <code>{}</code> and restart.",
+                self.state.cfg.home.join("config.toml").display()
             ),
             _ => format!(
                 "You are not allowed to use <code>{}</code> here.",

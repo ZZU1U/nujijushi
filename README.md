@@ -77,7 +77,7 @@ nujijushi channel enable night-shift-2
 | `nujijushi doctor [--offline] [--strict]` | check tooling, cookies, token, channel admin rights, disk |
 | `nujijushi import <url\|dir>… [--channel C]` | import; optionally queue straight into a channel |
 | `nujijushi ls [--state/--source/--tag/--nsfw/--search]` | browse the archive |
-| `nujijushi show <id> [--channel C]` | details + rendered caption |
+| `nujijushi show <id> [--channel C] [--raw]` | details + rendered caption; `--raw` dumps the stored source metadata (rating/artist forensics) |
 | `nujijushi tag <id> <tag>… [--remove]` · `rate` · `nsfw auto\|yes\|no` | curation |
 | `nujijushi approve/reject <id>…` · `rm <id>` | post state |
 | `nujijushi channel add <alias> <@name\|id>` | register a channel (validated with `getChat`) |
@@ -481,7 +481,8 @@ scheduled slot. CLI equivalents: `nujijushi push --channel <alias> --force`.
 | `chat not found` | wrong id; use the numeric `-100…` id for private channels |
 | `curl: tlsv1 unrecognized name` when testing your own domain | a local proxy (Clash/sing-box TUN, fake-IP) is intercepting it: the handshake never reaches your server. Test from the VPS, or add `DOMAIN-SUFFIX,<your-domain>,DIRECT` + a `fake-ip-filter` entry and reload the profile |
 | every twitter artist is `unknown` | gallery-dl reports the handle as `username`, which older builds ignored. New imports use it (and `user_id`); already-imported rows keep the author they were stored with, so re-import that post to fix it |
-| bot refuses `/publish` | publishing from Telegram is admin-only *and* opt-in: your id must be in `[access] admins` **and** `allow_publish = true`. `/whoami` shows the id and the role the bot actually uses |
+| bot refuses `/publish` | publishing from Telegram is admin-only *and* opt-in: your id must be in `[access] admins` **and** `allow_publish = true`. `/whoami` shows the id and the role the bot actually uses; `nujijushi doctor` prints the effective switches and the config file it read |
+| a post the platform flagged sensitive is stored as `sfw` | the flag was nested (retweet/quote objects, per-media `sensitive`) where the mapper did not look — fixed, so rebuild and re-import. Ratings are stored at import, so an existing row keeps its value: `nujijushi nsfw <id> yes`, or "mark nsfw" in the web grid |
 | `webhook registered` but the bot never answers | registration only stores the URL — Telegram only fails *later*, when it POSTs. `nujijushi doctor` prints a `webhook delivery` line with Telegram's last error (e.g. `Wrong response from the webhook: 502 Bad Gateway`); no error but still silence means nothing reaches nginx. Also: commands only work in a **private chat** with the bot, channel posts are ignored by design |
 | webhook cannot work at all | the host must accept inbound HTTPS from Telegram. If you are behind CGNAT, cannot port-forward, or your ISP blocks 80/88/443/8443, use `[bot] mode = "polling"` (the default): outbound only, works anywhere, and the next `nujijushi run` deletes the stale webhook |
 | nothing published | `nujijushi channel ls` shows the reason: paused, outside active hours, daily cap, next slot |
@@ -497,7 +498,7 @@ CI runs on every push and pull request (`.github/workflows/ci.yml`: `fmt`, `clip
 and attaches them to the GitHub release (`.github/workflows/release.yml`).
 
 ```bash
-cargo test                     # 239 tests: units, snapshots, flows, bot, webhook, storage, proxy
+cargo test                     # 240 tests: units, snapshots, flows, bot, webhook, storage, proxy
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```

@@ -91,6 +91,9 @@ pub enum Command {
         /// Render the caption for this channel
         #[arg(long, value_name = "CHANNEL")]
         channel: Option<String>,
+        /// Dump the stored source metadata, exactly as the extractor emitted it
+        #[arg(long)]
+        raw: bool,
     },
 
     /// Add or remove tags
@@ -613,7 +616,7 @@ async fn dispatch(state: &AppState, cmd: Command) -> Result<()> {
             search,
             limit,
         } => cmd_ls(state, filter_state, source, tag, nsfw, search, limit).await,
-        Command::Show { id, channel } => cmd_show(state, id, channel).await,
+        Command::Show { id, channel, raw } => cmd_show(state, id, channel, raw).await,
         Command::Tag { id, tags, remove } => cmd_tag(state, id, tags, remove),
         Command::Rate { id, rating } => cmd_rate(state, id, rating),
         Command::Nsfw { id, value } => cmd_nsfw(state, id, value),
@@ -1015,6 +1018,7 @@ async fn cmd_doctor(cfg: Config, strict: bool, offline: bool) -> Result<()> {
             detail: "enabled but TG_BOT_TOKEN is missing".into(),
         });
     }
+    let config_file = cfg.home.join("config.toml");
     checks.push(Check {
         level: if cfg.access.admins.is_empty() && !cfg.access.public {
             Level::Warn
@@ -1023,10 +1027,23 @@ async fn cmd_doctor(cfg: Config, strict: bool, offline: bool) -> Result<()> {
         },
         label: "bot access".into(),
         detail: if cfg.access.admins.is_empty() && !cfg.access.public {
-            "no admins and public = false: nobody can use the bot (set NUJIJUSHI_ADMINS)".into()
-        } else {
             format!(
-                "{} admin(s), public={}, import={} browse={} queue={} publish={} curate={}",
+                "no admins and public = false: nobody can use the bot (set NUJIJUSHI_ADMINS or [access] admins in {})",
+                config_file.display()
+            )
+        } else {
+            // admin and "may publish from chat" are two separate switches; say so
+            // here, because a refused /publish is otherwise invisible until you try
+            let publish_hint = if cfg.access.allow_publish {
+                String::new()
+            } else {
+                format!(
+                    " - publishing from Telegram is off ([access] allow_publish in {})",
+                    config_file.display()
+                )
+            };
+            format!(
+                "{} admin(s), public={}, import={} browse={} queue={} publish={} curate={}{publish_hint}",
                 cfg.access.admins.len(),
                 cfg.access.public,
                 cfg.access.allow_import,
@@ -1435,10 +1452,15 @@ async fn cmd_ls(
     Ok(())
 }
 
-async fn cmd_show(state: &AppState, id: i64, channel: Option<String>) -> Result<()> {
+async fn cmd_show(state: &AppState, id: i64, channel: Option<String>, raw: bool) -> Result<()> {
     let post = state
         .db
         .call(move |conn| crate::db::posts::get(conn, id))
+        .await?;
+    // diagnostics for "why is this rated/attributed like that?"
+    let (raw_json, submitted_by) = state
+        .db
+        .call(move |conn| crate::db::posts::diagnostics(conn, id))
         .await?;
 
     println!("post #{}  {} / {}", post.id, post.source, post.source_id);
@@ -1505,6 +1527,17 @@ async fn cmd_show(state: &AppState, id: i64, channel: Option<String>) -> Result<
         );
     }
 
+    if let Some(tg_id) = submitted_by {
+        println!("via       Telegram user {tg_id}");
+    }
+    if raw {
+        println!();
+        match raw_json {
+            Some(text) => println!("{}", pretty_metadata(&text)),
+            None => println!("(no source metadata stored for this post)"),
+        }
+    }
+
     if let Some(selector) = channel {
         let channel = resolve_channel(state, &selector).await?;
         let rules = state
@@ -1527,6 +1560,14 @@ async fn cmd_show(state: &AppState, id: i64, channel: Option<String>) -> Result<
         println!("policy: {}", plan.decision.reason);
     }
     Ok(())
+}
+
+/// Pretty-print stored extractor metadata for `show --raw`, else hand it back as is.
+fn pretty_metadata(text: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(value) => serde_json::to_string_pretty(&value).unwrap_or_else(|_| text.to_string()),
+        Err(_) => text.to_string(),
+    }
 }
 
 fn cmd_tag(state: &AppState, id: i64, tags: Vec<String>, remove: bool) -> Result<()> {
