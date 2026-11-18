@@ -150,6 +150,13 @@ fn groups_to_posts(groups: Vec<Group>, url: &str) -> Vec<NormalizedPost> {
     posts
 }
 
+/// Anything with a scheme gallery-dl can fetch. A free function so the "is this
+/// importable?" answer is shared instead of re-derived per caller.
+pub fn looks_like_url(target: &str) -> bool {
+    let lowered = target.trim().to_ascii_lowercase();
+    lowered.starts_with("http://") || lowered.starts_with("https://")
+}
+
 #[async_trait]
 impl Source for GalleryDlSource {
     fn kind(&self) -> &'static str {
@@ -157,8 +164,7 @@ impl Source for GalleryDlSource {
     }
 
     fn supports(&self, target: &str) -> bool {
-        let lowered = target.trim().to_ascii_lowercase();
-        lowered.starts_with("http://") || lowered.starts_with("https://")
+        looks_like_url(target)
     }
 
     async fn fetch(&self, target: &str) -> Result<Vec<NormalizedPost>> {

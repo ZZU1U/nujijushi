@@ -69,6 +69,10 @@ next to it. Identical files across posts are stored once. `db/posts::upsert` sel
    (Bot API: forward the post into a chat, read file ids, download, delete the copy, rebuild
    album siblings from neighbouring message ids). Anything else → the `Source` registry:
    `gallerydl` for URLs (staged with `--write-metadata`), `localdir` for folders.
+
+   What counts as an importable target lives here as well: `source::looks_importable`
+   and `source::normalize_target` are the only vocabulary, and the bot/CLI ask them
+   instead of re-deriving "looks like a link".
 2. Each importer returns `NormalizedPost`s: source, source id, author, title/description,
    tags, rating, `files` staged on disk. `source/normalize.rs` maps the messy per-site JSON
    (pixiv `x_restrict`, twitter `possibly_sensitive`, booru `rating`, …) into `Rating`.

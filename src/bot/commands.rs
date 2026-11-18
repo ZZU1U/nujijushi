@@ -92,25 +92,17 @@ pub fn parse(text: &str, bot_username: Option<&str>) -> Parsed {
     })
 }
 
-/// Does this text look like something we should treat as an import target?
-pub fn looks_like_link(text: &str) -> bool {
-    let lowered = text.trim().to_ascii_lowercase();
-    lowered.starts_with("http://")
-        || lowered.starts_with("https://")
-        || lowered.starts_with("t.me/")
-}
-
 /// Every link in a message, normalised and de-duplicated in the order sent.
 ///
 /// People paste batches (one link per line, or several on one line, sometimes
 /// with a word around them), so collect the link-looking tokens. Keeping only
-/// the first one silently swallowed the rest of the batch.
+/// the first one silently swallowed the rest of the batch. What counts as a
+/// link belongs to the source layer, not to this interface.
 pub fn import_targets(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for token in text.split_whitespace() {
-        // normalise first: a pasted link is often wrapped or followed by punctuation
-        let target = normalize_target(token);
-        if !looks_like_link(&target) {
+        let target = crate::source::normalize_target(token);
+        if !crate::source::looks_importable(&target) {
             continue;
         }
         if !out.contains(&target) {
@@ -118,21 +110,6 @@ pub fn import_targets(text: &str) -> Vec<String> {
         }
     }
     out
-}
-
-/// `t.me/x/1` -> `https://t.me/x/1`, and drop punctuation glued to a pasted link.
-pub fn normalize_target(target: &str) -> String {
-    let trimmed = target.trim().trim_matches(|c: char| {
-        matches!(
-            c,
-            '<' | '(' | '[' | '"' | '\'' | ',' | ';' | ')' | ']' | '>' | '.'
-        )
-    });
-    if trimmed.to_ascii_lowercase().starts_with("t.me/") {
-        format!("https://{trimmed}")
-    } else {
-        trimmed.to_string()
-    }
 }
 
 #[cfg(test)]

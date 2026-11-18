@@ -109,7 +109,7 @@ impl<'a> Bot<'a> {
                 let targets: Vec<String> = command
                     .args
                     .iter()
-                    .map(|arg| commands::normalize_target(arg))
+                    .map(|arg| crate::source::normalize_target(arg))
                     .collect();
                 self.import_link(message, user, role, targets).await
             }

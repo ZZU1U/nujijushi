@@ -781,7 +781,7 @@ async fn a_message_with_several_links_queues_every_one() {
         .send(private_message(
             ADMIN,
             1,
-            "https://x.com/a/status/1\nhttps://x.com/a/status/2\nt.me/night_art/9",
+            "https://x.com/a/status/1\nhttps://x.com/a/status/2\nt.me/night_art/9\ntelegram.me/night_art/7",
         ))
         .await;
 
@@ -791,7 +791,7 @@ async fn a_message_with_several_links_queues_every_one() {
         .call(|conn| nujijushi::db::jobs::list(conn, 20))
         .await
         .unwrap();
-    assert_eq!(jobs.len(), 3, "every link in the batch becomes a job");
+    assert_eq!(jobs.len(), 4, "every link in the batch becomes a job");
     let payloads: Vec<&str> = jobs
         .iter()
         .filter_map(|job| job.payload.as_deref())
@@ -808,9 +808,13 @@ async fn a_message_with_several_links_queues_every_one() {
         payloads.contains(&"https://t.me/night_art/9"),
         "t.me links are normalised: {payloads:?}"
     );
+    assert!(
+        payloads.contains(&"https://telegram.me/night_art/7"),
+        "telegram.me links are normalised too: {payloads:?}"
+    );
 
     let text = harness.last_text();
-    assert!(text.contains("3 link(s)"), "got: {text}");
+    assert!(text.contains("4 link(s)"), "got: {text}");
     assert!(text.contains("https://x.com/a/status/2"), "got: {text}");
 }
 

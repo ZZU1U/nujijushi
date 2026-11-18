@@ -513,7 +513,7 @@ CI runs on every push and pull request (`.github/workflows/ci.yml`: `fmt`, `clip
 and attaches them to the GitHub release (`.github/workflows/release.yml`).
 
 ```bash
-cargo test                     # 248 tests: units, snapshots, flows, bot, webhook, storage, proxy
+cargo test                     # 253 tests: units, snapshots, flows, bot, webhook, storage, proxy
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```

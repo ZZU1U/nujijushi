@@ -150,3 +150,65 @@ pub async fn fetch_target(
     }
     fetch_with(&state.cfg, target).await
 }
+
+/// Is this something the URL-based sources can fetch? Interfaces ask this before
+/// treating a message or an argument as an import; `fetch_with` routes with the
+/// same vocabulary, so the answer is not re-derived per caller.
+pub fn looks_importable(target: &str) -> bool {
+    let target = target.trim();
+    telegram::is_telegram_link(target) || gallerydl::looks_like_url(target)
+}
+
+/// Give a pasted link the scheme it is missing (`t.me/x/1` -> `https://t.me/x/1`)
+/// and drop punctuation a chat client glued to it.
+pub fn normalize_target(target: &str) -> String {
+    let trimmed = target.trim().trim_matches(|c: char| {
+        matches!(
+            c,
+            '<' | '(' | '[' | '"' | '\'' | ',' | ';' | ')' | ']' | '>' | '.'
+        )
+    });
+    let lowered = trimmed.to_ascii_lowercase();
+    if lowered.starts_with("t.me/") || lowered.starts_with("telegram.me/") {
+        format!("https://{trimmed}")
+    } else {
+        trimmed.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_vocabulary_for_importable_targets() {
+        for target in [
+            "https://www.pixiv.net/artworks/1",
+            "http://x.com/a/status/1",
+            "t.me/night_art/42",
+            "telegram.me/night_art/42",
+            "https://t.me/s/night_art/42",
+            "  https://x.com/a/status/1  ",
+        ] {
+            assert!(looks_importable(target), "{target} should be importable");
+        }
+        for target in ["", "hello", "pixiv.net/artworks/1", "ftp://x/1"] {
+            assert!(!looks_importable(target), "{target} should not be");
+        }
+    }
+
+    #[test]
+    fn pasted_links_get_a_scheme_and_lose_punctuation() {
+        assert_eq!(normalize_target("t.me/x/1"), "https://t.me/x/1");
+        assert_eq!(normalize_target("T.ME/x/1"), "https://T.ME/x/1");
+        assert_eq!(
+            normalize_target("telegram.me/x/1"),
+            "https://telegram.me/x/1"
+        );
+        assert_eq!(
+            normalize_target("<https://x.com/a/status/1>,"),
+            "https://x.com/a/status/1"
+        );
+        assert_eq!(normalize_target(" https://x.com/a "), "https://x.com/a");
+    }
+}
