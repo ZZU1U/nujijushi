@@ -491,7 +491,7 @@ async fn posts_page(
                 "artist": card.author_name,
                 "media_count": card.media_count,
                 "thumb": card.thumb_hash,
-                "nsfw": card.rating.is_nsfw(),
+                "nsfw": card.nsfw,
                 "snippet": card.snippet,
                 "pushed": card.pushed,
                 "delivered": card.delivered,
@@ -584,19 +584,14 @@ async fn posts_bulk(
                 .db
                 .call(move |conn| channel_db::get(conn, channel_id))
                 .await?;
-            let mut queued = 0;
-            let mut skipped = 0;
-            for id in &ids {
-                match crate::queue::enqueue_checked(app, &channel, *id, 0).await {
-                    Ok(crate::queue::EnqueueOutcome::Queued(_)) => queued += 1,
-                    Ok(_) => skipped += 1,
-                    Err(err) => tracing::warn!("enqueue {id} failed: {err}"),
-                }
+            let summary = crate::queue::enqueue_many(app, &channel, &ids, 0).await;
+            let mut note = format!("{} into {}", summary.describe(), channel.title);
+            // name the policy reasons instead of only counting them
+            let reasons = summary.skip_reasons();
+            if !reasons.is_empty() {
+                note.push_str(&format!(" ({})", reasons.join("; ")));
             }
-            format!(
-                "{queued} queued into {}, {skipped} skipped by policy",
-                channel.title
-            )
+            note
         }
         "delete" => {
             let ids_for_db = ids.clone();
@@ -1022,7 +1017,7 @@ async fn queue_page(
             )
         })
         .await?;
-    let rules = app.db.call(|conn| tag_db::TagRules::load(conn)).await?;
+    // nothing to load here any more: `card.nsfw` already carries the override
 
     let items: Vec<Value> = entries
         .iter()
@@ -1040,12 +1035,11 @@ async fn queue_page(
                 "snippet": entry.card.snippet,
                 "thumb": entry.card.thumb_hash,
                 "media_count": entry.card.media_count,
-                "nsfw": entry.card.rating.is_nsfw(),
+                "nsfw": entry.card.nsfw,
                 "added": entry.item.added_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string(),
             })
         })
         .collect();
-    let _ = rules;
 
     let html = ws.pages.render(
         "queue.html",

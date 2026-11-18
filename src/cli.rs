@@ -1890,13 +1890,17 @@ async fn cmd_queue(state: &AppState, cmd: QueueCmd) -> Result<()> {
             priority,
         } => {
             let channel = resolve_channel(state, &channel).await?;
-            for id in ids {
-                match crate::queue::enqueue_checked(state, &channel, id, priority).await? {
+            let summary = crate::queue::enqueue_many(state, &channel, &ids, priority).await;
+            for (id, outcome) in &summary.outcomes {
+                match outcome {
                     crate::queue::EnqueueOutcome::Queued(queue_id) => {
                         println!("post #{id} -> {} (#{queue_id})", channel.title)
                     }
                     other => println!("post #{id} -> {}", other.describe()),
                 }
+            }
+            if let Some((id, err)) = summary.failed.first() {
+                return Err(Error::other(format!("post #{id}: {err}")));
             }
             Ok(())
         }
