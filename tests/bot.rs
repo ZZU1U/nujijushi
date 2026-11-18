@@ -117,6 +117,15 @@ impl Harness {
         jobs.into_iter().next()
     }
 
+    async fn job_count(&self) -> usize {
+        self.state
+            .db
+            .call(|conn| nujijushi::db::jobs::list(conn, 20))
+            .await
+            .unwrap()
+            .len()
+    }
+
     async fn add_channel(&self, alias: &str, policy: NsfwPolicy) -> Channel {
         let mut channel = Channel::new("Test Channel", "@test_channel");
         channel.alias = alias.into();
@@ -595,25 +604,28 @@ async fn forwarded_posts_are_imported_inline() {
 }
 
 #[tokio::test]
-async fn links_only_messages_are_imported_and_prose_is_not() {
+async fn links_anywhere_in_a_message_are_imported_and_prose_is_not() {
     let harness = harness(MockTransport::new(), OPEN_CONFIG);
+    // a link inside a sentence counts: people paste "look at this: <url>"
     harness
         .send(private_message(GUEST, 1, "look at this: https://t.me/x/1"))
         .await;
-    assert!(
-        harness.job().await.is_none(),
-        "prose with a link is not an import"
-    );
+    assert_eq!(harness.job_count().await, 1, "a link in a sentence imports");
+
+    harness
+        .send(private_message(GUEST, 2, "just chatting, no links here"))
+        .await;
+    assert_eq!(harness.job_count().await, 1, "prose is not an import");
     assert!(harness.last_text().contains("/help"));
 
     harness
         .send(private_message(
             GUEST,
-            2,
+            3,
             "https://www.pixiv.net/artworks/1",
         ))
         .await;
-    assert!(harness.job().await.is_some());
+    assert_eq!(harness.job_count().await, 2);
 }
 
 #[tokio::test]
@@ -760,4 +772,76 @@ async fn a_config_admin_is_told_that_config_owns_their_role() {
         "got: {}",
         harness.last_text()
     );
+}
+
+#[tokio::test]
+async fn a_message_with_several_links_queues_every_one() {
+    let harness = harness(MockTransport::new(), OPEN_CONFIG);
+    harness
+        .send(private_message(
+            ADMIN,
+            1,
+            "https://x.com/a/status/1\nhttps://x.com/a/status/2\nt.me/night_art/9",
+        ))
+        .await;
+
+    let jobs = harness
+        .state
+        .db
+        .call(|conn| nujijushi::db::jobs::list(conn, 20))
+        .await
+        .unwrap();
+    assert_eq!(jobs.len(), 3, "every link in the batch becomes a job");
+    let payloads: Vec<&str> = jobs
+        .iter()
+        .filter_map(|job| job.payload.as_deref())
+        .collect();
+    assert!(
+        payloads.contains(&"https://x.com/a/status/1"),
+        "{payloads:?}"
+    );
+    assert!(
+        payloads.contains(&"https://x.com/a/status/2"),
+        "{payloads:?}"
+    );
+    assert!(
+        payloads.contains(&"https://t.me/night_art/9"),
+        "t.me links are normalised: {payloads:?}"
+    );
+
+    let text = harness.last_text();
+    assert!(text.contains("3 link(s)"), "got: {text}");
+    assert!(text.contains("https://x.com/a/status/2"), "got: {text}");
+}
+
+#[tokio::test]
+async fn a_batch_cannot_use_more_quota_than_it_has() {
+    // guests get 1 import/day here, so the second link must be refused
+    let config = r#"
+[telegram]
+bot_token = "1:test"
+[access]
+admins = [1]
+public = true
+allow_import = true
+import_quota_per_day = 1
+"#;
+    let harness = harness(MockTransport::new(), config);
+    harness
+        .send(private_message(
+            GUEST,
+            1,
+            "https://x.com/a/status/1\nhttps://x.com/a/status/2",
+        ))
+        .await;
+
+    let jobs = harness
+        .state
+        .db
+        .call(|conn| nujijushi::db::jobs::list(conn, 20))
+        .await
+        .unwrap();
+    assert_eq!(jobs.len(), 1, "one link fits in the quota, not two");
+    let text = harness.last_text();
+    assert!(text.contains("Daily import limit reached"), "got: {text}");
 }

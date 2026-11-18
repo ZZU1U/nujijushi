@@ -53,16 +53,18 @@ impl<'a> Bot<'a> {
                 Ok(())
             }
             Parsed::Command(command) => self.dispatch(&message, &from, role, command).await,
-            Parsed::Text(text) => match commands::import_target(&text) {
-                Some(target) => self.import_link(&message, &from, role, vec![target]).await,
-                None => {
+            Parsed::Text(text) => {
+                let targets = commands::import_targets(&text);
+                if targets.is_empty() {
                     self.reply(
                         &message,
                         "Send me a link to archive, or /help for the command list.",
                     )
                     .await
+                } else {
+                    self.import_link(&message, &from, role, targets).await
                 }
-            },
+            }
         }
     }
 
@@ -329,16 +331,31 @@ impl<'a> Bot<'a> {
         if !self.allow(message, role, Perm::Import).await? {
             return Ok(());
         }
+        // a message may carry a whole batch; cap it so nobody queues 500 jobs
+        const MAX_TARGETS: usize = 20;
+
         if targets.is_empty() {
             return self
                 .reply(message, "Usage: <code>/import &lt;link&gt;</code>")
                 .await;
         }
-        if !self
-            .access
-            .spend(self.state, role, user.id, QuotaKind::Import)
-            .await?
-        {
+        let limit = self.access.config().import_quota_per_day;
+        // one quota unit per link, so a batch cannot slip past the daily cap
+        let mut queued: Vec<String> = Vec::new();
+        let mut hit_quota = false;
+        for target in targets.iter().take(MAX_TARGETS) {
+            if !self
+                .access
+                .spend(self.state, role, user.id, QuotaKind::Import)
+                .await?
+            {
+                hit_quota = true;
+                break;
+            }
+            crate::jobs::create_job_for(self.state, target, Some(user.id)).await?;
+            queued.push(target.clone());
+        }
+        if queued.is_empty() {
             let used = self
                 .access
                 .used_today(self.state, user.id, QuotaKind::Import)
@@ -346,24 +363,31 @@ impl<'a> Bot<'a> {
             return self
                 .reply(
                     message,
-                    &format!(
-                        "Daily import limit reached ({used}/{}).",
-                        self.access.config().import_quota_per_day
-                    ),
+                    &format!("Daily import limit reached ({used}/{limit})."),
                 )
                 .await;
         }
 
-        let mut queued = Vec::new();
-        for target in &targets {
-            crate::jobs::create_job_for(self.state, target, Some(user.id)).await?;
-            queued.push(target.clone());
-        }
-        let body = format!(
-            "Importing {} target(s).\nI will message you when it is done.\n<pre>{}</pre>",
+        let mut body = format!(
+            "Importing {} link(s).\nI will message you as each one finishes.\n<pre>{}</pre>",
             queued.len(),
             reply::esc(&queued.join("\n"))
         );
+        if hit_quota {
+            let used = self
+                .access
+                .used_today(self.state, user.id, QuotaKind::Import)
+                .await?;
+            body.push_str(&format!(
+                "\n\nDaily import limit reached ({used}/{limit}): the rest was skipped."
+            ));
+        }
+        if targets.len() > MAX_TARGETS {
+            body.push_str(&format!(
+                "\n\nOnly the first {MAX_TARGETS} of {} links were taken.",
+                targets.len()
+            ));
+        }
         self.reply(message, &body).await
     }
 
@@ -1027,7 +1051,7 @@ fn start_text(user: &BotUser, role: Role) -> String {
 fn help_text(role: Role) -> String {
     let mut lines = vec![String::from("<b>commands</b>")];
     let mut push = |text: &str| lines.push(text.to_string());
-    push("/import &lt;link&gt; — archive a link (or just send it)");
+    push("/import &lt;link&gt;… — archive links (or just send them, several at once)");
     // listed for everyone: the bot answers "not allowed" when a guest may not use one
     push("/ls [n] — recent posts");
     push("/show &lt;id&gt; — one post");

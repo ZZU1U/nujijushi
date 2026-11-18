@@ -100,23 +100,34 @@ pub fn looks_like_link(text: &str) -> bool {
         || lowered.starts_with("t.me/")
 }
 
-/// The whole body is only a link or two (so a message with commentary is not an import).
-pub fn import_target(text: &str) -> Option<String> {
-    let mut parts = text.split_whitespace();
-    let first = parts.next()?;
-    if !looks_like_link(first) {
-        return None;
+/// Every link in a message, normalised and de-duplicated in the order sent.
+///
+/// People paste batches (one link per line, or several on one line, sometimes
+/// with a word around them), so collect the link-looking tokens. Keeping only
+/// the first one silently swallowed the rest of the batch.
+pub fn import_targets(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for token in text.split_whitespace() {
+        // normalise first: a pasted link is often wrapped or followed by punctuation
+        let target = normalize_target(token);
+        if !looks_like_link(&target) {
+            continue;
+        }
+        if !out.contains(&target) {
+            out.push(target);
+        }
     }
-    let rest_ok = parts.all(looks_like_link);
-    if !rest_ok {
-        return None;
-    }
-    Some(normalize_target(first))
+    out
 }
 
-/// `t.me/x/1` -> `https://t.me/x/1`
+/// `t.me/x/1` -> `https://t.me/x/1`, and drop punctuation glued to a pasted link.
 pub fn normalize_target(target: &str) -> String {
-    let trimmed = target.trim();
+    let trimmed = target.trim().trim_matches(|c: char| {
+        matches!(
+            c,
+            '<' | '(' | '[' | '"' | '\'' | ',' | ';' | ')' | ']' | '>' | '.'
+        )
+    });
     if trimmed.to_ascii_lowercase().starts_with("t.me/") {
         format!("https://{trimmed}")
     } else {
@@ -175,21 +186,34 @@ mod tests {
     }
 
     #[test]
-    fn detects_importable_links() {
+    fn collects_every_link_in_a_message() {
         assert_eq!(
-            import_target("https://www.pixiv.net/artworks/1").as_deref(),
-            Some("https://www.pixiv.net/artworks/1")
+            import_targets("https://www.pixiv.net/artworks/1"),
+            vec!["https://www.pixiv.net/artworks/1"]
         );
+        // t.me links get a scheme, and duplicates collapse
         assert_eq!(
-            import_target("t.me/night_art/42").as_deref(),
-            Some("https://t.me/night_art/42")
+            import_targets("t.me/night_art/42\nt.me/night_art/42"),
+            vec!["https://t.me/night_art/42"]
         );
+        // a whole batch, one per line, keeps its order
         assert_eq!(
-            import_target("https://x.com/a/status/1 https://x.com/a/status/2").as_deref(),
-            Some("https://x.com/a/status/1")
+            import_targets(
+                "https://x.com/a/status/1\nhttps://x.com/a/status/2\nhttps://x.com/a/status/3"
+            ),
+            vec![
+                "https://x.com/a/status/1",
+                "https://x.com/a/status/2",
+                "https://x.com/a/status/3"
+            ]
         );
-        assert_eq!(import_target("look at this https://x.com/a/status/1"), None);
-        assert_eq!(import_target("just chatting"), None);
+        // several on one line, glued to punctuation, with a word around them
+        assert_eq!(
+            import_targets("look: <https://x.com/a/status/1>, https://x.com/a/status/2."),
+            vec!["https://x.com/a/status/1", "https://x.com/a/status/2"]
+        );
+        assert!(import_targets("just chatting").is_empty());
+        assert!(import_targets("").is_empty());
     }
 
     #[test]

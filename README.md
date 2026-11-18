@@ -206,8 +206,8 @@ the archive from a chat. `--no-bot` or `[bot] enabled = false` turns just this o
 
 | command | guests | admins | notes |
 |---|---|---|---|
-| *send a link* / *forward a post* | `allow_import` | ✓ | the normal path, no command needed |
-| `/import <link>` | `allow_import` | ✓ | same pipeline as the CLI |
+| *send a link* / *forward a post* | `allow_import` | ✓ | the normal path, no command needed; several links in one message all import (up to 20) |
+| `/import <link>…` | `allow_import` | ✓ | same pipeline as the CLI; one quota unit per link |
 | `/ls [n]` · `/show <id>` | `allow_browse` | ✓ | NSFW is hidden from guests unless `allow_nsfw_browse` |
 | `/push <alias> [id]` | `allow_queue` | ✓ | **queues only, never publishes** |
 | `/queue <alias>` · `/channels` | `allow_browse` | ✓ | depth, next slot, reason |
@@ -461,6 +461,21 @@ scheduled slot. CLI equivalents: `nujijushi push --channel <alias> --force`.
 
 ---
 
+## Clipping links (browser extension)
+
+`extension/` is a small standalone Chromium extension for the collection half of importing:
+click a `+` on posts in your X bookmarks, press **copy**, paste the newline list into the
+import box. No token, no API, no server — it only fills your clipboard, which is exactly the
+format `/import` already accepts.
+
+```bash
+# chrome://extensions → Developer mode → Load unpacked → extension/
+node --test extension/lib/canonical.test.mjs extension/lib/store.test.mjs
+```
+
+[extension/README.md](extension/README.md) documents the per-site adapter contract (adding
+another site), [extension/TESTING.md](extension/TESTING.md) is the manual checklist.
+
 ## Telegram limits nujijushi respects
 
 * ≤ 10 items per media group; larger posts are split into several albums.
@@ -498,7 +513,7 @@ CI runs on every push and pull request (`.github/workflows/ci.yml`: `fmt`, `clip
 and attaches them to the GitHub release (`.github/workflows/release.yml`).
 
 ```bash
-cargo test                     # 240 tests: units, snapshots, flows, bot, webhook, storage, proxy
+cargo test                     # 242 tests: units, snapshots, flows, bot, webhook, storage, proxy
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
