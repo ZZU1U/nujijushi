@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>nujijushi clip</title>
+    <link rel="stylesheet" href="panel.css" />
+  </head>
+  <body>
+    <header>
+      <h1>nujijushi clip</h1>
+      <div class="tools">
+        <span id="count" class="count">0</span>
+        <button id="settings-toggle" class="ghost icon" type="button" title="Settings" aria-expanded="false">⚙</button>
+      </div>
+    </header>
+
+    <section id="settings" class="settings" hidden>
+      <label><input type="checkbox" data-adapter="x" /> X / Twitter post buttons</label>
+      <label><input type="checkbox" data-adapter="pixiv" /> pixiv buttons</label>
+      <label><input type="checkbox" data-adapter="generic" /> “clip this page” pill on single-post pages</label>
+      <label><input type="checkbox" id="auto-clear" /> clear the list right after a successful copy</label>
+      <p class="hint">
+        Turning an adapter off only hides its buttons; links already clipped stay in the list.
+        Reload the tab you want it applied to.
+      </p>
+    </section>
+
+    <main>
+      <ul id="list"></ul>
+      <p id="empty" class="empty">
+        Nothing clipped yet. Click the <b>+</b> next to a post, right-click a link, or press
+        <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd> on a post page.
+      </p>
+    </main>
+
+    <footer>
+      <div class="actions">
+        <button id="copy" class="primary" type="button" disabled>copy</button>
+        <button id="copy-all" class="ghost" type="button" hidden>copy all</button>
+        <button id="clear" class="ghost" type="button" disabled>clear</button>
+      </div>
+      <details id="paste-box">
+        <summary>paste links</summary>
+        <textarea id="paste" rows="4" spellcheck="false" placeholder="one link per line, or any blob of text"></textarea>
+        <button id="paste-add" class="ghost" type="button">add</button>
+      </details>
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+      <p class="hint">
+        Paste the copied list into <code>http://127.0.0.1:8788/import</code> — one URL per line,
+        the box splits on newlines. Optionally pick a channel there to queue right away.
+      </p>
+    </footer>
+
+    <script src="lib/canonical.js"></script>
+    <script src="lib/store.js"></script>
+    <script src="panel.js"></script>
+  </body>
+</html>

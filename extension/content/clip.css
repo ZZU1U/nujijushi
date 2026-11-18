@@ -1,0 +1,132 @@
+/* nujijushi clip — injected controls.
+ * Everything is namespaced .njs-* and defensive: these pages ship aggressive CSS.
+ */
+
+.njs-btn {
+  all: unset;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin: 0 0 0 4px;
+  border: 1px solid rgba(113, 118, 123, 0.45);
+  border-radius: 999px;
+  background: transparent;
+  color: rgb(113, 118, 123);
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.njs-btn:hover {
+  color: #57d38c;
+  border-color: #57d38c;
+  background: rgba(87, 211, 140, 0.12);
+}
+
+.njs-btn:focus-visible {
+  outline: 2px solid #57d38c;
+  outline-offset: 1px;
+}
+
+.njs-btn[data-njs-state="on"] {
+  color: #0d1f16;
+  border-color: #57d38c;
+  background: #57d38c;
+}
+
+.njs-btn[data-njs-state="on"]:hover {
+  color: #0d1f16;
+  background: #6fe0a1;
+}
+
+.njs-i-check {
+  display: none;
+}
+
+.njs-btn[data-njs-state="on"] .njs-i-plus {
+  display: none;
+}
+
+.njs-btn[data-njs-state="on"] .njs-i-check {
+  display: block;
+}
+
+.njs-btn[data-njs-flash="removed"] {
+  animation: njs-pop 240ms ease;
+}
+
+.njs-btn[data-njs-flash="failed"] {
+  color: #f0616d;
+  border-color: #f0616d;
+}
+
+@keyframes njs-pop {
+  0% {
+    transform: scale(0.82);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* a clipped post keeps a visible edge while you scroll a long timeline */
+[data-njs-clipped] {
+  box-shadow: inset 3px 0 0 #57d38c !important;
+}
+
+/* pixiv thumbnails: hover-revealed toggle in the corner of the card */
+.njs-thumb {
+  position: relative;
+}
+
+.njs-thumb .njs-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 5;
+  margin: 0;
+  opacity: 0;
+  color: #f5f5f7;
+  border-color: rgba(255, 255, 255, 0.25);
+  background: rgba(12, 12, 14, 0.72);
+}
+
+.njs-thumb:hover .njs-btn,
+.njs-thumb .njs-btn[data-njs-state="on"],
+.njs-thumb .njs-btn:focus-visible {
+  opacity: 1;
+}
+
+/* the single "clip this page" pill shared by the page-level adapters */
+.njs-pill {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 2147483000;
+  margin: 0;
+}
+
+.njs-pill .njs-btn {
+  width: 40px;
+  height: 40px;
+  margin: 0;
+  color: #f5f5f7;
+  border-color: #2f2f37;
+  background: #16161a;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.njs-pill .njs-btn:hover {
+  color: #57d38c;
+  border-color: #57d38c;
+  background: #1d1d23;
+}
+
+.njs-pill .njs-btn[data-njs-state="on"] {
+  color: #0d1f16;
+  border-color: #57d38c;
+  background: #57d38c;
+}

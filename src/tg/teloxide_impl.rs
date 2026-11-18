@@ -126,13 +126,6 @@ fn recipient(chat: &str) -> TgResult<Recipient> {
     Ok(Recipient::ChannelUsername(username.to_string()))
 }
 
-fn clip(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_string();
-    }
-    text.chars().take(max.saturating_sub(1)).collect::<String>() + "…"
-}
-
 fn map_user(user: &tt::User) -> BotUser {
     BotUser {
         id: user.id.0 as i64,
@@ -345,7 +338,7 @@ impl Transport for BotTransport {
     async fn send_text(&self, chat: &str, html: &str) -> TgResult<()> {
         let recip = recipient(chat)?;
         self.bot
-            .send_message(recip, clip(html, 4096))
+            .send_message(recip, crate::render::truncate::shorten_html(html, 4096))
             .parse_mode(ParseMode::Html)
             .link_preview_options(tt::LinkPreviewOptions {
                 is_disabled: true,

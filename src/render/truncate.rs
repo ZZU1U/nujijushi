@@ -33,13 +33,24 @@ pub fn fit_caption(text: String, limit: usize) -> RenderedCaption {
         };
     }
 
-    let prefix = take_chars(&text, limit.saturating_sub(1));
-    let repaired = close_open_tags(&prefix);
-    let trimmed = repaired
-        .trim_end()
-        .trim_end_matches([',', '.', ';', ':', '-'])
-        .trim_end();
-    let text = format!("{trimmed}…");
+    // Closing the tags we cut through costs characters, so the cut has to leave
+    // room for them: shrink the budget until the finished string fits, otherwise
+    // a markup-heavy caption silently exceeds Telegram's hard limit.
+    let mut budget = limit.saturating_sub(1);
+    let text = loop {
+        let prefix = take_chars(&text, budget);
+        let repaired = close_open_tags(&prefix);
+        let trimmed = repaired
+            .trim_end()
+            .trim_end_matches([',', '.', ';', ':', '-'])
+            .trim_end();
+        let candidate = format!("{trimmed}…");
+        let overflow = candidate.chars().count().saturating_sub(limit);
+        if overflow == 0 || budget == 0 {
+            break candidate;
+        }
+        budget = budget.saturating_sub(overflow.max(1));
+    };
     let length = text.chars().count();
     RenderedCaption {
         text,
@@ -53,6 +64,24 @@ fn take_chars(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
 }
 
+/// Cut plain text to at most `max` characters, ending in an ellipsis when it had
+/// to be cut. The web `shorten` filter and the transport share this one rule.
+pub fn shorten(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let cut: String = take_chars(text, max - 1);
+    format!("{cut}…")
+}
+
+/// Cut HTML to `limit` without leaving a tag open: Telegram rejects unbalanced
+/// markup outright, so a plain character cut would lose the whole message.
+pub fn shorten_html(html: &str, limit: usize) -> String {
+    fit_caption(html.to_string(), limit).text
+}
 /// Drop a tag we cut in half and close everything still open.
 pub fn close_open_tags(prefix: &str) -> String {
     let mut stack: Vec<String> = Vec::new();
@@ -170,5 +199,33 @@ mod tests {
         let text = format!("{}, {}", "word".repeat(60), "tail");
         let out = fit_caption(text, 40);
         assert!(!out.text.contains(", …"));
+    }
+
+    #[test]
+    fn shorten_keeps_short_text_and_ellipsises_the_rest() {
+        assert_eq!(shorten("short", 10), "short");
+        assert_eq!(shorten("exactly-10", 10), "exactly-10");
+        let cut = shorten("0123456789abc", 10);
+        assert_eq!(cut.chars().count(), 10);
+        assert!(cut.ends_with('…'));
+        assert_eq!(shorten("anything", 0), "");
+        // multi-byte text is cut on char boundaries, not bytes
+        assert_eq!(shorten("アソビニン", 3).chars().count(), 3);
+    }
+
+    #[test]
+    fn shorten_html_closes_what_it_cuts_through() {
+        let html = format!("<b>{}</b>", "x".repeat(300));
+        let cut = shorten_html(&html, 40);
+        assert!(
+            cut.chars().count() <= 40,
+            "got {} chars",
+            cut.chars().count()
+        );
+        assert!(cut.contains("<b>"));
+        assert!(
+            cut.contains("</b>"),
+            "unbalanced markup would be rejected: {cut}"
+        );
     }
 }

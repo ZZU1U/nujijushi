@@ -48,12 +48,7 @@ impl PageRenderer {
             }
         });
         env.add_filter("shorten", |value: String, max: usize| {
-            if value.chars().count() <= max {
-                value
-            } else {
-                let cut: String = value.chars().take(max.saturating_sub(1)).collect();
-                format!("{cut}…")
-            }
+            crate::render::truncate::shorten(&value, max)
         });
         env.add_filter("one_line", |value: String| {
             value.split_whitespace().collect::<Vec<_>>().join(" ")

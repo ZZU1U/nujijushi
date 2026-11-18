@@ -1,0 +1,55 @@
+{
+  "manifest_version": 3,
+  "name": "nujijushi clip",
+  "version": "0.1.0",
+  "description": "Click posts to collect their URLs, then copy them as a newline list for nujijushi's import box.",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "storage",
+    "sidePanel",
+    "contextMenus",
+    "activeTab",
+    "scripting"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "nujijushi clip"
+  },
+  "side_panel": {
+    "default_path": "panel.html"
+  },
+  "commands": {
+    "clip-tab": {
+      "suggested_key": { "default": "Alt+Shift+L" },
+      "description": "Clip the current page"
+    },
+    "open-panel": {
+      "suggested_key": { "default": "Alt+Shift+A" },
+      "description": "Open the clip panel"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://x.com/*",
+        "https://*.x.com/*",
+        "https://twitter.com/*",
+        "https://*.twitter.com/*",
+        "https://www.pixiv.net/*",
+        "https://pixiv.net/*"
+      ],
+      "js": [
+        "content/clip.js",
+        "lib/canonical.js",
+        "lib/store.js",
+        "content/sites/x.js",
+        "content/sites/pixiv.js",
+        "content/sites/generic.js"
+      ],
+      "css": ["content/clip.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
