@@ -77,7 +77,7 @@ nujijushi channel enable night-shift-2
 | `nujijushi doctor [--offline] [--strict]` | check tooling, cookies, token, channel admin rights, disk |
 | `nujijushi import <url\|dir>… [--channel C]` | import; optionally queue straight into a channel |
 | `nujijushi ls [--state/--source/--tag/--nsfw/--search]` | browse the archive |
-| `nujijushi show <id> [--channel C] [--raw]` | details + rendered caption; `--raw` dumps the stored source metadata (rating/artist forensics) |
+| `nujijushi show <id> [--channel C] [--raw]` | details + rendered caption; `--raw` dumps the stored source metadata, post-level and per item |
 | `nujijushi tag <id> <tag>… [--remove]` · `rate` · `nsfw auto\|yes\|no` | curation |
 | `nujijushi approve/reject <id>…` · `rm <id>` | post state |
 | `nujijushi channel add <alias> <@name\|id>` | register a channel (validated with `getChat`) |
