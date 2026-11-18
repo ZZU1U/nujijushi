@@ -239,6 +239,8 @@ impl PublishOutcome {
         }
     }
 }
+/// How many queued rows one policy pass looks at before asking for more.
+const CANDIDATE_PAGE: i64 = 60;
 
 /// Publish the next post for a channel (dry run still selects and renders).
 pub async fn publish_channel(
@@ -262,54 +264,73 @@ pub async fn publish_channel(
         )));
     }
 
-    let items = {
-        let channel_id = channel.id;
-        state
-            .db
-            .call(move |conn| queue_db::list(conn, channel_id, &[QueueState::Queued], 60))
-            .await?
-    };
-    if items.is_empty() {
-        return Ok(PublishOutcome::EmptyQueue);
-    }
-
     let rules = state.db.call(|conn| tag_db::TagRules::load(conn)).await?;
+    let want = channel.posts_per_slot.max(1) as usize;
     let mut candidates: Vec<(crate::model::QueueItem, Post, Decision)> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
+    let mut saw_queued = false;
 
-    for item in items {
-        let post_id = item.post_id;
-        let post = match state.db.call(move |conn| post_db::get(conn, post_id)).await {
-            Ok(post) => post,
-            Err(err) => {
-                tracing::warn!(post = post_id, "cannot load queued post: {err}");
+    // Fill the *slot*, not just the first page: a veto marks the row `skipped`,
+    // which removes it from the queued set, so the next pass sees fresh rows
+    // instead of the run giving up after one page of unusable candidates.
+    while candidates.len() < want {
+        let channel_id = channel.id;
+        let page = state
+            .db
+            .call(move |conn| {
+                queue_db::list(conn, channel_id, &[QueueState::Queued], CANDIDATE_PAGE)
+            })
+            .await?;
+        if page.is_empty() {
+            break;
+        }
+        saw_queued = true;
+        let mut progressed = false;
+        for item in page {
+            let post_id = item.post_id;
+            let post = match state.db.call(move |conn| post_db::get(conn, post_id)).await {
+                Ok(post) => post,
+                Err(err) => {
+                    tracing::warn!(post = post_id, "cannot load queued post: {err}");
+                    continue;
+                }
+            };
+
+            let decision = if post.state == crate::model::PostState::Rejected {
+                Decision {
+                    verdict: nsfw::Verdict::Reject("post was rejected by the curator".into()),
+                    nsfw: post.rating.is_nsfw(),
+                    reason: "post was rejected by the curator".into(),
+                }
+            } else {
+                nsfw::evaluate(&post, channel, &rules)
+            };
+
+            if let nsfw::Verdict::Reject(reason) = &decision.verdict {
+                let queue_id = item.id;
+                let reason_owned = reason.clone();
+                state
+                    .db
+                    .call(move |conn| queue_db::skip_with_reason(conn, queue_id, &reason_owned))
+                    .await?;
+                skipped.push(format!("queue #{queue_id}: {reason}"));
+                progressed = true;
                 continue;
             }
-        };
-
-        let decision = if post.state == crate::model::PostState::Rejected {
-            Decision {
-                verdict: nsfw::Verdict::Reject("post was rejected by the curator".into()),
-                nsfw: post.rating.is_nsfw(),
-                reason: "post was rejected by the curator".into(),
+            candidates.push((item, post, decision));
+            progressed = true;
+            if candidates.len() >= want {
+                break;
             }
-        } else {
-            nsfw::evaluate(&post, channel, &rules)
-        };
-
-        if let nsfw::Verdict::Reject(reason) = &decision.verdict {
-            let queue_id = item.id;
-            let reason_owned = reason.clone();
-            state
-                .db
-                .call(move |conn| queue_db::skip_with_reason(conn, queue_id, &reason_owned))
-                .await?;
-            skipped.push(format!("queue #{queue_id}: {reason}"));
-            continue;
         }
-        candidates.push((item, post, decision));
+        if !progressed {
+            break;
+        }
     }
 
+    if !saw_queued {
+        return Ok(PublishOutcome::EmptyQueue);
+    }
     if candidates.is_empty() {
         return Ok(PublishOutcome::AllSkipped(skipped));
     }

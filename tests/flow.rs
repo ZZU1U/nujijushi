@@ -672,3 +672,50 @@ async fn publish_item_ignores_the_schedule_but_respects_policy() {
         "next slot was recomputed"
     );
 }
+
+/// A page full of vetoes must not starve the slot: the run has to look further
+/// than the first batch of queued rows before giving up.
+#[tokio::test]
+async fn a_slot_reaches_past_a_full_page_of_vetoed_posts() {
+    let harness = harness(MockTransport::new());
+    let channel = harness.add_channel(NsfwPolicy::Allow).await;
+
+    let mut vetoed = Vec::new();
+    for index in 0..60 {
+        let post = harness
+            .add_post(&format!("veto-{index}"), 1, false, &["art"], Rating::Sfw)
+            .await;
+        nujijushi::queue::enqueue_checked(&harness.state, &channel, post, 0)
+            .await
+            .unwrap();
+        vetoed.push(post);
+    }
+    // negative priority sorts it behind the whole page of vetoes
+    let keeper = harness
+        .add_post("keeper", 1, false, &["art"], Rating::Sfw)
+        .await;
+    nujijushi::queue::enqueue_checked(&harness.state, &channel, keeper, -1)
+        .await
+        .unwrap();
+
+    harness
+        .state
+        .db
+        .call(move |conn| {
+            for id in vetoed {
+                nujijushi::db::posts::set_state(conn, id, PostState::Rejected)?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let outcome = publish_channel(&harness.state, &channel, false, true)
+        .await
+        .unwrap();
+    match outcome {
+        PublishOutcome::Published { post_id, .. } => assert_eq!(post_id, keeper),
+        other => panic!("expected the 61st post to publish, got {other:?}"),
+    }
+    assert_eq!(harness.mock.send_count(), 1);
+}
