@@ -9,6 +9,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0002_queue.sql"),
     include_str!("../../migrations/0003_bot.sql"),
     include_str!("../../migrations/0004_storage.sql"),
+    include_str!("../../migrations/0005_media_hygiene.sql"),
 ];
 
 pub fn schema_version(conn: &Connection) -> Result<i64> {
@@ -73,5 +74,18 @@ mod tests {
                 "missing table {expected}"
             );
         }
+
+        // 0005 added the per-media flag; a fresh database must have it
+        let media_columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('media')")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        assert!(
+            media_columns.iter().any(|column| column == "sensitive"),
+            "media.sensitive is missing: {media_columns:?}"
+        );
     }
 }

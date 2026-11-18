@@ -423,6 +423,7 @@ pub mod tests_support {
                     bytes: 1024,
                     is_video: ordinal == 1,
                     poster_hash: None,
+                    sensitive: false,
                 })
                 .collect(),
         }

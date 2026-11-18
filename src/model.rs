@@ -195,6 +195,8 @@ pub struct MediaItem {
     pub bytes: i64,
     pub is_video: bool,
     pub poster_hash: Option<String>,
+    /// The source flagged *this item* as sensitive (twitter does it per image).
+    pub sensitive: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -217,12 +219,13 @@ pub struct Post {
 }
 
 impl Post {
-    /// Effective NSFW flag: manual override wins, else rating, else tag rules.
+    /// Effective NSFW flag: manual override wins, else rating, else a sensitive
+    /// media item, else the channel's nsfw tag rules.
     pub fn is_nsfw(&self, nsfw_tag_hit: bool) -> bool {
         if let Some(flag) = self.nsfw_override {
             return flag;
         }
-        self.rating.is_nsfw() || nsfw_tag_hit
+        self.rating.is_nsfw() || nsfw_tag_hit || self.media.iter().any(|item| item.sensitive)
     }
 
     pub fn author_label(&self) -> String {
@@ -398,7 +401,8 @@ impl Channel {
             max_tags: 10,
             silent: false,
             protect: false,
-            include_source_tag: true,
+            // sources are not tags: a caption does not need #twitter appended to it
+            include_source_tag: false,
             last_sent_at: None,
             next_due_at: None,
             consecutive_failures: 0,

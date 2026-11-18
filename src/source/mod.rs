@@ -34,6 +34,8 @@ pub struct PostFile {
     /// File staged on local disk (staging dir); consumed by the blob store.
     pub path: PathBuf,
     pub is_video: bool,
+    /// The source flagged *this file* as sensitive (twitter does it per image).
+    pub sensitive: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

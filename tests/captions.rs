@@ -15,7 +15,7 @@ fn post() -> Post {
             source: "pixiv".into(),
             source_id: "42".into(),
             name: Some("Nightjar".into()),
-            handle: Some("nightjar".into()),
+            handle: Some("nightjar_".into()),
             url: Some("https://www.pixiv.net/users/42".into()),
             blocked: false,
         }),
@@ -50,6 +50,7 @@ fn post() -> Post {
                 bytes: 2048,
                 is_video: false,
                 poster_hash: None,
+                sensitive: false,
             })
             .collect(),
     }
@@ -96,6 +97,8 @@ fn minimal_caption_without_author_or_description() {
 fn forty_tags_are_capped_and_hashtagged() {
     let mut channel = Channel::new("tagged", "@tagged");
     channel.max_tags = 40;
+    // the source tag is off by default now, so ask for it explicitly here
+    channel.include_source_tag = true;
     let mut post = post();
     post.tags = (0..40).map(|index| format!("tag{index}")).collect();
     let rendered = render(&channel, &post, false, false);
@@ -125,4 +128,33 @@ fn very_long_description_is_clipped_to_the_limit() {
         rendered.chars().rev().take(60).collect::<String>()
     );
     assert!(first.starts_with("<b>Nightjar</b>"));
+}
+
+#[test]
+fn a_handle_only_author_reads_as_the_handle() {
+    // the shape a fresh twitter import produces: handle, no display name
+    let channel = Channel::new("x", "@x");
+    let mut post = post();
+    if let Some(author) = post.author.as_mut() {
+        author.source = "twitter".into();
+        author.name = None;
+        author.handle = Some("asobinin".into());
+    }
+    let rendered = render(&channel, &post, false, false);
+    assert!(rendered.starts_with("<b>@asobinin</b>"), "{rendered}");
+}
+
+#[test]
+fn a_name_that_is_the_handle_is_not_printed_twice() {
+    // rows imported before 0.2.0 stored the handle as the name
+    let channel = Channel::new("x", "@x");
+    let mut post = post();
+    if let Some(author) = post.author.as_mut() {
+        author.source = "twitter".into();
+        author.name = Some("asobinin".into());
+        author.handle = Some("asobinin".into());
+    }
+    let rendered = render(&channel, &post, false, false);
+    assert!(rendered.starts_with("<b>asobinin</b>"), "{rendered}");
+    assert!(!rendered.contains("(@asobinin)"), "{rendered}");
 }

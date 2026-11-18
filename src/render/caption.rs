@@ -93,23 +93,32 @@ pub fn build_context(
             (Some(_), Attribution::None) | (None, _) => (Value::from(""), false, false),
         };
 
-    let author_name = post
-        .author
-        .as_ref()
-        .and_then(|a| a.name.clone())
-        .or_else(|| post.author.as_ref().and_then(|a| a.handle.clone()))
+    // A handle is shown as "@name". A name that *is* the handle (older twitter
+    // rows stored the handle as the name) would read as "asobinin (@asobinin)",
+    // so the duplicate is dropped instead of printed twice.
+    let given_name = post.author.as_ref().and_then(|a| a.name.clone());
+    let raw_handle = post.author.as_ref().and_then(|a| a.handle.clone());
+    let display_handle = raw_handle.as_deref().map(|h| {
+        if h.starts_with('@') {
+            h.to_string()
+        } else {
+            format!("@{h}")
+        }
+    });
+    // a handle identical to the name is dropped from the "(...)" suffix, but it
+    // still serves as the label when there is no display name at all
+    let handle = display_handle
+        .clone()
+        .filter(|h| {
+            given_name
+                .as_deref()
+                .is_none_or(|name| !name.eq_ignore_ascii_case(h.trim_start_matches('@')))
+        })
+        .unwrap_or_default();
+    let author_label = given_name
+        .clone()
+        .or(display_handle)
         .unwrap_or_else(|| "unknown artist".to_string());
-    let author_handle = post
-        .author
-        .as_ref()
-        .and_then(|a| a.handle.clone())
-        .map(|h| {
-            if h.starts_with('@') {
-                h
-            } else {
-                format!("@{h}")
-            }
-        });
     let author_url = post
         .author
         .as_ref()
@@ -145,13 +154,17 @@ pub fn build_context(
     );
 
     let mut author_map = BTreeMap::new();
-    author_map.insert("name".to_string(), Value::from(author_name));
+    // `name` keeps its old meaning (name, else handle, else a placeholder) so
+    // custom templates keep working; `label` is the same rule under a clearer
+    // name, and `given` is the real display name (may be empty).
+    author_map.insert("name".to_string(), Value::from(author_label.clone()));
+    author_map.insert("label".to_string(), Value::from(author_label));
     author_map.insert(
-        "handle".to_string(),
-        Value::from(author_handle.unwrap_or_default()),
+        "given".to_string(),
+        Value::from(given_name.unwrap_or_default()),
     );
+    author_map.insert("handle".to_string(), Value::from(handle));
     author_map.insert("url".to_string(), Value::from(author_url));
-
     let mut channel_map = BTreeMap::new();
     channel_map.insert("id".to_string(), Value::from(channel.id));
     channel_map.insert("title".to_string(), Value::from(channel.title.clone()));
@@ -225,6 +238,7 @@ pub fn sample_context() -> CaptionContext {
             bytes: 1000,
             is_video: false,
             poster_hash: None,
+            sensitive: false,
         }],
     };
     build_context(&channel, &post, false, false, CAPTION_LIMIT)
@@ -282,6 +296,7 @@ mod tests {
                 bytes: 1,
                 is_video: false,
                 poster_hash: None,
+                sensitive: false,
             }],
         }
     }
@@ -296,7 +311,7 @@ mod tests {
         assert_eq!(lines[1], "");
         assert_eq!(lines[2], "A quiet street at dusk.");
         assert_eq!(lines[3], "");
-        assert_eq!(lines[4], "#original #landscape #pixiv");
+        assert_eq!(lines[4], "#original #landscape");
         assert_eq!(lines[5], "");
         assert_eq!(
             lines[6],
@@ -328,7 +343,7 @@ mod tests {
         let mut channel = Channel::new("ch", "@ch");
         channel.tag_style = TagStyle::Plain;
         let out = renderer.render(&channel, &ctx(&channel)).unwrap();
-        assert!(out.text.contains("original, landscape, pixiv"));
+        assert!(out.text.contains("original, landscape"));
         assert!(!out.text.contains('#'));
 
         channel.tag_style = TagStyle::None;
@@ -342,7 +357,8 @@ mod tests {
         channel.max_tags = 1;
         let post = sample_post();
         let tags = caption_tags(&channel, &post, false);
-        assert_eq!(tags, vec!["original".to_string(), "pixiv".to_string()]);
+        // the source tag is off by default now, so the cap leaves one tag
+        assert_eq!(tags, vec!["original".to_string()]);
     }
 
     #[test]
@@ -404,7 +420,11 @@ mod tests {
         post.title = None;
         let context = build_context(&channel, &post, false, false, CAPTION_LIMIT);
         let out = renderer.render(&channel, &context).unwrap();
-        assert!(out.text.contains("unknown artist"));
+        assert!(
+            !out.text.contains("unknown artist"),
+            "no placeholder author line: {}",
+            out.text
+        );
         assert!(out.text.contains("#original"));
         assert!(!out.text.starts_with('\n'));
     }

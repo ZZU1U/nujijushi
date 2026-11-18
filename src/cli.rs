@@ -1516,14 +1516,16 @@ async fn cmd_show(state: &AppState, id: i64, channel: Option<String>, raw: bool)
     println!("media     {} item(s)", post.media.len());
     for media in &post.media {
         println!(
-            "  #{} {}{} {}x{} {:.1} KiB  {}",
+            "  #{} {}{} {}x{} {:.1} KiB  {}{}",
             media.ordinal,
             media.ext,
             if media.is_video { " (video)" } else { "" },
             media.width.unwrap_or(0),
             media.height.unwrap_or(0),
             media.bytes as f64 / 1024.0,
-            media.blob_hash.chars().take(12).collect::<String>()
+            media.blob_hash.chars().take(12).collect::<String>(),
+            // the source flagged this item on its own (twitter marks images)
+            if media.sensitive { "  nsfw" } else { "" }
         );
     }
 

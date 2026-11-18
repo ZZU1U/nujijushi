@@ -168,6 +168,7 @@ impl Harness {
                 bytes: 1024,
                 is_video: false,
                 poster_hash: None,
+                sensitive: false,
             })
             .collect();
         let (post_id, _) = self

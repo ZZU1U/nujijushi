@@ -1,8 +1,8 @@
-{%- if author.name -%}
-<b>{{ author.name }}</b>{% if author.handle %} ({{ author.handle }}){% endif %}{% if source_link and attribution_inline %} · {{ source_link }}{% endif %}
+{%- if author.given or author.handle -%}
+<b>{{ author.label }}</b>{% if author.given and author.handle %} ({{ author.handle }}){% endif %}{% if source_link and attribution_inline %} · {{ source_link }}{% endif %}
 {% endif -%}
 {%- if post.description -%}
-{% if author.name %}
+{% if author.given or author.handle %}
 
 {% endif %}{{ post.description | truncate_words(200) }}
 {% endif -%}

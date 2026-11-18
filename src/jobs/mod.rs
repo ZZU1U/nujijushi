@@ -145,6 +145,7 @@ async fn store_post(
             bytes: ingested.bytes,
             is_video: ingested.is_video,
             poster_hash: if ingested.is_video { poster_hash } else { None },
+            sensitive: file.sensitive,
         });
     }
 

@@ -28,6 +28,7 @@ impl StagedFile {
         PostFile {
             path: self.media.clone(),
             is_video: self.is_video(),
+            sensitive: false,
         }
     }
 }
@@ -123,7 +124,13 @@ pub fn group(files: Vec<StagedFile>) -> Vec<Group> {
     for file in files {
         let meta = file.meta.as_deref().and_then(read_json);
         let key = group_key(meta.as_ref(), &file.media);
-        let post_file = file.to_post_file();
+        // the sensitive flag is per item: this file's own sidecar decides, not the
+        // group's first one (twitter marks individual images of a tweet)
+        let mut post_file = file.to_post_file();
+        post_file.sensitive = meta
+            .as_ref()
+            .map(crate::source::normalize::sensitive)
+            .unwrap_or(false);
         match groups.iter_mut().find(|g| g.key == key) {
             Some(existing) => {
                 existing.files.push(post_file);
@@ -193,5 +200,29 @@ mod tests {
         let files = collect(dir.path()).unwrap();
         assert_eq!(files.len(), 1);
         assert!(files[0].media.ends_with("image.PNG"));
+    }
+
+    #[test]
+    fn each_file_keeps_its_own_sensitive_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("1_p0.png");
+        let second = dir.path().join("1_p1.png");
+        std::fs::write(&first, b"x").unwrap();
+        std::fs::write(&second, b"x").unwrap();
+        std::fs::write(
+            sidecar_path(&first),
+            r#"{"tweet_id": 1, "possibly_sensitive": true}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            sidecar_path(&second),
+            r#"{"tweet_id": 1, "possibly_sensitive": false}"#,
+        )
+        .unwrap();
+
+        let groups = group(collect(dir.path()).unwrap());
+        assert_eq!(groups.len(), 1, "both files belong to one post");
+        let flags: Vec<bool> = groups[0].files.iter().map(|file| file.sensitive).collect();
+        assert_eq!(flags, vec![true, false], "the flag stays with its item");
     }
 }

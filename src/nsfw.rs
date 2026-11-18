@@ -168,6 +168,7 @@ mod tests {
                 bytes: 1,
                 is_video: false,
                 poster_hash: None,
+                sensitive: false,
             }],
         }
     }
@@ -275,5 +276,28 @@ mod tests {
         let mut ch = channel(NsfwPolicy::Allow);
         ch.min_media = 1;
         assert!(!evaluate(&p, &ch, &rules(&[], &[])).is_allowed());
+    }
+
+    #[test]
+    fn one_sensitive_item_makes_the_post_nsfw() {
+        // twitter flags individual images; the post-level rating can still be sfw
+        let mut post = post_with(&[], Rating::Sfw);
+        post.media[0].sensitive = true;
+        assert!(post.is_nsfw(false), "a sensitive item is enough");
+
+        let spoil = channel(NsfwPolicy::Spoil);
+        assert_eq!(
+            evaluate(&post, &spoil, &rules(&[], &[])).verdict,
+            Verdict::SendSpoilered
+        );
+        let reject = channel(NsfwPolicy::Reject);
+        assert!(!evaluate(&post, &reject, &rules(&[], &[])).is_allowed());
+
+        // the manual override still wins over a per-media flag
+        post.nsfw_override = Some(false);
+        assert_eq!(
+            evaluate(&post, &spoil, &rules(&[], &[])).verdict,
+            Verdict::Send
+        );
     }
 }

@@ -20,6 +20,8 @@ pub struct NewMedia {
     pub bytes: i64,
     pub is_video: bool,
     pub poster_hash: Option<String>,
+    /// Source-side "this item is sensitive" flag.
+    pub sensitive: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -88,6 +90,7 @@ fn media_from_row(row: &Row<'_>) -> rusqlite::Result<MediaItem> {
         bytes: row.get("bytes")?,
         is_video: get_bool(row, "is_video")?,
         poster_hash: row.get("poster_hash")?,
+        sensitive: get_bool(row, "sensitive")?,
     })
 }
 
@@ -179,8 +182,8 @@ pub fn upsert(conn: &Connection, np: &NormalizedPost, media: &[NewMedia]) -> Res
                 )?;
             }
             conn.execute(
-                "INSERT INTO media (post_id, ordinal, blob_hash, mime, width, height, is_video, poster_hash)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO media (post_id, ordinal, blob_hash, mime, width, height, is_video, poster_hash, sensitive)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     post_id,
                     ordinal as i64,
@@ -189,7 +192,8 @@ pub fn upsert(conn: &Connection, np: &NormalizedPost, media: &[NewMedia]) -> Res
                     item.width.map(|v| v as i64),
                     item.height.map(|v| v as i64),
                     if item.is_video { 1 } else { 0 },
-                    item.poster_hash
+                    item.poster_hash,
+                    if item.sensitive { 1 } else { 0 }
                 ],
             )?;
         }
@@ -238,7 +242,7 @@ pub fn get(conn: &Connection, id: i64) -> Result<Post> {
 
     let mut stmt = conn.prepare(
         "SELECT m.id, m.post_id, m.ordinal, m.blob_hash, m.mime, m.width, m.height, m.is_video,
-                m.poster_hash, b.ext, b.bytes
+                m.poster_hash, m.sensitive, b.ext, b.bytes
          FROM media m JOIN blobs b ON b.hash = m.blob_hash
          WHERE m.post_id = ?1 ORDER BY m.ordinal",
     )?;
@@ -545,5 +549,31 @@ mod tests {
                 .unwrap();
             assert_eq!(flag != 0, rating.is_nsfw(), "rating {rating}");
         }
+    }
+
+    #[test]
+    fn a_sensitive_item_survives_the_round_trip() {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        let post = crate::source::NormalizedPost::new("twitter", "42");
+        let media = vec![NewMedia {
+            blob_hash: "hash-1".into(),
+            ext: "png".into(),
+            mime: None,
+            width: Some(100),
+            height: Some(100),
+            bytes: 7,
+            is_video: false,
+            poster_hash: None,
+            sensitive: true,
+        }];
+        let id = db
+            .with(|conn| {
+                let (id, _) = upsert(conn, &post, &media)?;
+                Ok(id)
+            })
+            .unwrap();
+        let stored = db.with(|conn| get(conn, id)).unwrap();
+        assert_eq!(stored.media.len(), 1);
+        assert!(stored.media[0].sensitive, "the per-item flag is persisted");
     }
 }

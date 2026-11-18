@@ -106,7 +106,10 @@ fn first_string_path(value: &Value, paths: &[&str]) -> Option<String> {
 /// nests them (a retweet or quote carries its own object, media items carry a
 /// `sensitive` flag of their own), and the cost of missing one is adult media
 /// reaching a channel that believed the post was sfw — so scan the whole tree.
-fn flagged_sensitive(value: &Value) -> bool {
+///
+/// `pair` calls this per staged file, so a flag on one image of a tweet is kept
+/// per item instead of being flattened into the post.
+pub fn sensitive(value: &Value) -> bool {
     const KEYS: &[&str] = &[
         "possibly_sensitive",
         "sensitive",
@@ -117,10 +120,9 @@ fn flagged_sensitive(value: &Value) -> bool {
     ];
     match value {
         Value::Object(map) => map.iter().any(|(key, val)| {
-            (KEYS.contains(&key.to_ascii_lowercase().as_str()) && truthy(val))
-                || flagged_sensitive(val)
+            (KEYS.contains(&key.to_ascii_lowercase().as_str()) && truthy(val)) || sensitive(val)
         }),
-        Value::Array(items) => items.iter().any(flagged_sensitive),
+        Value::Array(items) => items.iter().any(sensitive),
         _ => false,
     }
 }
@@ -226,17 +228,17 @@ fn first_timestamp(value: &Value, keys: &[&str]) -> Option<DateTime<Utc>> {
 pub fn tidy_description(raw: &str) -> Option<String> {
     let mut lines: Vec<String> = Vec::new();
     for line in raw.replace('\r', "").lines() {
-        let trimmed = line.trim_end();
-        // drop lines that are nothing but hashtags/handles
-        let words: Vec<&str> = trimmed.split_whitespace().collect();
-        if !words.is_empty()
-            && words
-                .iter()
-                .all(|w| w.starts_with('#') || w.starts_with('@'))
-        {
+        if line.trim().is_empty() {
+            // keep the paragraph break; the fold below collapses runs of them
+            lines.push(String::new());
             continue;
         }
-        lines.push(trimmed.to_string());
+        let scrubbed = scrub_tokens(line.trim_end());
+        if scrubbed.trim().is_empty() {
+            // the line was nothing but hashtags/handles
+            continue;
+        }
+        lines.push(scrubbed);
     }
     let joined = lines.join("\n");
     let squeezed = joined
@@ -252,7 +254,22 @@ pub fn tidy_description(raw: &str) -> Option<String> {
             acc
         });
     let text = squeezed.join("\n").trim().to_string();
+    // a post body is shown in one caption: keep it bounded
+    let text = crate::render::truncate::shorten(&text, DESCRIPTION_LIMIT);
     if text.is_empty() { None } else { Some(text) }
+}
+
+/// Longest stored description; longer ones are cut with an ellipsis.
+pub const DESCRIPTION_LIMIT: usize = 1000;
+
+/// Drop `#hashtag` and `@mention` tokens: Telegram treats both as markup and a
+/// caption repeating them reads badly. Only a leading marker counts, so `C#` and
+/// `user@host` survive.
+fn scrub_tokens(line: &str) -> String {
+    line.split_whitespace()
+        .filter(|token| !(token.starts_with('#') || token.starts_with('@')))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Build a post from one gallery-dl metadata object.
@@ -326,7 +343,11 @@ pub fn from_gallery_metadata(
     let mut rating = first_string(meta, &["rating", "x_restrict", "safety", "rating_general"])
         .and_then(|r| rating_from_words(&r))
         // the platform's own "sensitive" flag beats guessing from tags
-        .or_else(|| flagged_sensitive(meta).then_some(Rating::Explicit));
+        // the platform's own "sensitive" flag beats guessing from tags, and a
+        // flag that only sits on one staged item still rates the whole post
+        .or_else(|| {
+            (sensitive(meta) || files.iter().any(|file| file.sensitive)).then_some(Rating::Explicit)
+        });
     if rating.is_none()
         && let Some(x) = meta.get("x_restrict").and_then(|v| v.as_i64())
     {
@@ -618,7 +639,42 @@ mod tests {
     }
 
     #[test]
+    fn tidy_strips_hashtags_and_mentions_and_caps_length() {
+        let out = tidy_description("great art #drawing @friend\n\n\n\nmore #art").unwrap();
+        assert_eq!(
+            out, "great art\n\nmore",
+            "tags removed, one blank line kept"
+        );
+        // a marker inside a token is not a tag
+        assert_eq!(
+            tidy_description("written in C#, by me@example.com").unwrap(),
+            "written in C#, by me@example.com"
+        );
+        let long = "word ".repeat(400);
+        let capped = tidy_description(&long).unwrap();
+        assert!(
+            capped.chars().count() <= DESCRIPTION_LIMIT,
+            "got {} chars",
+            capped.chars().count()
+        );
+        assert!(capped.ends_with('…'), "a cut body ends with an ellipsis");
+    }
+
+    #[test]
     fn missing_id_is_rejected() {
         assert!(from_gallery_metadata(&json!({"title": "x"}), vec![], "pixiv", None).is_none());
+    }
+
+    #[test]
+    fn a_sensitive_file_rates_the_post_without_a_metadata_flag() {
+        // the flag lives on one image's sidecar, the tweet metadata is clean
+        let meta = json!({ "tweet_id": 42, "username": "asobinin" });
+        let files = vec![crate::source::PostFile {
+            path: std::path::PathBuf::from("/tmp/a.png"),
+            is_video: false,
+            sensitive: true,
+        }];
+        let post = from_gallery_metadata(&meta, files, "twitter", None).unwrap();
+        assert_eq!(post.rating, Rating::Explicit);
     }
 }
