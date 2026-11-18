@@ -255,6 +255,7 @@ async fn download_files(
             path: dest,
             is_video: file.is_video(),
             sensitive: false,
+            meta: None,
         });
     }
     if staged.is_empty() {
@@ -384,6 +385,7 @@ async fn fetch_embed(state: &AppState, link: &TelegramLink, name: &str) -> Resul
             path: dest,
             is_video: false,
             sensitive: false,
+            meta: None,
         }],
     );
     post.notes = Some("public embed (degraded: single image, reduced size)".to_string());

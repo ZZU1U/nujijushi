@@ -197,6 +197,8 @@ pub struct MediaItem {
     pub poster_hash: Option<String>,
     /// The source flagged *this item* as sensitive (twitter does it per image).
     pub sensitive: bool,
+    /// This item's own extractor metadata (JSON), when the source wrote one.
+    pub meta_json: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

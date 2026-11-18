@@ -673,6 +673,7 @@ mod tests {
             path: std::path::PathBuf::from("/tmp/a.png"),
             is_video: false,
             sensitive: true,
+            meta: None,
         }];
         let post = from_gallery_metadata(&meta, files, "twitter", None).unwrap();
         assert_eq!(post.rating, Rating::Explicit);

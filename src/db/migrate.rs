@@ -10,6 +10,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0003_bot.sql"),
     include_str!("../../migrations/0004_storage.sql"),
     include_str!("../../migrations/0005_media_hygiene.sql"),
+    include_str!("../../migrations/0006_media_meta.sql"),
 ];
 
 pub fn schema_version(conn: &Connection) -> Result<i64> {
@@ -84,8 +85,9 @@ mod tests {
             .collect::<std::result::Result<_, _>>()
             .unwrap();
         assert!(
-            media_columns.iter().any(|column| column == "sensitive"),
-            "media.sensitive is missing: {media_columns:?}"
+            media_columns.iter().any(|column| column == "sensitive")
+                && media_columns.iter().any(|column| column == "meta_json"),
+            "media.sensitive / media.meta_json are missing: {media_columns:?}"
         );
     }
 }

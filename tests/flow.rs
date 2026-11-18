@@ -83,6 +83,7 @@ impl Harness {
                 is_video,
                 poster_hash: None,
                 sensitive: false,
+                meta_json: None,
             })
             .collect();
         let created = label.to_string();

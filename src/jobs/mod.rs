@@ -146,6 +146,7 @@ async fn store_post(
             is_video: ingested.is_video,
             poster_hash: if ingested.is_video { poster_hash } else { None },
             sensitive: file.sensitive,
+            meta_json: file.meta.clone(),
         });
     }
 

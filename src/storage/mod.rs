@@ -424,6 +424,7 @@ pub mod tests_support {
                     is_video: ordinal == 1,
                     poster_hash: None,
                     sensitive: false,
+                    meta_json: None,
                 })
                 .collect(),
         }

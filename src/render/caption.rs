@@ -239,6 +239,7 @@ pub fn sample_context() -> CaptionContext {
             is_video: false,
             poster_hash: None,
             sensitive: false,
+            meta_json: None,
         }],
     };
     build_context(&channel, &post, false, false, CAPTION_LIMIT)
@@ -297,6 +298,7 @@ mod tests {
                 is_video: false,
                 poster_hash: None,
                 sensitive: false,
+                meta_json: None,
             }],
         }
     }

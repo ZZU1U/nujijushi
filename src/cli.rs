@@ -1538,6 +1538,16 @@ async fn cmd_show(state: &AppState, id: i64, channel: Option<String>, raw: bool)
             Some(text) => println!("{}", pretty_metadata(&text)),
             None => println!("(no source metadata stored for this post)"),
         }
+        // each item keeps its own sidecar: twitter reports per-image fields there
+        for media in &post.media {
+            if let Some(meta) = &media.meta_json {
+                println!(
+                    "\n--- media #{} ---\n{}",
+                    media.ordinal,
+                    pretty_metadata(meta)
+                );
+            }
+        }
     }
 
     if let Some(selector) = channel {

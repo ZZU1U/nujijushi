@@ -169,6 +169,7 @@ impl Harness {
                 is_video: false,
                 poster_hash: None,
                 sensitive: false,
+                meta_json: None,
             })
             .collect();
         let (post_id, _) = self

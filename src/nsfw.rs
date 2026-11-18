@@ -169,6 +169,7 @@ mod tests {
                 is_video: false,
                 poster_hash: None,
                 sensitive: false,
+                meta_json: None,
             }],
         }
     }

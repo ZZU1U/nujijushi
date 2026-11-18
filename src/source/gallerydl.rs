@@ -329,6 +329,7 @@ mod tests {
                 path: PathBuf::from("/tmp/a.png"),
                 is_video: false,
                 sensitive: false,
+                meta: None,
             }],
         }];
         let posts = groups_to_posts(groups, "https://x.com/u/status/1");

@@ -29,6 +29,7 @@ impl StagedFile {
             path: self.media.clone(),
             is_video: self.is_video(),
             sensitive: false,
+            meta: None,
         }
     }
 }
@@ -131,6 +132,7 @@ pub fn group(files: Vec<StagedFile>) -> Vec<Group> {
             .as_ref()
             .map(crate::source::normalize::sensitive)
             .unwrap_or(false);
+        post_file.meta = keep_meta(&meta);
         match groups.iter_mut().find(|g| g.key == key) {
             Some(existing) => {
                 existing.files.push(post_file);
@@ -148,6 +150,24 @@ pub fn group(files: Vec<StagedFile>) -> Vec<Group> {
     groups
 }
 
+/// Longest per-item metadata blob we keep: a sidecar is a few KB, and anything
+/// past this is almost always a tag dump nobody reads again.
+pub const META_LIMIT: usize = 8 * 1024;
+
+/// This file's own sidecar as JSON, or a marker when it is unreasonably large
+/// (a truncated JSON document would only confuse `show --raw`).
+fn keep_meta(meta: &Option<Value>) -> Option<String> {
+    let value = meta.as_ref()?;
+    let text = serde_json::to_string(value).ok()?;
+    if text.len() <= META_LIMIT {
+        Some(text)
+    } else {
+        Some(format!(
+            r#"{{"_omitted":"sidecar was {} bytes"}}"#,
+            text.len()
+        ))
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,5 +244,21 @@ mod tests {
         assert_eq!(groups.len(), 1, "both files belong to one post");
         let flags: Vec<bool> = groups[0].files.iter().map(|file| file.sensitive).collect();
         assert_eq!(flags, vec![true, false], "the flag stays with its item");
+    }
+
+    #[test]
+    fn each_file_keeps_its_own_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let media = dir.path().join("1_p0.png");
+        std::fs::write(&media, b"x").unwrap();
+        std::fs::write(
+            sidecar_path(&media),
+            r#"{"tweet_id":1,"media_id":7,"width":1200}"#,
+        )
+        .unwrap();
+
+        let groups = group(collect(dir.path()).unwrap());
+        let meta = groups[0].files[0].meta.as_deref().expect("sidecar kept");
+        assert!(meta.contains("\"media_id\":7"), "{meta}");
     }
 }

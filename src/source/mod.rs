@@ -36,6 +36,8 @@ pub struct PostFile {
     pub is_video: bool,
     /// The source flagged *this file* as sensitive (twitter does it per image).
     pub sensitive: bool,
+    /// This file's own sidecar JSON, so per-item metadata is not lost.
+    pub meta: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

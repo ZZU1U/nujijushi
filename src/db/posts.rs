@@ -22,6 +22,8 @@ pub struct NewMedia {
     pub poster_hash: Option<String>,
     /// Source-side "this item is sensitive" flag.
     pub sensitive: bool,
+    /// This item's own extractor metadata (JSON), when the source wrote one.
+    pub meta_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -91,6 +93,7 @@ fn media_from_row(row: &Row<'_>) -> rusqlite::Result<MediaItem> {
         is_video: get_bool(row, "is_video")?,
         poster_hash: row.get("poster_hash")?,
         sensitive: get_bool(row, "sensitive")?,
+        meta_json: row.get("meta_json")?,
     })
 }
 
@@ -182,8 +185,8 @@ pub fn upsert(conn: &Connection, np: &NormalizedPost, media: &[NewMedia]) -> Res
                 )?;
             }
             conn.execute(
-                "INSERT INTO media (post_id, ordinal, blob_hash, mime, width, height, is_video, poster_hash, sensitive)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT INTO media (post_id, ordinal, blob_hash, mime, width, height, is_video, poster_hash, sensitive, meta_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     post_id,
                     ordinal as i64,
@@ -193,7 +196,8 @@ pub fn upsert(conn: &Connection, np: &NormalizedPost, media: &[NewMedia]) -> Res
                     item.height.map(|v| v as i64),
                     if item.is_video { 1 } else { 0 },
                     item.poster_hash,
-                    if item.sensitive { 1 } else { 0 }
+                    if item.sensitive { 1 } else { 0 },
+                    item.meta_json
                 ],
             )?;
         }
@@ -242,7 +246,7 @@ pub fn get(conn: &Connection, id: i64) -> Result<Post> {
 
     let mut stmt = conn.prepare(
         "SELECT m.id, m.post_id, m.ordinal, m.blob_hash, m.mime, m.width, m.height, m.is_video,
-                m.poster_hash, m.sensitive, b.ext, b.bytes
+                m.poster_hash, m.sensitive, m.meta_json, b.ext, b.bytes
          FROM media m JOIN blobs b ON b.hash = m.blob_hash
          WHERE m.post_id = ?1 ORDER BY m.ordinal",
     )?;
@@ -552,7 +556,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sensitive_item_survives_the_round_trip() {
+    fn a_sensitive_item_and_its_own_metadata_survive_the_round_trip() {
         let db = crate::db::Db::open_in_memory().unwrap();
         let post = crate::source::NormalizedPost::new("twitter", "42");
         let media = vec![NewMedia {
@@ -565,6 +569,7 @@ mod tests {
             is_video: false,
             poster_hash: None,
             sensitive: true,
+            meta_json: Some(r#"{"media_id":7,"sensitive":true}"#.into()),
         }];
         let id = db
             .with(|conn| {
@@ -575,5 +580,10 @@ mod tests {
         let stored = db.with(|conn| get(conn, id)).unwrap();
         assert_eq!(stored.media.len(), 1);
         assert!(stored.media[0].sensitive, "the per-item flag is persisted");
+        assert_eq!(
+            stored.media[0].meta_json.as_deref(),
+            Some(r#"{"media_id":7,"sensitive":true}"#),
+            "the item's own extractor metadata is persisted"
+        );
     }
 }
