@@ -551,10 +551,13 @@ async fn posts_bulk(
             let ids_for_db = ids.clone();
             app.db
                 .call(move |conn| {
-                    for id in &ids_for_db {
-                        post_db::set_state(conn, *id, state)?;
-                    }
-                    Ok(())
+                    // all or nothing: a failing id must not leave half the batch done
+                    crate::db::transaction(conn, |conn| {
+                        for id in &ids_for_db {
+                            post_db::set_state(conn, *id, state)?;
+                        }
+                        Ok(())
+                    })
                 })
                 .await?;
             format!("{} post(s) -> {}", ids.len(), state)
@@ -568,10 +571,12 @@ async fn posts_bulk(
             let ids_for_db = ids.clone();
             app.db
                 .call(move |conn| {
-                    for id in &ids_for_db {
-                        post_db::set_nsfw_override(conn, *id, value)?;
-                    }
-                    Ok(())
+                    crate::db::transaction(conn, |conn| {
+                        for id in &ids_for_db {
+                            post_db::set_nsfw_override(conn, *id, value)?;
+                        }
+                        Ok(())
+                    })
                 })
                 .await?;
             format!("nsfw override updated on {} post(s)", ids.len())
@@ -597,10 +602,12 @@ async fn posts_bulk(
             let ids_for_db = ids.clone();
             app.db
                 .call(move |conn| {
-                    for id in &ids_for_db {
-                        post_db::delete(conn, *id)?;
-                    }
-                    Ok(())
+                    crate::db::transaction(conn, |conn| {
+                        for id in &ids_for_db {
+                            post_db::delete(conn, *id)?;
+                        }
+                        Ok(())
+                    })
                 })
                 .await?;
             format!("{} post(s) deleted", ids.len())

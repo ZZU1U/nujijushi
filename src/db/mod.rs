@@ -154,3 +154,54 @@ pub fn get_bool(row: &Row<'_>, col: &str) -> rusqlite::Result<bool> {
     let raw: Option<i64> = row.get(col)?;
     Ok(raw.unwrap_or(0) != 0)
 }
+
+/// Run a batch of writes atomically: any `?` inside `f` rolls the whole batch
+/// back, so a bulk action never leaves half of it applied.
+pub fn transaction<T>(
+    conn: &mut Connection,
+    f: impl FnOnce(&Connection) -> Result<T>,
+) -> Result<T> {
+    let tx = conn.transaction()?;
+    let out = f(&tx)?;
+    tx.commit()?;
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Channel;
+
+    #[test]
+    fn a_failing_batch_rolls_back_completely() {
+        let db = Db::open_in_memory().unwrap();
+        let channel = Channel::new("Night", "@night");
+        let result: Result<()> = db.with(|conn| {
+            transaction(conn, |conn| {
+                channels::insert(conn, &channel)?;
+                // same @username: violates the unique index, so the batch fails
+                channels::insert(conn, &channel)?;
+                Ok(())
+            })
+        });
+        assert!(result.is_err(), "the duplicate insert must fail");
+        assert!(
+            db.with(|conn| channels::list(conn)).unwrap().is_empty(),
+            "the first insert has to be rolled back with the batch"
+        );
+    }
+
+    #[test]
+    fn a_batch_commits_when_every_write_succeeds() {
+        let db = Db::open_in_memory().unwrap();
+        db.with(|conn| {
+            transaction(conn, |conn| {
+                channels::insert(conn, &Channel::new("A", "@a"))?;
+                channels::insert(conn, &Channel::new("B", "@b"))?;
+                Ok(())
+            })
+        })
+        .unwrap();
+        assert_eq!(db.with(|conn| channels::list(conn)).unwrap().len(), 2);
+    }
+}
