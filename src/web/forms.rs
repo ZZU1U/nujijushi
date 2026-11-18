@@ -21,7 +21,7 @@ pub struct PostFilter {
     pub nsfw: Option<String>,
     #[serde(default)]
     pub search: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "empty_as_none")]
     pub page: Option<i64>,
     #[serde(default)]
     pub flash: Option<String>,
@@ -43,6 +43,30 @@ pub fn selected_ids(form: &FormMap) -> Vec<i64> {
         .collect();
     ids.sort_unstable();
     ids
+}
+
+/// Deserialize an optional number from a field the browser may submit empty.
+///
+/// `<select><option value="">` and a cleared `<input type=number>` are sent as
+/// `name=`, and serde's plain `Option<i64>` rejects the empty string — which
+/// failed the *whole* form body ("cannot parse integer from empty string") and
+/// turned e.g. "import these links, don't queue them" into an error page.
+pub fn empty_as_none<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    let raw = Option::<String>::deserialize(deserializer)?;
+    match raw {
+        None => Ok(None),
+        Some(text) if text.trim().is_empty() => Ok(None),
+        Some(text) => text
+            .trim()
+            .parse::<T>()
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -70,7 +94,7 @@ pub struct ChannelForm {
     pub alias: Option<String>,
     pub title: String,
     pub tg_id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "empty_as_none")]
     pub interval_minutes: Option<i64>,
     #[serde(default)]
     pub active_from: Option<String>,
@@ -78,15 +102,15 @@ pub struct ChannelForm {
     pub active_to: Option<String>,
     #[serde(default)]
     pub tz: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "empty_as_none")]
     pub daily_cap: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "empty_as_none")]
     pub jitter_secs: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "empty_as_none")]
     pub artist_cooldown: Option<i64>,
     #[serde(default)]
     pub nsfw_policy: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "empty_as_none")]
     pub min_media: Option<i64>,
     #[serde(default)]
     pub blocked_tags: Option<String>,
@@ -94,7 +118,7 @@ pub struct ChannelForm {
     pub required_tags: Option<String>,
     #[serde(default)]
     pub tag_style: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "empty_as_none")]
     pub max_tags: Option<i64>,
     #[serde(default)]
     pub attribution: Option<String>,
@@ -124,9 +148,9 @@ pub struct ImportForm {
     pub csrf: String,
     /// One target per line (URL or path)
     pub targets: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "empty_as_none")]
     pub channel: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "empty_as_none")]
     pub priority: Option<i64>,
 }
 
@@ -145,7 +169,7 @@ pub struct QueueAction {
     pub id: i64,
     /// skip | pin | unpin | reset | remove | delivered | not_delivered
     pub action: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "empty_as_none")]
     pub channel: Option<i64>,
     #[serde(default)]
     pub csrf: String,
@@ -188,5 +212,64 @@ mod tests {
         assert!(ChannelForm::flag(&Some("on".into())));
         assert!(!ChannelForm::flag(&None));
         assert!(!ChannelForm::flag(&Some("false".into())));
+    }
+
+    fn import_form(body: serde_json::Value) -> Result<ImportForm, serde_json::Error> {
+        serde_json::from_value(body)
+    }
+
+    #[test]
+    fn an_empty_select_or_number_input_is_none() {
+        // the exact shape the import page posts when "don't queue" is chosen
+        let form = import_form(serde_json::json!({
+            "csrf": "tok",
+            "targets": "https://x.com/a/status/1\nhttps://x.com/b/status/2",
+            "channel": "",
+            "priority": "  ",
+        }))
+        .unwrap();
+        assert_eq!(form.channel, None);
+        assert_eq!(form.priority, None);
+        assert_eq!(form.target_list().len(), 2);
+    }
+
+    #[test]
+    fn a_filled_number_is_parsed_and_junk_is_an_error() {
+        let form = import_form(serde_json::json!({
+            "csrf": "tok",
+            "targets": "https://x.com/a/status/1",
+            "channel": "3",
+        }))
+        .unwrap();
+        assert_eq!(form.channel, Some(3));
+
+        let bad = import_form(serde_json::json!({
+            "csrf": "tok",
+            "targets": "https://x.com/a/status/1",
+            "channel": "abc",
+        }));
+        assert!(bad.is_err(), "junk must still be rejected");
+    }
+
+    #[test]
+    fn cleared_channel_numbers_are_none_too() {
+        // every numeric field of the channel form tolerates an empty submission
+        let form: ChannelForm = serde_json::from_value(serde_json::json!({
+            "title": "Night",
+            "tg_id": "@night",
+            "interval_minutes": "",
+            "daily_cap": "",
+            "jitter_secs": "",
+            "artist_cooldown": "",
+            "min_media": "",
+            "max_tags": "12",
+        }))
+        .unwrap();
+        assert_eq!(form.interval_minutes, None);
+        assert_eq!(form.daily_cap, None);
+        assert_eq!(form.jitter_secs, None);
+        assert_eq!(form.artist_cooldown, None);
+        assert_eq!(form.min_media, None);
+        assert_eq!(form.max_tags, Some(12));
     }
 }
