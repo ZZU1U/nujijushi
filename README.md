@@ -412,7 +412,7 @@ closed if the text is cut). Default layout:
 
 A quiet street at dusk, hand painted.
 
-#original #landscape #pixiv
+#original #landscape
 
 via <a href="https://www.pixiv.net/artworks/1">Pixiv</a>
 ```
@@ -420,21 +420,27 @@ via <a href="https://www.pixiv.net/artworks/1">Pixiv</a>
 Per-channel template (UI → channel → *caption template*, or `--template-file`):
 
 ```jinja
-<b>{{ author.name }}</b>{% if author.handle %} ({{ author.handle }}){% endif %}
+<b>{{ author.label }}</b>{% if author.given and author.handle %} ({{ author.handle }}){% endif %}
 {{ post.description | truncate_words(180) }}
 {{ hashtags }}
 ```
 
 Context: `post.{id,source,source_id,url,title,description,rating,date,media_count}`,
-`author.{name,handle,url}`, `channel.{id,title,tg_id}`, `tags`, `hashtags`,
+`author.{label,given,handle,url}`, `channel.{id,title,tg_id}`, `tags`, `hashtags`,
 `source_label`, `source_link`, `attribution_inline`, `attribution_footer`, `nsfw`, `spoiler`.
+`author.label` is the name, else the `@handle`, else "unknown artist"; `author.given` is the
+real display name only (empty for a handle-only account), and the duplicate `(@handle)` is
+dropped when the two are the same word. `author.name` is kept as an alias of `label`.
 
 Filters: `truncate_words(n)`, `hashtags`, `tag_links(base)`, `one_line`.
 Autoescaping is on — `{{ source_link }}` is the only pre-built HTML.
 
 Per-channel options: `--tag-style hashtags|plain|none`, `--max-tags N`,
 `--attribution footer|link|none`, `--include-source-tag`, `--silent`, `--protect`.
-Multiline text is kept; lines that are nothing but hashtags are stripped at import.
+The source tag is **off by default** (no `#twitter`/`#pixiv` appended); pass
+`--include-source-tag` to bring it back per channel.
+Multiline text is kept, but `#hashtags` and `@mentions` are stripped at import, runs of blank
+lines collapse to one, and a body longer than 1000 characters is cut with `…`.
 
 ---
 
@@ -449,6 +455,11 @@ import jobs) · posts grid with filters + bulk approve/reject/NSFW/queue/delete 
 post detail with caption previews per channel · channel list + create · channel editor
 with live next-slot preview · ordered queue with pin/skip/requeue/remove ·
 next-slots preview · import box with job progress · **users** (roles, quotas, ban/promote).
+
+`GET /metrics` answers in the Prometheus text format (posts by state and nsfw, channels by
+enabled, queue depth per channel/state, import jobs, storage mirrors). It sits outside the
+cookie gate because a scraper has no session and the document carries counts only — bind the
+UI to loopback, or block the path in your proxy if the port is reachable from outside.
 
 **Publishing on demand** is available from the UI, not just the CLI:
 * dashboard → **publish next** per channel — sends the next queued post,
@@ -513,7 +524,7 @@ CI runs on every push and pull request (`.github/workflows/ci.yml`: `fmt`, `clip
 and attaches them to the GitHub release (`.github/workflows/release.yml`).
 
 ```bash
-cargo test                     # 253 tests: units, snapshots, flows, bot, webhook, storage, proxy
+cargo test                     # 269 tests: units, snapshots, flows, bot, webhook, storage, proxy
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```

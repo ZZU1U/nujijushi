@@ -155,7 +155,7 @@ mod tests {
             renderer
                 .template_source("default")
                 .unwrap()
-                .contains("author.name")
+                .contains("author.label")
         );
         assert!(renderer.template_source("nope").is_err());
     }

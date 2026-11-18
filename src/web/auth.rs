@@ -55,7 +55,13 @@ pub async fn require_session(
     next: Next,
 ) -> Response {
     let path = req.uri().path().to_string();
-    if path == "/login" || path == "/static/app.css" || path == crate::bot::WEBHOOK_PATH {
+    // metrics sits outside the session gate on purpose: a scraper has no cookie,
+    // and the document only carries counts (never titles, captions or tokens)
+    if path == "/login"
+        || path.starts_with("/static/")
+        || path == "/metrics"
+        || path == crate::bot::WEBHOOK_PATH
+    {
         return next.run(req).await;
     }
     if check(&req, &ws) {

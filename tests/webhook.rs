@@ -218,3 +218,49 @@ async fn polling_mode_removes_a_stale_webhook() {
     );
     assert!(mock.webhook_info().await.unwrap().url.is_empty());
 }
+
+#[tokio::test]
+async fn metrics_are_scrapable_without_the_ui_cookie() {
+    let harness = harness();
+    let response = routes::router(harness.ws.clone())
+        .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(content_type.starts_with("text/plain"), "{content_type}");
+
+    let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let document = String::from_utf8_lossy(&body);
+    assert!(document.contains("nujijushi_info{version="), "{document}");
+    assert!(document.contains("nujijushi_posts_total"), "{document}");
+}
+
+#[tokio::test]
+async fn static_assets_bypass_the_cookie_gate() {
+    let harness = harness();
+    for (path, kind) in [
+        ("/static/app.js", "text/javascript"),
+        ("/static/app.css", "text/css"),
+    ] {
+        let response = routes::router(harness.ws.clone())
+            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        let content_type = response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(content_type.starts_with(kind), "{path}: {content_type}");
+    }
+}

@@ -14,7 +14,7 @@ use super::forms;
 use super::forms::{
     ChannelForm, FormMap, ImportForm, LoginForm, PostEdit, PostFilter, QueueAction,
 };
-use super::views::APP_CSS;
+use super::views::{APP_CSS, APP_JS};
 use super::{WebState, auth as web_auth};
 use crate::db::{
     channels as channel_db, jobs as job_db, posts as post_db, queue as queue_db, tags as tag_db,
@@ -76,6 +76,8 @@ pub fn router(ws: Arc<WebState>) -> Router {
     Router::new()
         .route("/login", get(login_page).post(login_submit))
         .route("/static/app.css", get(css))
+        .route("/metrics", get(metrics_endpoint))
+        .route("/static/app.js", get(js))
         .route(crate::bot::WEBHOOK_PATH, post(webhook))
         .route("/thumb/{hash}", get(thumb))
         .route("/media/{hash}", get(media))
@@ -186,6 +188,34 @@ async fn css() -> Response {
         .into_response()
 }
 
+async fn js() -> Response {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        APP_JS.to_string(),
+    )
+        .into_response()
+}
+
+// ---------------------------------------------------------------- metrics
+
+/// Prometheus scrape endpoint. It sits outside the cookie gate because a scraper
+/// has no session: it exposes counts only, never titles, captions or tokens.
+async fn metrics_endpoint(State(ws): State<Arc<WebState>>) -> Response {
+    match crate::metrics::render(&ws.app).await {
+        Ok(body) => (
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; version=0.0.4; charset=utf-8",
+            )],
+            body,
+        )
+            .into_response(),
+        Err(err) => {
+            tracing::error!("metrics render failed: {err}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
 // ---------------------------------------------------------------- webhook
 
 /// Telegram delivery endpoint. Authenticated by the secret header instead of

@@ -33,6 +33,9 @@ const TEMPLATES: &[(&str, &str)] = &[
 
 pub const APP_CSS: &str = include_str!("../../static/app.css");
 
+/// Progressive-enhancement script; every page still works without it.
+pub const APP_JS: &str = include_str!("../../static/app.js");
+
 pub struct PageRenderer {
     env: Environment<'static>,
 }

@@ -9,6 +9,7 @@ pub mod error;
 pub mod http;
 pub mod jobs;
 pub mod media;
+pub mod metrics;
 pub mod model;
 pub mod nsfw;
 pub mod queue;
