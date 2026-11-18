@@ -23,12 +23,9 @@ pub struct PostAuthor {
 }
 
 impl PostAuthor {
-    /// Same fallback as `model::Author::display`: name, else handle.
+    /// Same rule as the stored `model::Author::display` (one definition).
     pub fn display(&self) -> String {
-        self.name
-            .clone()
-            .or_else(|| self.handle.clone())
-            .unwrap_or_else(|| "unknown artist".to_string())
+        crate::model::display_author(self.name.as_deref(), self.handle.as_deref())
     }
 }
 

@@ -259,20 +259,31 @@ pub fn find_by_source_id(conn: &Connection, source: &str, source_id: &str) -> Re
         .optional()?)
 }
 
-const CARD_SELECT: &str = "
+/// Post-card projection. A function rather than a const because the two rules a
+/// card depends on live elsewhere and must not be copied: what counts as nsfw
+/// (`Rating::nsfw_sql`) and what counts as delivered
+/// (`db::queue::DELIVERED_STATES`).
+fn card_select() -> String {
+    format!(
+        "
     SELECT p.id, p.source, p.source_id, p.rating, p.state,
-           COALESCE(a.name, a.handle) AS author_name,
+           {author} AS author_name,
            p.imported_at, p.description,
-           COALESCE(p.nsfw_override, CASE WHEN p.rating = 'sfw' THEN 0 ELSE 1 END) AS nsfw,
+           COALESCE(p.nsfw_override, CASE WHEN {nsfw} THEN 1 ELSE 0 END) AS nsfw,
            (SELECT COUNT(*) FROM media m WHERE m.post_id = p.id) AS media_count,
            (SELECT COALESCE(m2.poster_hash, m2.blob_hash) FROM media m2 WHERE m2.post_id = p.id
              ORDER BY m2.ordinal LIMIT 1) AS thumb_hash,
            (SELECT COUNT(*) FROM queue q WHERE q.post_id = p.id) AS pushed,
            (SELECT COUNT(*) FROM queue q2 WHERE q2.post_id = p.id
-             AND q2.state IN ('sent', 'sending', 'unknown')) AS delivered,
+             AND q2.state IN ({delivered})) AS delivered,
            (SELECT GROUP_CONCAT(ch.alias, ',') FROM queue q3
              JOIN channels ch ON ch.id = q3.channel_id WHERE q3.post_id = p.id) AS channels
-    FROM posts p LEFT JOIN authors a ON a.id = p.author_id";
+    FROM posts p LEFT JOIN authors a ON a.id = p.author_id",
+        author = crate::model::author_label_sql("a"),
+        nsfw = Rating::nsfw_sql("p.rating"),
+        delivered = crate::db::queue::DELIVERED_STATES,
+    )
+}
 
 fn card_from_row(row: &Row<'_>) -> rusqlite::Result<PostCard> {
     let description: Option<String> = row.get("description")?;
@@ -289,6 +300,7 @@ fn card_from_row(row: &Row<'_>) -> rusqlite::Result<PostCard> {
         pushed: row.get("pushed")?,
         delivered: row.get("delivered")?,
         channels: row.get("channels")?,
+        nsfw: row.get::<_, i64>("nsfw")? != 0,
         snippet: description.map(|d| d.lines().next().unwrap_or_default().to_string()),
     })
 }
@@ -321,9 +333,10 @@ fn filter_sql(filter: &PostFilter) -> (String, Vec<Value>) {
         values.push(Value::Integer(author_id));
     }
     if let Some(nsfw) = filter.nsfw {
-        clauses.push(
-            "COALESCE(p.nsfw_override, CASE WHEN p.rating = 'sfw' THEN 0 ELSE 1 END) = ?".into(),
-        );
+        clauses.push(format!(
+            "COALESCE(p.nsfw_override, CASE WHEN {} THEN 1 ELSE 0 END) = ?",
+            Rating::nsfw_sql("p.rating")
+        ));
         values.push(Value::Integer(if nsfw { 1 } else { 0 }));
     }
     if let Some(search) = &filter.search
@@ -348,7 +361,8 @@ pub fn cards(conn: &Connection, filter: &PostFilter) -> Result<Vec<PostCard>> {
     let (where_sql, values) = filter_sql(filter);
     let limit = if filter.limit > 0 { filter.limit } else { 60 };
     let sql = format!(
-        "{CARD_SELECT}{where_sql} ORDER BY p.imported_at DESC, p.id DESC LIMIT {limit} OFFSET {}",
+        "{}{where_sql} ORDER BY p.imported_at DESC, p.id DESC LIMIT {limit} OFFSET {}",
+        card_select(),
         filter.offset.max(0)
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -462,7 +476,7 @@ pub fn cards_by_ids(conn: &Connection, ids: &[i64]) -> Result<Vec<PostCard>> {
         return Ok(Vec::new());
     }
     let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-    let sql = format!("{CARD_SELECT} WHERE p.id IN ({placeholders})");
+    let sql = format!("{} WHERE p.id IN ({placeholders})", card_select());
     let values: Vec<Value> = ids.iter().map(|id| Value::Integer(*id)).collect();
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(values), card_from_row)?;
@@ -517,5 +531,19 @@ mod tests {
         let (sql, values) = filter_sql(&tagged);
         assert!(sql.contains("FROM post_tags"), "{sql}");
         assert_eq!(values.len(), 1);
+    }
+
+    #[test]
+    fn the_sql_nsfw_rule_agrees_with_is_nsfw() {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        for rating in Rating::all() {
+            // the rule must hold for a literal rating, exactly as it does in a query
+            let expr = Rating::nsfw_sql(&format!("'{}'", rating.as_str()));
+            let sql = format!("SELECT CASE WHEN {expr} THEN 1 ELSE 0 END");
+            let flag: i64 = db
+                .with(|conn| Ok(conn.query_row(&sql, [], |row| row.get(0))?))
+                .unwrap();
+            assert_eq!(flag != 0, rating.is_nsfw(), "rating {rating}");
+        }
     }
 }

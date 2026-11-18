@@ -135,6 +135,29 @@ impl Rating {
     pub fn is_nsfw(self) -> bool {
         matches!(self, Rating::Questionable | Rating::Explicit)
     }
+
+    /// The same rule as [`Rating::is_nsfw`], as SQL, so the database view of
+    /// "nsfw" can never drift from the Rust one. `column` is the (aliased)
+    /// rating column, e.g. `p.rating`.
+    pub fn nsfw_sql(column: &str) -> String {
+        let nsfw: Vec<String> = Rating::all()
+            .iter()
+            .filter(|rating| rating.is_nsfw())
+            .map(|rating| format!("'{}'", rating.as_str()))
+            .collect();
+        format!("{column} IN ({})", nsfw.join(", "))
+    }
+}
+
+/// The one artist-label rule: name, else handle, else a placeholder.
+///
+/// Both `Author` (stored) and `source::PostAuthor` (freshly normalized) need it,
+/// and they must not disagree: the label lands in captions *and* in the archive
+/// path.
+pub fn display_author(name: Option<&str>, handle: Option<&str>) -> String {
+    name.or(handle)
+        .map(str::to_string)
+        .unwrap_or_else(|| "unknown artist".to_string())
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -150,11 +173,13 @@ pub struct Author {
 
 impl Author {
     pub fn display(&self) -> String {
-        self.name
-            .clone()
-            .or_else(|| self.handle.clone())
-            .unwrap_or_else(|| "unknown artist".to_string())
+        display_author(self.name.as_deref(), self.handle.as_deref())
     }
+}
+
+/// The `display_author` rule as SQL over an `authors` alias (`a`).
+pub fn author_label_sql(alias: &str) -> String {
+    format!("COALESCE({alias}.name, {alias}.handle)")
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -236,6 +261,10 @@ pub struct PostCard {
     pub delivered: i64,
     /// Channel aliases it was pushed to, comma separated (`night-shift,main`).
     pub channels: Option<String>,
+    /// Whether this post is nsfw *as the UI must show it*: manual override is
+    /// honoured, otherwise the rating decides (`Rating::nsfw_sql`). The queue and
+    /// the grid both read this, so they cannot disagree.
+    pub nsfw: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -382,6 +411,24 @@ impl Channel {
 mod tests {
     use super::*;
 
+    #[test]
+    fn display_author_prefers_name_then_handle() {
+        assert_eq!(
+            display_author(Some("Nightjar"), Some("nightjar_")),
+            "Nightjar"
+        );
+        assert_eq!(display_author(None, Some("asobinin")), "asobinin");
+        assert_eq!(display_author(None, None), "unknown artist");
+        // the SQL mirror names the same two columns, in the same order
+        assert_eq!(author_label_sql("a"), "COALESCE(a.name, a.handle)");
+    }
+
+    #[test]
+    fn nsfw_sql_lists_exactly_the_nsfw_ratings() {
+        let sql = Rating::nsfw_sql("p.rating");
+        assert_eq!(sql, "p.rating IN ('questionable', 'explicit')");
+        assert!(!sql.contains("'sfw'"), "sfw must never be in the nsfw set");
+    }
     #[test]
     fn string_enum_roundtrip() {
         assert_eq!(Rating::parse("EXPLICIT"), Rating::Explicit);
