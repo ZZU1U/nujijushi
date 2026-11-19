@@ -167,8 +167,12 @@ async fn publishes_an_album_with_a_rendered_caption() {
     assert!(send.media[1..].iter().all(|m| m.caption.is_none()));
     let caption = send.media[0].caption.clone().unwrap();
     assert!(
-        caption.contains("<b>Test Artist</b> (@tester)"),
+        caption.contains("<b>Test Artist</b> (tester)"),
         "caption: {caption}"
+    );
+    assert!(
+        !caption.contains('@'),
+        "no Telegram mention in a caption: {caption}"
     );
     assert!(
         caption.contains("#original #landscape"),

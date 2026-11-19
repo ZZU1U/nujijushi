@@ -143,7 +143,11 @@ fn a_handle_only_author_reads_as_the_handle() {
         author.handle = Some("asobinin".into());
     }
     let rendered = render(&channel, &post, false, false);
-    assert!(rendered.starts_with("<b>@asobinin</b>"), "{rendered}");
+    assert!(rendered.starts_with("<b>asobinin</b>"), "{rendered}");
+    assert!(
+        !rendered.contains('@'),
+        "a handle is plain text, never a Telegram mention: {rendered}"
+    );
 }
 
 #[test]

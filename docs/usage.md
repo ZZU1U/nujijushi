@@ -67,7 +67,7 @@ Rendered with minijinja, HTML parse mode, hard-clipped to 1024 characters (tags 
 closed if the text is cut). Default layout:
 
 ```html
-<b>Sample Artist</b> (@sample)
+<b>Sample Artist</b> (sample)
 
 A quiet street at dusk, hand painted.
 
@@ -85,11 +85,15 @@ Per-channel template (UI → channel → *caption template*, or `--template-file
 ```
 
 Context: `post.{id,source,source_id,url,title,description,rating,date,media_count}`,
-`author.{label,given,handle,url}`, `channel.{id,title,tg_id}`, `tags`, `hashtags`,
+`author.{label,given,handle,mention,url}`, `channel.{id,title,tg_id}`, `tags`, `hashtags`,
 `source_label`, `source_link`, `attribution_inline`, `attribution_footer`, `nsfw`, `spoiler`.
-`author.label` is the name, else the `@handle`, else "unknown artist"; `author.given` is the
-real display name only (empty for a handle-only account), and the duplicate `(@handle)` is
+`author.label` is the name, else the handle, else "unknown artist"; `author.given` is the
+real display name only (empty for a handle-only account), and the duplicate `(handle)` is
 dropped when the two are the same word. `author.name` is kept as an alias of `label`.
+`author.handle` has **no** `@`: in Telegram `@name` is a *mention*, which pings whoever owns
+that username (and a twitter/pixiv handle is not a Telegram username at all), so the caption
+carries the bare word. `author.mention` is the `@handle` form, for a template that really
+wants to ping someone.
 
 Filters: `truncate_words(n)`, `hashtags`, `tag_links(base)`, `one_line`.
 Autoescaping is on — `{{ source_link }}` is the only pre-built HTML.

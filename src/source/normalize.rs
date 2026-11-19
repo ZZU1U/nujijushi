@@ -147,7 +147,7 @@ fn handle_from_url(url: &str) -> Option<String> {
 }
 
 /// Is this display name just the handle, spelled differently (`@Name` vs `name`)?
-/// Such a name adds nothing: captions print `**name** (@handle)`.
+/// Such a name adds nothing: captions print `**name** (handle)`.
 fn same_handle(name: &str, handle: Option<&str>) -> bool {
     let Some(handle) = handle else {
         return false;

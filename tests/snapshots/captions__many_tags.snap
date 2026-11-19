@@ -2,7 +2,7 @@
 source: tests/captions.rs
 expression: rendered
 ---
-<b>Nightjar</b> (@nightjar_)
+<b>Nightjar</b> (nightjar_)
 
 Harbour at 4am, still water, one lamp still burning.
 Painted for the night shift crowd.

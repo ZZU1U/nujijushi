@@ -93,31 +93,34 @@ pub fn build_context(
             (Some(_), Attribution::None) | (None, _) => (Value::from(""), false, false),
         };
 
-    // A handle is shown as "@name". A name that *is* the handle (older twitter
-    // rows stored the handle as the name) would read as "asobinin (@asobinin)",
-    // so the duplicate is dropped instead of printed twice.
+    // A handle goes into the caption as plain text. In Telegram `@name` is a
+    // *mention*: it pings whoever owns that username, and a twitter/pixiv handle
+    // is not a Telegram username at all, so the `@` was either a ping or a dead
+    // link. `author.mention` keeps the `@` form for a template that wants one.
     let given_name = post.author.as_ref().and_then(|a| a.name.clone());
-    let raw_handle = post.author.as_ref().and_then(|a| a.handle.clone());
-    let display_handle = raw_handle.as_deref().map(|h| {
-        if h.starts_with('@') {
-            h.to_string()
-        } else {
-            format!("@{h}")
-        }
-    });
+    let plain_handle = post
+        .author
+        .as_ref()
+        .and_then(|a| a.handle.as_deref())
+        .map(|h| h.trim().trim_start_matches('@').to_string())
+        .filter(|h| !h.is_empty());
+    let mention = plain_handle
+        .as_ref()
+        .map(|h| format!("@{h}"))
+        .unwrap_or_default();
     // a handle identical to the name is dropped from the "(...)" suffix, but it
     // still serves as the label when there is no display name at all
-    let handle = display_handle
+    let handle = plain_handle
         .clone()
         .filter(|h| {
             given_name
                 .as_deref()
-                .is_none_or(|name| !name.eq_ignore_ascii_case(h.trim_start_matches('@')))
+                .is_none_or(|name| !name.trim().eq_ignore_ascii_case(h))
         })
         .unwrap_or_default();
     let author_label = given_name
         .clone()
-        .or(display_handle)
+        .or(plain_handle)
         .unwrap_or_else(|| "unknown artist".to_string());
     let author_url = post
         .author
@@ -165,11 +168,13 @@ pub fn build_context(
     );
     author_map.insert("handle".to_string(), Value::from(handle));
     author_map.insert("url".to_string(), Value::from(author_url));
+    // `@name` is a Telegram *mention* (a ping), so the caption gets the bare
+    // handle; a template that really wants to ping someone asks for this one.
+    author_map.insert("mention".to_string(), Value::from(mention));
     let mut channel_map = BTreeMap::new();
     channel_map.insert("id".to_string(), Value::from(channel.id));
     channel_map.insert("title".to_string(), Value::from(channel.title.clone()));
     channel_map.insert("tg_id".to_string(), Value::from(channel.tg_id.clone()));
-
     let mut root = BTreeMap::new();
     root.insert("post".to_string(), Value::from(post_map));
     root.insert("author".to_string(), Value::from(author_map));
@@ -309,7 +314,7 @@ mod tests {
         let channel = Channel::new("ch", "@ch");
         let out = renderer.render(&channel, &ctx(&channel)).unwrap();
         let lines: Vec<&str> = out.text.lines().collect();
-        assert_eq!(lines[0], "<b>Sample Artist</b> (@sample)");
+        assert_eq!(lines[0], "<b>Sample Artist</b> (sample)");
         assert_eq!(lines[1], "");
         assert_eq!(lines[2], "A quiet street at dusk.");
         assert_eq!(lines[3], "");
@@ -330,13 +335,51 @@ mod tests {
         let out = renderer.render(&channel, &ctx(&channel)).unwrap();
         assert!(
             out.text
-                .starts_with("<b>Sample Artist</b> (@sample) · <a href=")
+                .starts_with("<b>Sample Artist</b> (sample) · <a href=")
         );
 
         channel.attribution = Attribution::None;
         let out = renderer.render(&channel, &ctx(&channel)).unwrap();
         assert!(!out.text.contains("<a href"));
         assert!(!out.text.contains("via "));
+    }
+
+    /// `@name` in a Telegram caption is a *mention*: it pings whoever owns that
+    /// username, and a twitter/pixiv handle is not a Telegram username at all, so
+    /// the caption carries the bare handle. `author.mention` is the opt-in form.
+    #[test]
+    fn a_handle_is_plain_text_and_the_mention_is_opt_in() {
+        let renderer = Renderer::new().unwrap();
+        let channel = Channel::new("ch", "@ch");
+        let mut post = sample_post();
+        if let Some(author) = post.author.as_mut() {
+            author.name = None;
+            // the telegram importer stores the handle *with* the @
+            author.handle = Some("@nightjar".into());
+        }
+        let out = renderer
+            .render(
+                &channel,
+                &build_context(&channel, &post, false, false, CAPTION_LIMIT),
+            )
+            .unwrap();
+        assert_eq!(
+            out.text.lines().next().unwrap_or_default(),
+            "<b>nightjar</b>",
+            "the handle is the label, without the @: {}",
+            out.text
+        );
+        assert!(!out.text.contains('@'), "no mention: {}", out.text);
+
+        let mut pingers = Channel::new("ch", "@ch");
+        pingers.template = Some("{{ author.handle }} / {{ author.mention }}".into());
+        let out = renderer
+            .render(
+                &pingers,
+                &build_context(&pingers, &post, false, false, CAPTION_LIMIT),
+            )
+            .unwrap();
+        assert_eq!(out.text, "nightjar / @nightjar", "a template can opt in");
     }
 
     #[test]
