@@ -28,8 +28,42 @@
     </dl>
 
     <div class="tagcloud">
-      {% for t in post.tags %}<a href="/posts?tag={{ t }}">#{{ t }}</a>{% endfor %}
+      {% for t in post.tags %}
+      <div>
+        <a href="/posts?tag={{ t.name }}">#{{ t.name }}</a>
+        {% if t.source %}<span class="badge">source</span>{% endif %}
+        {% if t.manual %}<span class="badge">manual</span>{% endif %}
+        {% if t.source %}
+        <form method="post" action="/posts/{{ post.id }}/tags" class="inline">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="tag_id" value="{{ t.id }}">
+          <button type="submit" name="action" value="remove" class="small ghost" aria-label="Remove source tag {{ t.name }}">remove</button>
+        </form>
+        {% endif %}
+      </div>
+      {% endfor %}
     </div>
+    {% if post.tag_removals %}
+    <h3>removed source tags</h3>
+    <div class="tagcloud">
+      {% for t in post.tag_removals %}
+      <form method="post" action="/posts/{{ post.id }}/tags" class="inline">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <input type="hidden" name="tag_id" value="{{ t.id }}">
+        <span class="badge">#{{ t.name }}</span>
+        <button type="submit" name="action" value="undo" class="small ghost" aria-label="Undo removal of source tag {{ t.name }}">undo</button>
+      </form>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <form method="post" action="/posts/{{ post.id }}" class="panel inset">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label>manual tags (comma separated)
+        <input name="tags" value="{{ post.manual_tags }}">
+      </label>
+      <button type="submit">save tags</button>
+    </form>
 
     <form method="post" action="/posts/{{ post.id }}" class="panel inset">
       <input type="hidden" name="csrf" value="{{ csrf }}">
@@ -52,9 +86,6 @@
           </select>
         </label>
       </div>
-      <label>manual tags (comma separated, replaces manual tags)
-        <input name="tags" value="">
-      </label>
       <label>notes
         <input name="notes" value="{{ post.notes }}">
       </label>

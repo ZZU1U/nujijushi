@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use nujijushi::bot::queue_alerts;
 use nujijushi::config::Config;
 use nujijushi::db::posts::NewMedia;
 use nujijushi::model::{Channel, NsfwPolicy, PostState, QueueState, Rating};
@@ -18,8 +19,14 @@ struct Harness {
 }
 
 fn harness(mock: MockTransport) -> Harness {
+    harness_with_alerts(mock, false)
+}
+
+fn harness_with_alerts(mock: MockTransport, queue_alerts: bool) -> Harness {
     let dir = tempfile::tempdir().unwrap();
-    let cfg = Config::load_from_home(dir.path().to_path_buf()).unwrap();
+    let mut cfg = Config::load_from_home(dir.path().to_path_buf()).unwrap();
+    cfg.queue_alerts = queue_alerts;
+    cfg.access.admins = vec![17, 9, 17, -1];
     let mock = Arc::new(mock);
     let transport: Arc<dyn Transport> = mock.clone();
     let state = AppState::open(cfg, Some(transport)).unwrap();
@@ -327,7 +334,7 @@ async fn permanent_failures_mark_the_item_failed_and_pause_after_three() {
 async fn partial_delivery_is_never_resent_blindly() {
     // 12 photos = album of 10 + album of 2. The second message fails permanently.
     let mock = MockTransport::with_script(vec![None, Some(TgError::Permanent("too long".into()))]);
-    let harness = harness(mock);
+    let harness = harness_with_alerts(mock, true);
     let channel = harness.add_channel(NsfwPolicy::Allow).await;
     let post_id = harness
         .add_post("1", 12, false, &["original"], Rating::Sfw)
@@ -343,6 +350,36 @@ async fn partial_delivery_is_never_resent_blindly() {
         "partial delivery must surface as unknown, not sent or failed"
     );
     assert!(states[0].1.as_deref().unwrap().contains("partial delivery"));
+    let channel_id = channel.id;
+    let queue_id = harness
+        .state
+        .db
+        .call(move |conn| {
+            nujijushi::db::channels::set_paused(conn, channel_id, true)?;
+            Ok(nujijushi::db::queue::for_post(conn, post_id)?[0].0)
+        })
+        .await
+        .unwrap();
+
+    queue_alerts::check(&harness.state).await;
+    let restarted = AppState::open(
+        (*harness.state.cfg).clone(),
+        harness.state.transport.clone(),
+    )
+    .unwrap();
+    queue_alerts::check(&restarted).await;
+    let texts = harness.mock.texts();
+    assert_eq!(texts.len(), 2);
+    for (_, text) in texts {
+        assert!(text.contains("Unconfirmed send"));
+        assert!(text.contains(&channel.alias));
+        assert!(text.contains(&format!("Queue #{queue_id} · post #{post_id}")));
+        assert!(text.contains("admin dashboard under Unconfirmed sends"));
+    }
+    assert_eq!(
+        harness.queue_state(&channel).await[0].0,
+        QueueState::Unknown
+    );
 
     // and a later pass must not pick it up again
     let before = harness.mock.send_count();
@@ -351,11 +388,21 @@ async fn partial_delivery_is_never_resent_blindly() {
         .unwrap();
     assert!(matches!(again, PublishOutcome::EmptyQueue), "got {again:?}");
     assert_eq!(harness.mock.send_count(), before);
+
+    harness
+        .state
+        .db
+        .call(move |conn| nujijushi::db::queue::resolve_unknown(conn, queue_id, true, None))
+        .await
+        .unwrap();
+    assert_eq!(harness.queue_state(&channel).await[0].0, QueueState::Sent);
+    queue_alerts::check(&harness.state).await;
+    assert_eq!(harness.mock.texts().len(), 2);
 }
 
 #[tokio::test]
 async fn interruped_send_is_reconciled_as_unknown_and_not_resent() {
-    let harness = harness(MockTransport::new());
+    let harness = harness_with_alerts(MockTransport::new(), true);
     let channel = harness.add_channel(NsfwPolicy::Allow).await;
     let post_id = harness
         .add_post("1", 1, false, &["original"], Rating::Sfw)
@@ -381,6 +428,11 @@ async fn interruped_send_is_reconciled_as_unknown_and_not_resent() {
         .await
         .unwrap();
 
+    queue_alerts::check(&harness.state).await;
+    assert!(
+        harness.mock.texts().is_empty(),
+        "a send in flight keeps the queue from alerting"
+    );
     let fixed = nujijushi::queue::lease::reconcile_stale(&harness.state)
         .await
         .unwrap();
@@ -388,6 +440,16 @@ async fn interruped_send_is_reconciled_as_unknown_and_not_resent() {
     assert_eq!(
         harness.queue_state(&channel).await[0].0,
         QueueState::Unknown
+    );
+    queue_alerts::check(&harness.state).await;
+    assert_eq!(
+        harness
+            .mock
+            .texts()
+            .iter()
+            .filter(|(_, text)| text.contains("Unconfirmed send"))
+            .count(),
+        2
     );
 
     let outcome = publish_channel(&harness.state, &channel, false, true)
@@ -402,6 +464,106 @@ async fn interruped_send_is_reconciled_as_unknown_and_not_resent() {
         0,
         "never re-send an unconfirmed message"
     );
+
+    harness
+        .state
+        .db
+        .call(move |conn| {
+            use nujijushi::db::queue;
+            let queue_id = queue::for_post(conn, post_id)?[0].0;
+            queue::resolve_unknown(conn, queue_id, false, None)?;
+            assert!(queue::acquire(conn, queue_id, "new-attempt")?);
+            assert_eq!(
+                queue::reconcile_stale(conn, chrono::Utc::now() + chrono::Duration::seconds(1))?,
+                1
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+    queue_alerts::check(&harness.state).await;
+    let review_alerts = harness
+        .mock
+        .texts()
+        .iter()
+        .filter(|(_, text)| text.contains("Unconfirmed send"))
+        .count();
+    assert_eq!(
+        review_alerts, 4,
+        "a later unconfirmed send on the same item gets a new alert"
+    );
+}
+
+#[tokio::test]
+async fn empty_queue_alerts_survive_restart_and_rearm_even_between_checks() {
+    let h = harness_with_alerts(MockTransport::new(), true);
+    let channel = h.add_channel(NsfwPolicy::Allow).await;
+    h.state
+        .db
+        .call(|conn| {
+            let mut paused = Channel::new("Paused", "@paused");
+            paused.paused = true;
+            nujijushi::db::channels::insert(conn, &paused)?;
+            let mut disabled = Channel::new("Disabled", "@disabled");
+            disabled.enabled = false;
+            nujijushi::db::channels::insert(conn, &disabled)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let reopened = AppState::open((*h.state.cfg).clone(), h.state.transport.clone()).unwrap();
+
+    let mut opted_out = reopened.clone();
+    Arc::make_mut(&mut opted_out.cfg).queue_alerts = false;
+    queue_alerts::check(&opted_out).await;
+    assert!(h.mock.texts().is_empty());
+
+    tokio::join!(
+        queue_alerts::check(&h.state),
+        queue_alerts::check(&reopened)
+    );
+    queue_alerts::check(&reopened).await;
+    let texts = h.mock.texts();
+    assert_eq!(texts.len(), 2);
+    assert_eq!(texts[0].0, "9");
+    assert_eq!(texts[1].0, "17");
+    assert!(
+        texts
+            .iter()
+            .all(|(_, text)| text.contains("Empty queue") && text.contains(&channel.alias))
+    );
+
+    let post_id = h.add_post("42", 1, false, &[], Rating::Sfw).await;
+    h.queue(post_id, &channel).await;
+    let published = publish_channel(&h.state, &channel, false, true)
+        .await
+        .unwrap();
+    assert!(matches!(published, PublishOutcome::Published { .. }));
+    drop(reopened);
+    let restarted = AppState::open((*h.state.cfg).clone(), h.state.transport.clone()).unwrap();
+    queue_alerts::check(&restarted).await;
+    queue_alerts::check(&restarted).await;
+    assert_eq!(h.mock.texts().len(), 4);
+}
+
+#[tokio::test]
+async fn failed_alert_is_handled_once_and_other_admins_still_get_it() {
+    let mock = MockTransport::new().with_text_failure(TgError::Permanent("chat not found".into()));
+    let h = harness_with_alerts(mock, true);
+    let channel = h.add_channel(NsfwPolicy::Allow).await;
+
+    queue_alerts::check(&h.state).await;
+    queue_alerts::check(&h.state).await;
+    let texts = h.mock.texts();
+    assert_eq!(texts.len(), 1);
+    assert_eq!(texts[0].0, "17");
+
+    let post_id = h.add_post("42", 1, false, &[], Rating::Sfw).await;
+    h.queue(post_id, &channel).await;
+    let published = publish_channel(&h.state, &channel, false, true)
+        .await
+        .unwrap();
+    assert!(matches!(published, PublishOutcome::Published { .. }));
 }
 
 #[tokio::test]

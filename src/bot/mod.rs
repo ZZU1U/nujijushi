@@ -3,6 +3,7 @@
 pub mod access;
 pub mod commands;
 pub mod handlers;
+pub mod queue_alerts;
 pub mod reply;
 
 use std::sync::Arc;

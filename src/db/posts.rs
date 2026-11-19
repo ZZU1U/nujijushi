@@ -115,7 +115,15 @@ fn media_from_row(row: &Row<'_>) -> rusqlite::Result<MediaItem> {
 }
 
 /// Insert or refresh a post. Returns (post_id, created).
-pub fn upsert(conn: &Connection, np: &NormalizedPost, media: &[NewMedia]) -> Result<(i64, bool)> {
+pub fn upsert(
+    conn: &mut Connection,
+    np: &NormalizedPost,
+    media: &[NewMedia],
+) -> Result<(i64, bool)> {
+    super::transaction(conn, |conn| upsert_post(conn, np, media))
+}
+
+fn upsert_post(conn: &Connection, np: &NormalizedPost, media: &[NewMedia]) -> Result<(i64, bool)> {
     let now = Utc::now();
     let author_id = match &np.author {
         Some(author) => Some(upsert_author(conn, &np.source, author, now)?),
@@ -176,14 +184,7 @@ pub fn upsert(conn: &Connection, np: &NormalizedPost, media: &[NewMedia]) -> Res
         }
     };
 
-    // tags: source tags are replaced, manual tags are kept
-    conn.execute(
-        "DELETE FROM post_tags WHERE post_id = ?1 AND origin = 'source'",
-        [post_id],
-    )?;
-    for tag in &np.tags {
-        tags::link(conn, post_id, tag, "source")?;
-    }
+    tags::refresh_source(conn, post_id, &np.tags)?;
 
     if !media.is_empty() {
         conn.execute("DELETE FROM media WHERE post_id = ?1", [post_id])?;
@@ -412,7 +413,7 @@ fn filter_sql(filter: &PostFilter) -> (String, Vec<Value>) {
         && let Some(norm) = tags::normalize(tag)
     {
         clauses.push(
-            "p.id IN (SELECT pt.post_id FROM post_tags pt JOIN tags t ON t.id = pt.tag_id WHERE t.name = ?)"
+            "p.id IN (SELECT pt.post_id FROM active_post_tags pt JOIN tags t ON t.id = pt.tag_id WHERE t.name = ?)"
                 .into(),
         );
         values.push(Value::Text(norm));
@@ -618,7 +619,7 @@ mod tests {
             ..Default::default()
         };
         let (sql, values) = filter_sql(&tagged);
-        assert!(sql.contains("FROM post_tags"), "{sql}");
+        assert!(sql.contains("FROM active_post_tags"), "{sql}");
         assert_eq!(values.len(), 1);
     }
 

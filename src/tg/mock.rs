@@ -37,6 +37,7 @@ struct MockState {
     next_id: i32,
     admin: AdminStatus,
     texts: Vec<(String, String)>,
+    text_failure: Option<TgError>,
     updates: VecDeque<BotUpdate>,
     chats: HashMap<i64, ChatInfo>,
     copies: HashMap<(String, i32), CopiedMessage>,
@@ -66,6 +67,7 @@ impl MockTransport {
                     can_post: true,
                 },
                 texts: Vec::new(),
+                text_failure: None,
                 updates: VecDeque::new(),
                 chats: HashMap::new(),
                 copies: HashMap::new(),
@@ -86,6 +88,11 @@ impl MockTransport {
         let mock = Self::new();
         mock.inner.lock().unwrap().failures = failures.into();
         mock
+    }
+
+    pub fn with_text_failure(self, failure: TgError) -> Self {
+        self.inner.lock().unwrap().text_failure = Some(failure);
+        self
     }
 
     /// Precise per-call outcomes (used to simulate a failure mid-album).
@@ -246,11 +253,11 @@ impl Transport for MockTransport {
     }
 
     async fn send_text(&self, chat: &str, html: &str) -> TgResult<()> {
-        self.inner
-            .lock()
-            .unwrap()
-            .texts
-            .push((chat.to_string(), html.to_string()));
+        let mut state = self.inner.lock().unwrap();
+        if let Some(err) = state.text_failure.take() {
+            return Err(err);
+        }
+        state.texts.push((chat.to_string(), html.to_string()));
         Ok(())
     }
 

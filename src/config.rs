@@ -12,6 +12,8 @@ pub struct Config {
     pub bot_token: Option<String>,
     /// Run the Telegram command interface.
     pub bot_enabled: bool,
+    /// Notify configured admins about empty queues and unconfirmed sends.
+    pub queue_alerts: bool,
     /// Long polling (default) or a webhook served by the admin web server.
     pub bot_mode: BotMode,
     pub bot_poll_timeout_secs: u32,
@@ -222,6 +224,7 @@ struct ProxySection {
 #[derive(Debug, Default, Deserialize)]
 struct BotSection {
     enabled: Option<bool>,
+    queue_alerts: Option<bool>,
     mode: Option<String>,
     poll_timeout_secs: Option<u32>,
     webhook_url: Option<String>,
@@ -324,6 +327,7 @@ impl Config {
             home,
             bot_token,
             bot_enabled,
+            queue_alerts: file.bot.queue_alerts.unwrap_or(false),
             bot_mode,
             bot_poll_timeout_secs: file.bot.poll_timeout_secs.unwrap_or(30).clamp(1, 120),
             webhook_url: env_str("NUJIJUSHI_WEBHOOK_URL")
@@ -481,6 +485,8 @@ root = ""
 [bot]
 # Telegram command interface (started by `nujijushi run`).
 enabled = true
+# DM configured admins about empty queues and unconfirmed sends.
+queue_alerts = false
 # polling = ask Telegram for updates (works anywhere).
 # webhook = Telegram POSTs to this server; needs a public HTTPS URL (reverse proxy).
 mode = "polling"
@@ -669,6 +675,7 @@ mod tests {
         assert!(!cfg.write_default_config(None).unwrap());
         let reloaded = Config::load_from_home(dir.path().to_path_buf()).unwrap();
         assert_eq!(reloaded.bot_token.as_deref(), Some("1:abc"));
+        assert!(!reloaded.queue_alerts);
         assert!(dir.path().join("config.toml").exists());
         assert!(cfg.db_path().ends_with("nujijushi.sqlite3"));
     }
@@ -678,7 +685,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("config.toml"),
-            "[access]\nadmins = [1, 2]\npublic = true\nallow_publish = true\nimport_quota_per_day = 5\n[bot]\nenabled = false\n",
+            "[access]\nadmins = [1, 2]\npublic = true\nallow_publish = true\nimport_quota_per_day = 5\n[bot]\nenabled = false\nqueue_alerts = true\n",
         )
         .unwrap();
         let cfg = Config::load_from_home(dir.path().to_path_buf()).unwrap();
@@ -687,6 +694,7 @@ mod tests {
         assert!(cfg.access.allow_publish);
         assert_eq!(cfg.access.import_quota_per_day, 5);
         assert!(!cfg.bot_enabled);
+        assert!(cfg.queue_alerts);
     }
 
     #[test]

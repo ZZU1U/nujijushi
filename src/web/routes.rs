@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use super::auth;
 use super::forms;
 use super::forms::{
-    ChannelForm, FormMap, ImportForm, LoginForm, PostEdit, PostFilter, QueueAction,
+    ChannelForm, FormMap, ImportForm, LoginForm, PostEdit, PostFilter, PostTagAction, QueueAction,
 };
 use super::views::{APP_CSS, APP_JS};
 use super::{WebState, auth as web_auth};
@@ -59,6 +59,7 @@ pub fn router(ws: Arc<WebState>) -> Router {
         .route("/", get(dashboard))
         .route("/posts", get(posts_page).post(posts_bulk))
         .route("/posts/{id}", get(post_page).post(post_update))
+        .route("/posts/{id}/tags", post(post_tag_action))
         .route("/channels", get(channels_page).post(channel_create))
         .route(
             "/channels/{id}/edit",
@@ -669,9 +670,25 @@ async fn posts_bulk(
 async fn post_page(
     State(ws): State<Arc<WebState>>,
     Path(id): Path<i64>,
+    Query(query): Query<PostFilter>,
 ) -> WebResult<Html<String>> {
     let app = &ws.app;
-    let post = app.db.call(move |conn| post_db::get(conn, id)).await?;
+    let (post, tags, removals) = app
+        .db
+        .call(move |conn| {
+            Ok((
+                post_db::get(conn, id)?,
+                tag_db::provenance(conn, id)?,
+                tag_db::removals(conn, id)?,
+            ))
+        })
+        .await?;
+    let manual_tags = tags
+        .iter()
+        .filter(|tag| tag.manual)
+        .map(|tag| tag.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
     let channels = app.db.call(|conn| channel_db::list(conn)).await?;
     let rules = app.db.call(|conn| tag_db::TagRules::load(conn)).await?;
     let submitter = app
@@ -746,7 +763,7 @@ async fn post_page(
         &json!({
             "page": "posts",
             "csrf": ws.csrf,
-            "flash": Value::Null,
+            "flash": query.flash,
             "post": {
                 "id": post.id,
                 "source": post.source,
@@ -760,7 +777,9 @@ async fn post_page(
                 "state": post.state.as_str(),
                 "nsfw_override": match post.nsfw_override { Some(true) => "yes", Some(false) => "no", None => "auto" },
                 "nsfw": post.is_nsfw(rules.hits_nsfw(&post.tags)),
-                "tags": post.tags,
+                "tags": tags,
+                "manual_tags": manual_tags,
+                "tag_removals": removals,
                 "notes": post.notes,
                 "imported": post.imported_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string(),
             },
@@ -819,16 +838,7 @@ async fn post_update(
             .filter(|t| !t.is_empty())
             .collect();
         app.db
-            .call(move |conn| {
-                conn.execute(
-                    "DELETE FROM post_tags WHERE post_id = ?1 AND origin = 'manual'",
-                    [id],
-                )?;
-                for tag in &tags {
-                    tag_db::link(conn, id, tag, "manual")?;
-                }
-                Ok(())
-            })
+            .call(move |conn| tag_db::replace_manual(conn, id, &tags))
             .await?;
     }
     if let Some(notes) = form.notes.as_deref() {
@@ -838,6 +848,43 @@ async fn post_update(
             .await?;
     }
     Ok(flash_redirect(&format!("/posts/{id}"), "saved"))
+}
+
+async fn post_tag_action(
+    State(ws): State<Arc<WebState>>,
+    Path(id): Path<i64>,
+    Form(form): Form<PostTagAction>,
+) -> WebResult<Response> {
+    check_csrf(&ws, &form.csrf)?;
+    let tag_id = form.tag_id;
+    let message = match form.action.as_str() {
+        "remove" => {
+            let changed = ws
+                .app
+                .db
+                .call(move |conn| tag_db::suppress_source(conn, id, tag_id))
+                .await?;
+            if changed {
+                "source tag removed"
+            } else {
+                "source tag unavailable or already removed"
+            }
+        }
+        "undo" => {
+            let changed = ws
+                .app
+                .db
+                .call(move |conn| tag_db::restore_source(conn, id, tag_id))
+                .await?;
+            if changed {
+                "source tag removal undone"
+            } else {
+                "no saved removal for this tag"
+            }
+        }
+        _ => return Err(Error::invalid("unknown source tag action").into()),
+    };
+    Ok(flash_redirect(&format!("/posts/{id}"), message))
 }
 
 // ---------------------------------------------------------------- channels

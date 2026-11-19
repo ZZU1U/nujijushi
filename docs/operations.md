@@ -42,6 +42,14 @@ Public content (many sites) imports fine without cookies.
 `nujijushi run` also long-polls Telegram, so admins (and, if you allow it, guests) can drive
 the archive from a chat. `--no-bot` or `[bot] enabled = false` turns just this off.
 
+### Queue alerts
+
+Set `queue_alerts = true` under `[bot]` to get DMs about empty queues and unconfirmed sends. The feature defaults to `false` and uses the configured Telegram bot token. Each recipient in `[access] admins` must start a private chat with the bot first. `nujijushi doctor` checks the local prerequisites.
+
+An enabled, unpaused channel gets an empty-queue alert when it has no queued posts or sends in flight. Refilling the queue allows a new alert when it drains again. On first use, the bot can alert about queues that are already empty and sends still awaiting review. Review unconfirmed sends in the admin dashboard. The process logs DM failures and attempts each alert once to avoid duplicates after a restart.
+
+### Bot commands
+
 | command | guests | admins | notes |
 |---|---|---|---|
 | *send a link* / *forward a post* | `allow_import` | ✓ | the normal path, no command needed; several links in one message all import (up to 20) |

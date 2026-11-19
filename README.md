@@ -65,6 +65,8 @@ Install `gallery-dl` for gallery-site imports and `ffmpeg` if you want video thu
 
    Open the [admin UI](http://127.0.0.1:8788/) with the token from step 1. Use `nujijushi serve` when you want the UI and its background jobs without scheduled sends.
 
+   Set `[bot] queue_alerts = true` to DM the Telegram users in `[access] admins` about empty queues and unconfirmed sends. Each recipient must start a private chat with the bot first.
+
 ## Documentation
 
 | Guide | Covers |

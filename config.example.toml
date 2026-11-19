@@ -26,6 +26,8 @@ public_telegram_fallback = true
 [bot]
 # Telegram command interface (started by `nujijushi run`; `--no-bot` disables it per run).
 enabled = true
+# DM configured admins about empty queues and unconfirmed sends.
+queue_alerts = false
 # polling: ask Telegram for updates (works anywhere, no public address needed).
 # webhook: Telegram POSTs to /tg/webhook on the web server; needs a public HTTPS URL
 #          (put a TLS proxy in front of [web] bind) and reaches it with a secret header.

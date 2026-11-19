@@ -11,6 +11,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0004_storage.sql"),
     include_str!("../../migrations/0005_media_hygiene.sql"),
     include_str!("../../migrations/0006_media_meta.sql"),
+    include_str!("../../migrations/0007_tag_provenance.sql"),
+    include_str!("../../migrations/0008_queue_alerts.sql"),
 ];
 
 pub fn schema_version(conn: &Connection) -> Result<i64> {
@@ -61,6 +63,7 @@ mod tests {
             "channels",
             "jobs",
             "media",
+            "post_tag_removals",
             "post_tags",
             "posts",
             "queue",
@@ -89,5 +92,32 @@ mod tests {
                 && media_columns.iter().any(|column| column == "meta_json"),
             "media.sensitive / media.meta_json are missing: {media_columns:?}"
         );
+    }
+
+    #[test]
+    fn upgrading_from_v6_preserves_tag_links_and_origins() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..6] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 6).unwrap();
+        conn.execute_batch(
+            "INSERT INTO posts (id, source, source_id, imported_at, updated_at)
+             VALUES (1, 'pixiv', '42', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+             INSERT INTO tags (id, name) VALUES (1, 'imported'), (2, 'curated');
+             INSERT INTO post_tags (post_id, tag_id, origin)
+             VALUES (1, 2, 'manual'), (1, 1, 'source');",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let tags = crate::db::tags::provenance(&conn, 1).unwrap();
+        assert_eq!(tags.len(), 2);
+        assert_eq!(tags[0].name, "curated");
+        assert!(tags[0].manual && !tags[0].source);
+        assert_eq!(tags[1].name, "imported");
+        assert!(tags[1].source && !tags[1].manual);
+        assert!(crate::db::tags::removals(&conn, 1).unwrap().is_empty());
     }
 }

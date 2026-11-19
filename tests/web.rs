@@ -225,6 +225,65 @@ fn job_row(html: &str, id: i64) -> &str {
 }
 
 #[tokio::test]
+async fn post_detail_shows_tag_provenance_and_can_undo_a_source_removal() {
+    use nujijushi::db::tags;
+
+    let h = harness();
+    let post_id = h.post_only("42").await;
+    let tag_id = h
+        .state
+        .db
+        .call(move |conn| {
+            tags::add_manual(conn, post_id, &["original".into(), "favorite".into()])?;
+            Ok(tags::provenance(conn, post_id)?[0].id)
+        })
+        .await
+        .unwrap();
+    let path = format!("/posts/{post_id}");
+    let action = format!("{path}/tags");
+    let html = body_text(h.send(h.get(&path)).await).await;
+    assert!(
+        html.contains("aria-label=\"Remove source tag original\""),
+        "{html}"
+    );
+    assert!(html.contains("<span class=\"badge\">source</span>"));
+    assert!(html.contains("<span class=\"badge\">manual</span>"));
+    assert!(html.contains("name=\"tags\" value=\"original, favorite\""));
+
+    let edit = format!("csrf={}&notes=reviewed", h.ws.csrf);
+    assert_eq!(
+        h.send(h.post(&path, &edit)).await.status(),
+        StatusCode::SEE_OTHER
+    );
+    let invalid = h
+        .send(h.post(&action, &format!("csrf=bad&tag_id={tag_id}&action=remove")))
+        .await;
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+    let html = body_text(h.send(h.get(&path)).await).await;
+    assert!(html.contains("Remove source tag original"));
+
+    let remove = format!("csrf={}&tag_id={tag_id}&action=remove", h.ws.csrf);
+    assert_eq!(
+        h.send(h.post(&action, &remove)).await.status(),
+        StatusCode::SEE_OTHER
+    );
+    let html = body_text(h.send(h.get(&path)).await).await;
+    assert!(html.contains("removed source tags"));
+    assert!(html.contains("Undo removal of source tag original"));
+    assert!(!html.contains("Remove source tag original"));
+    assert!(html.contains("name=\"tags\" value=\"original, favorite\""));
+
+    let undo = format!("csrf={}&tag_id={tag_id}&action=undo", h.ws.csrf);
+    assert_eq!(
+        h.send(h.post(&action, &undo)).await.status(),
+        StatusCode::SEE_OTHER
+    );
+    let html = body_text(h.send(h.get(&path)).await).await;
+    assert!(html.contains("Remove source tag original"));
+    assert!(!html.contains("removed source tags"));
+}
+
+#[tokio::test]
 async fn publish_returns_at_once_and_the_worker_sends_it() {
     let h = harness();
     let channel = h.add_channel().await;

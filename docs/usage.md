@@ -24,7 +24,7 @@
 | `nujijushi bot [--once]` | Telegram command interface only |
 | `nujijushi users ls\|grant\|ban` | who may talk to the bot, and their roles |
 | `nujijushi rule add <tag> block\|nsfw` · `rule ls` · `rule rm` | content rules |
-| `nujijushi alias set <from> <to>` | tag aliasing for future imports |
+| `nujijushi alias set <from> <to>` | tag aliasing for future imports and new manual tags |
 | `nujijushi log [--limit N]` | send audit log |
 | `nujijushi gc [--dry-run]` | delete unreferenced blobs and thumbnails |
 | `nujijushi export [--out DIR] [--with-media]` | backup: DB snapshot + JSONL + channels.json (+ blobs) |
@@ -115,6 +115,8 @@ channel and the total size of the media · channel list + create · channel edit
 with live next-slot preview · ordered queue with pin/skip/requeue/remove ·
 next-slots preview · import box with job progress · **jobs** (every action, live) ·
 **users** (roles, quotas, ban/promote).
+
+The post detail page shows whether a tag came from the source, a manual edit, or both. Removing a source tag keeps it hidden on that post after re-import. Undo restores it if the most recent import still supplied it. Edit manual tags in the separate **Save tags** form.
 
 `GET /metrics` answers in the Prometheus text format (posts by state and nsfw, channels by
 enabled, queue depth per channel/state, import jobs, storage mirrors). It sits outside the

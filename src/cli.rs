@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Local, Utc};
 use clap::{Args as ClapArgs, Parser, Subcommand};
 
+use crate::bot::queue_alerts;
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::model::{Attribution, Channel, ParseMode, PostState, QueueState, Rating, TagStyle};
@@ -559,7 +560,7 @@ pub async fn run() -> Result<()> {
             let state = open_state(cfg)?;
             reconcile_interrupted_jobs(&state).await?;
             println!("scheduler  not running in `serve` - `nujijushi run` publishes on schedule");
-            crate::web::serve(state, bind).await
+            queue_alerts::monitor_while(&state, crate::web::serve(state.clone(), bind)).await
         }
         Command::Bot { once } => {
             let state = open_state(cfg)?;
@@ -568,16 +569,13 @@ pub async fn run() -> Result<()> {
                     "the bot interface needs a token: set TG_BOT_TOKEN",
                 ));
             }
-            {
-                let bot = crate::bot::Bot::new(&state).await?;
-                bot.run(once).await?;
+            if once {
+                cmd_bot(&state, true).await?;
+                queue_alerts::check(&state).await;
+                Ok(())
+            } else {
+                queue_alerts::monitor_while(&state, cmd_bot(&state, false)).await
             }
-            // in webhook mode the interface *is* the HTTP endpoint
-            if state.cfg.bot_mode == crate::config::BotMode::Webhook && !once {
-                reconcile_interrupted_jobs(&state).await?;
-                crate::web::serve(state, None).await?;
-            }
-            Ok(())
         }
         Command::Gc { dry_run } => cmd_gc(cfg, dry_run),
         Command::Export { out, with_media } => cmd_export(cfg, out, with_media).await,
@@ -651,7 +649,16 @@ async fn dispatch(state: &AppState, cmd: Command) -> Result<()> {
             no_web,
             no_bot,
             bind,
-        } => cmd_run(state, once, tick, no_web, no_bot, bind).await,
+        } => {
+            let command = cmd_run(state, once, tick, no_web, no_bot, bind);
+            if once {
+                command.await?;
+                queue_alerts::check(state).await;
+                Ok(())
+            } else {
+                queue_alerts::monitor_while(state, command).await
+            }
+        }
         Command::Log { limit } => cmd_log(state, limit).await,
         Command::Init { .. }
         | Command::Doctor { .. }
@@ -1072,6 +1079,34 @@ async fn cmd_doctor(cfg: Config, strict: bool, offline: bool) -> Result<()> {
         } else {
             "disabled in config ([bot] enabled = false)".into()
         },
+    });
+    let alert_admins = queue_alerts::recipients(&cfg.access.admins).len();
+    let alert_token = cfg
+        .bot_token
+        .as_deref()
+        .is_some_and(|token| !token.trim().is_empty());
+    let (alert_level, alert_detail) = match (cfg.queue_alerts, alert_token, alert_admins) {
+        (false, _, _) => (Level::Ok, "off ([bot] queue_alerts = false)".into()),
+        (true, false, 0) => (
+            Level::Warn,
+            "enabled, but a bot token and [access] admins are required".into(),
+        ),
+        (true, false, _) => (Level::Warn, "enabled, but a bot token is required".into()),
+        (true, true, 0) => (
+            Level::Warn,
+            "enabled, but [access] admins needs a Telegram user ID".into(),
+        ),
+        (true, true, count) => (
+            Level::Ok,
+            format!(
+                "enabled for {count} configured admin(s); each admin must start a private chat with the bot"
+            ),
+        ),
+    };
+    checks.push(Check {
+        level: alert_level,
+        label: "queue alerts".into(),
+        detail: alert_detail,
     });
     if cfg.bot_mode == crate::config::BotMode::Webhook {
         checks.push(match crate::bot::webhook_target(&cfg) {
@@ -1598,14 +1633,13 @@ fn cmd_tag(state: &AppState, id: i64, tags: Vec<String>, remove: bool) -> Result
         return Err(Error::invalid("no tags given"));
     }
     state.db.with(|conn| {
-        for tag in &tags {
+        crate::db::transaction(conn, |conn| {
             if remove {
-                crate::db::tags::unlink(conn, id, tag)?;
+                crate::db::tags::remove(conn, id, &tags)
             } else {
-                crate::db::tags::link(conn, id, tag, "manual")?;
+                crate::db::tags::add_manual(conn, id, &tags)
             }
-        }
-        Ok(())
+        })
     })?;
     let verb = if remove { "removed" } else { "added" };
     println!("{verb} {} tag(s) on post #{id}", tags.len());
@@ -2085,8 +2119,20 @@ async fn cmd_preview(state: &AppState, channel: String, count: usize) -> Result<
 
 async fn cmd_push(state: &AppState, channel: String, dry_run: bool, force: bool) -> Result<()> {
     let channel = resolve_channel(state, &channel).await?;
-    let outcome = crate::tg::publish::publish_channel(state, &channel, dry_run, force).await?;
-    println!("{}", outcome.describe());
+    let outcome = crate::tg::publish::publish_channel(state, &channel, dry_run, force).await;
+    if !dry_run {
+        queue_alerts::check(state).await;
+    }
+    println!("{}", outcome?.describe());
+    Ok(())
+}
+
+async fn cmd_bot(state: &AppState, once: bool) -> Result<()> {
+    crate::bot::Bot::new(state).await?.run(once).await?;
+    if state.cfg.bot_mode == crate::config::BotMode::Webhook && !once {
+        reconcile_interrupted_jobs(state).await?;
+        crate::web::serve(state.clone(), None).await?;
+    }
     Ok(())
 }
 

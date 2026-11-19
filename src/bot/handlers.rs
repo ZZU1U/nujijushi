@@ -828,10 +828,7 @@ impl<'a> Bot<'a> {
         self.state
             .db
             .call(move |conn| {
-                for tag in &tags {
-                    crate::db::tags::link(conn, id, tag, "manual")?;
-                }
-                Ok(())
+                crate::db::transaction(conn, |conn| crate::db::tags::add_manual(conn, id, &tags))
             })
             .await?;
         self.reply(message, &format!("post #{id}: added {count} tag(s)"))

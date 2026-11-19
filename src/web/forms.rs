@@ -90,6 +90,14 @@ pub struct PostEdit {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct PostTagAction {
+    #[serde(default)]
+    pub csrf: String,
+    pub tag_id: i64,
+    pub action: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct ChannelForm {
     #[serde(default)]
     pub csrf: String,

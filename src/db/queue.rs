@@ -379,7 +379,7 @@ pub fn recent_sends(conn: &Connection, limit: i64) -> Result<Vec<crate::model::S
 pub fn recent_tags(conn: &Connection, channel_id: i64, limit: i64) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT t.name FROM queue q
-         JOIN post_tags pt ON pt.post_id = q.post_id
+         JOIN active_post_tags pt ON pt.post_id = q.post_id
          JOIN tags t ON t.id = pt.tag_id
          WHERE q.channel_id = ?1 AND q.state = 'sent'
            AND q.post_id IN (
