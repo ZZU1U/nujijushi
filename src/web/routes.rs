@@ -1173,13 +1173,17 @@ async fn preview_page(
 ///
 /// Uploads take minutes, so this only writes a job row: the request returns at
 /// once and the worker does the transfers.
-async fn storage_drain(State(ws): State<Arc<WebState>>) -> Response {
+async fn storage_drain(
+    State(ws): State<Arc<WebState>>,
+    Form(form): Form<FormMap>,
+) -> WebResult<Response> {
+    check_csrf(&ws, forms::field(&form, "csrf").unwrap_or_default())?;
     let note = match crate::jobs::create_drain_job(&ws.app, 25).await {
         Ok(Some(id)) => format!("upload queued as job #{id} - watch the jobs panel"),
         Ok(None) => "an upload is already queued".to_string(),
         Err(err) => format!("cannot queue the upload: {err}"),
     };
-    flash_redirect("/", &note)
+    Ok(flash_redirect("/", &note))
 }
 
 // ---------------------------------------------------------------- publish
@@ -1310,12 +1314,18 @@ async fn jobs_retry(
             "only imports can be retried - publishing has its own button",
         ));
     }
+    // only a settled failure may be retried: a pending or running import would
+    // otherwise be started twice for the same target
+    if job.state != "failed" {
+        return Ok(flash_redirect("/jobs", "only failed jobs can be retried"));
+    }
     let target = job.payload.clone().unwrap_or_default();
     if target.trim().is_empty() {
         return Ok(flash_redirect("/jobs", "that job has no target to retry"));
     }
-    let note = match crate::jobs::create_job(app, &target).await {
-        Ok(new_id) => format!("job #{id} re-queued as #{new_id}"),
+    let note = match crate::jobs::create_import_job_unique(app, &target).await {
+        Ok(Some(new_id)) => format!("job #{id} re-queued as #{new_id}"),
+        Ok(None) => format!("job #{id} is already queued or running"),
         Err(err) => format!("cannot retry job #{id}: {err}"),
     };
     Ok(flash_redirect("/jobs", &note))
@@ -1332,7 +1342,8 @@ async fn api_status(State(ws): State<Arc<WebState>>) -> WebResult<Response> {
 }
 
 /// The `/api/status` document: recent jobs plus per-channel queue depth and
-/// whether a publish is in flight. Two cheap queries.
+/// whether a publish is in flight. Cheap queries only: the last 25 jobs, the
+/// channel list, and one grouped count per channel.
 pub async fn status_payload(app: &AppState) -> crate::error::Result<Value> {
     let now = chrono::Utc::now();
     let jobs = app.db.call(|conn| job_db::list(conn, 25)).await?;

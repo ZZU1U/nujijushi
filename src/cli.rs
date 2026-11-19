@@ -557,6 +557,7 @@ pub async fn run() -> Result<()> {
         Command::Doctor { strict, offline } => cmd_doctor(cfg, strict, offline).await,
         Command::Serve { bind } => {
             let state = open_state(cfg)?;
+            reconcile_interrupted_jobs(&state).await?;
             crate::web::serve(state, bind).await
         }
         Command::Bot { once } => {
@@ -572,6 +573,7 @@ pub async fn run() -> Result<()> {
             }
             // in webhook mode the interface *is* the HTTP endpoint
             if state.cfg.bot_mode == crate::config::BotMode::Webhook && !once {
+                reconcile_interrupted_jobs(&state).await?;
                 crate::web::serve(state, None).await?;
             }
             Ok(())
@@ -2057,6 +2059,20 @@ async fn cmd_push(state: &AppState, channel: String, dry_run: bool, force: bool)
     let channel = resolve_channel(state, &channel).await?;
     let outcome = crate::tg::publish::publish_channel(state, &channel, dry_run, force).await?;
     println!("{}", outcome.describe());
+    Ok(())
+}
+
+/// Fail jobs a previous process left `running`.
+///
+/// `serve` and webhook-mode `bot` start the same worker, and `reconcile` used to
+/// run only in `run`. A job stuck in `running` would block that channel's
+/// publishing for good: `db::jobs::find_active` counts it as active, while
+/// `claim_pending` never revisits it.
+async fn reconcile_interrupted_jobs(state: &AppState) -> Result<()> {
+    let fixed = crate::jobs::worker::reconcile(state).await?;
+    if fixed > 0 {
+        tracing::warn!("reconciled {fixed} interrupted job(s)");
+    }
     Ok(())
 }
 

@@ -9,6 +9,16 @@ use crate::db::jobs as job_db;
 use crate::error::Result;
 use crate::state::AppState;
 
+/// Publish/upload jobs are quick and the user is watching them, so they get
+/// their own claim instead of a slot of the (slow) import pool: with two long
+/// gallery-dl runs, a queued "publish now" would otherwise wait for both.
+const QUICK_KINDS: &[&str] = &[
+    crate::jobs::KIND_PUBLISH_CHANNEL,
+    crate::jobs::KIND_PUBLISH_ITEM,
+    crate::jobs::KIND_STORAGE_DRAIN,
+];
+const QUICK_JOBS: i64 = 4;
+
 pub struct JobWorker {
     state: AppState,
     limits: Arc<Semaphore>,
@@ -23,19 +33,24 @@ impl JobWorker {
         }
     }
 
-    /// Claim and run every pending job, respecting the concurrency limit.
+    /// Claim and run every pending job, keeping imports within the limit.
     pub async fn drain(&self) -> Result<usize> {
         let free = self.limits.available_permits() as i64;
-        if free <= 0 {
-            return Ok(0);
-        }
         let jobs = self
             .state
             .db
-            .call(move |conn| job_db::claim_pending(conn, free))
+            .call(move |conn| {
+                let mut claimed = job_db::claim_pending_of(conn, QUICK_KINDS, QUICK_JOBS)?;
+                claimed.extend(job_db::claim_pending_of(
+                    conn,
+                    &[crate::jobs::KIND_IMPORT],
+                    free,
+                )?);
+                Ok(claimed)
+            })
             .await?;
         if jobs.is_empty() {
-            // no imports to run, but storage mirrors may still be waiting
+            // nothing to run, but storage mirrors may still be waiting
             if let Err(err) = crate::storage::drain(&self.state, 5).await {
                 tracing::warn!("storage drain failed: {err}");
             }
@@ -48,7 +63,7 @@ impl JobWorker {
             let job = job.clone();
             set.spawn(async move {
                 if let Err(err) = crate::jobs::run_job(&state, &job).await {
-                    tracing::warn!(job = job.id, "import job failed: {err}");
+                    tracing::warn!(job = job.id, "job failed: {err}");
                 }
             });
         }

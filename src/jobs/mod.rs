@@ -275,6 +275,12 @@ pub async fn create_job_for(
         .await
 }
 
+/// Queue an import unless the same target is already waiting or running (the
+/// `/jobs` retry button: a double click must not start two imports).
+pub async fn create_import_job_unique(state: &AppState, target: &str) -> Result<Option<i64>> {
+    enqueue_unique(state, KIND_IMPORT, target.to_string()).await
+}
+
 /// Queue "publish the next post of this channel", unless one is already queued.
 pub async fn create_publish_channel_job(state: &AppState, channel_id: i64) -> Result<Option<i64>> {
     enqueue_unique(state, KIND_PUBLISH_CHANNEL, channel_id.to_string()).await

@@ -148,12 +148,40 @@ pub fn reconcile(conn: &Connection) -> Result<usize> {
     )?)
 }
 
-/// Atomically take up to `limit` pending jobs (state -> running).
+/// Atomically take up to `limit` pending jobs of any kind (state -> running).
 pub fn claim_pending(conn: &Connection, limit: i64) -> Result<Vec<Job>> {
+    claim_matching(conn, "", &[], limit)
+}
+
+/// Same, but only jobs whose `kind` is one of `kinds`.
+///
+/// The worker uses this to keep publish/upload jobs out of the import slots: a
+/// gallery-dl run can take minutes, and a queued "publish now" must not wait
+/// behind it.
+pub fn claim_pending_of(conn: &Connection, kinds: &[&str], limit: i64) -> Result<Vec<Job>> {
+    if kinds.is_empty() || limit <= 0 {
+        return Ok(Vec::new());
+    }
+    // the placeholders and the `kind` list are built here, never from user input
+    let placeholders = vec!["?"; kinds.len()].join(", ");
+    let filter = format!(" AND kind IN ({placeholders})");
+    claim_matching(conn, &filter, kinds, limit)
+}
+
+fn claim_matching(conn: &Connection, filter: &str, kinds: &[&str], limit: i64) -> Result<Vec<Job>> {
     let ids: Vec<i64> = {
-        let mut stmt =
-            conn.prepare("SELECT id FROM jobs WHERE state = 'pending' ORDER BY id LIMIT ?1")?;
-        let rows = stmt.query_map([limit], |row| row.get::<_, i64>(0))?;
+        let sql = format!(
+            "SELECT id FROM jobs WHERE state = 'pending'{filter} ORDER BY id LIMIT ?{}",
+            kinds.len() + 1
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let bound = kinds
+            .iter()
+            .map(|kind| rusqlite::types::Value::Text(kind.to_string()))
+            .chain(std::iter::once(rusqlite::types::Value::Integer(limit)));
+        let rows = stmt.query_map(rusqlite::params_from_iter(bound), |row| {
+            row.get::<_, i64>(0)
+        })?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row?);
@@ -230,6 +258,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn claim_pending_of_takes_only_the_kinds_asked_for() {
+        let db = db();
+        let import = db.with(|conn| create(conn, "import", "a", 0)).unwrap();
+        let publish = db
+            .with(|conn| create(conn, "publish_channel", "1", 0))
+            .unwrap();
+        db.with(|conn| create(conn, "import", "b", 0)).unwrap();
+
+        // the quick claim takes the publish and leaves every import alone
+        let quick = db
+            .with(|conn| claim_pending_of(conn, &["publish_channel", "publish_item"], 4))
+            .unwrap();
+        assert_eq!(
+            quick.iter().map(|job| job.id).collect::<Vec<_>>(),
+            vec![publish],
+            "publish jobs are claimed outside the import slots"
+        );
+
+        // a zero limit claims nothing: no import slot is free
+        assert!(
+            db.with(|conn| claim_pending_of(conn, &["import"], 0))
+                .unwrap()
+                .is_empty()
+        );
+        // and the import claim only ever sees imports
+        let imports = db
+            .with(|conn| claim_pending_of(conn, &["import"], 5))
+            .unwrap();
+        assert_eq!(imports.len(), 2, "both queued imports wait for a slot");
+        assert_eq!(imports[0].id, import);
+        assert!(imports.iter().all(|job| job.kind == "import"));
+    }
     #[test]
     fn count_pending_counts_only_waiting_jobs_of_that_kind() {
         let db = db();

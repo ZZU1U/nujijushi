@@ -352,6 +352,18 @@ async fn a_csrf_failure_queues_nothing() {
     assert_eq!(h.mock.send_count(), 0);
 }
 
+/// The drain button queues an upload sweep, so it must check the token too: a
+/// request that only carries the session cookie must not start it.
+#[tokio::test]
+async fn a_forged_storage_upload_is_refused() {
+    let h = harness();
+    for body in ["csrf=wrong", ""] {
+        let response = h.send(h.post("/storage/drain", body)).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "body: {body}");
+    }
+    assert!(h.jobs().await.is_empty(), "no job for a forged request");
+}
+
 #[tokio::test]
 async fn storage_upload_is_queued_instead_of_running_in_the_request() {
     let h = harness();
@@ -585,4 +597,36 @@ async fn the_dashboard_and_import_pages_expose_the_live_hooks() {
     assert!(import.contains("data-job="), "job hook: {import}");
     assert!(import.contains("class=\"progress\""), "progress: {import}");
     assert!(import.contains("data-live-hint"), "{import}");
+}
+
+/// Retrying a job that is still pending or running would fetch and store the
+/// same target twice, so only a settled failure may be retried.
+#[tokio::test]
+async fn retrying_an_unfinished_import_is_refused() {
+    let h = harness();
+    let running = h
+        .state
+        .db
+        .call(|conn| {
+            let id = job_db::create(conn, nujijushi::jobs::KIND_IMPORT, "https://x.test/a", 0)?;
+            job_db::set_state(conn, id, "running", None)?;
+            Ok(id)
+        })
+        .await
+        .unwrap();
+
+    let response = h
+        .send(h.post("/jobs/retry", &format!("csrf={}&id={running}", h.ws.csrf)))
+        .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert!(
+        Harness::flash(&response).contains("only failed jobs can be retried"),
+        "flash: {}",
+        Harness::flash(&response)
+    );
+    assert_eq!(
+        h.jobs().await.len(),
+        1,
+        "no second import of the same target"
+    );
 }

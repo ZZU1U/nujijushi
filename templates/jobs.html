@@ -10,7 +10,7 @@
     {{ waiting }} waiting{% endif %} — raise <code>[import] max_concurrent</code> to do more at once.
   </p>
   {% if jobs %}
-  <table class="compact" data-live="jobs">
+  <table class="compact">
     <tr><th>#</th><th>kind</th><th>target</th><th>state</th><th>progress</th><th>result</th><th>age</th><th></th></tr>
     {% for j in jobs %}
     <tr data-job="{{ j.id }}" data-state="{{ j.state }}">
