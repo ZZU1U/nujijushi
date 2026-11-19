@@ -76,6 +76,18 @@ next to it. Identical files across posts are stored once. `db/posts::upsert` sel
 2. Each importer returns `NormalizedPost`s: source, source id, author, title/description,
    tags, rating, `files` staged on disk. `source/normalize.rs` maps the messy per-site JSON
    (pixiv `x_restrict`, twitter `possibly_sensitive`, booru `rating`, …) into `Rating`.
+   The author fields are the trap: they are **source-specific and two of them disagree**.
+   gallery-dl's `extractor/twitter.py` writes `user.name` = *screen name* and `user.nick` =
+   display name (`"name": core["screen_name"], "nick": core["name"]`), while pixiv's
+   `user.account` is the handle and `user.name` the display name. And with the *default*
+   `metadata-user = false` gallery-dl passes the raw GraphQL user through instead:
+   `user.core.screen_name`, `user.core.name`, `user.rest_id`. So `normalize.rs` keeps two
+   source-aware candidate lists, accepts a twitter handle only when it passes
+   `looks_like_screen_name` (`[A-Za-z0-9_]{1,50}`, optional `@` — a display name like
+   `tamanegi@FANBOX` can therefore never become the handle), and falls back to the
+   `@handle` in the post URL. A display name that is just the handle is dropped
+   (`same_handle`). All of it happens **at import time**: a stored row keeps the author it
+   was written with, so a fix needs a re-import.
 3. `jobs::import_posts` stores each one (`store_post`): hash + copy into the blob store →
    thumbnail (webp) and, for videos, an ffmpeg poster → `post_db::upsert` (author upsert,
    post upsert, source tags replaced, media rows rewritten) → `submitted_by` →

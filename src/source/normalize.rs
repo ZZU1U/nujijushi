@@ -102,6 +102,60 @@ fn first_string_path(value: &Value, paths: &[&str]) -> Option<String> {
     None
 }
 
+/// `first_string_path`, but only a value `accept` agrees with.
+fn first_string_path_matching(
+    value: &Value,
+    paths: &[&str],
+    accept: impl Fn(&str) -> bool,
+) -> Option<String> {
+    paths
+        .iter()
+        .filter_map(|path| first_string_path(value, &[*path]))
+        .find(|candidate| accept(candidate))
+}
+
+/// Twitter screen names are `[A-Za-z0-9_]` (1–50 chars, optional leading `@`).
+///
+/// Display names are free text — `tamanegi@FANBOX` is one — so this is the check
+/// that keeps a display name out of the handle slot.
+fn looks_like_screen_name(raw: &str) -> bool {
+    let name = raw.trim().trim_start_matches('@');
+    !name.is_empty()
+        && name.len() <= 50
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// The `@handle` in `https://x.com/<handle>/status/<id>`.
+///
+/// Last resort when the metadata has no usable handle. Twitter's non-profile
+/// paths (`/i/`, `/home`, …) answer `None`; a repost's URL names the account that
+/// posted it, which is the honest answer for a shape we cannot resolve.
+fn handle_from_url(url: &str) -> Option<String> {
+    let rest = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    let (host, tail) = rest.split_once('/')?;
+    let host = host.to_ascii_lowercase();
+    if !(host.ends_with("x.com") || host.ends_with("twitter.com")) {
+        return None;
+    }
+    let first = tail.split(['/', '?', '#']).next()?;
+    match first {
+        "" | "i" | "home" | "search" | "explore" | "hashtag" | "intent" | "share" | "login"
+        | "settings" => None,
+        handle if looks_like_screen_name(handle) => Some(handle.to_string()),
+        _ => None,
+    }
+}
+
+/// Is this display name just the handle, spelled differently (`@Name` vs `name`)?
+/// Such a name adds nothing: captions print `**name** (@handle)`.
+fn same_handle(name: &str, handle: Option<&str>) -> bool {
+    let Some(handle) = handle else {
+        return false;
+    };
+    let clean = |value: &str| value.trim().trim_start_matches('@').to_lowercase();
+    !clean(handle).is_empty() && clean(name) == clean(handle)
+}
+
 /// Any truthy "this one is sensitive" flag anywhere in the metadata. gallery-dl
 /// nests them (a retweet or quote carries its own object, media items carry a
 /// `sensitive` flag of their own), and the cost of missing one is adult media
@@ -372,43 +426,88 @@ pub fn from_gallery_metadata(
         ],
     );
 
-    // gallery-dl's twitter extractor reports the handle as `username` and the
-    // display name as `fullname` / `user.name`. The handle is the stable ASCII
-    // identity (and the only thing present for some tweets), so on twitter the
-    // artist *is* the handle: name stays empty and `Author::display` falls back.
-    let twitter = source == "twitter";
-    let author_handle = first_string_path(
-        meta,
+    // gallery-dl's author fields are source-specific, and two of them disagree:
+    //   twitter (extractor/twitter.py): `user.name` is the *screen name* and
+    //     `user.nick` the display name (`"name": core["screen_name"],
+    //     "nick": core["name"]`) — the display name is free text and often
+    //     contains `@`, so it must never be mistaken for the handle;
+    //   pixiv: `user.account` is the handle, `user.name` the display name.
+    // So the handle and the name come from separate, source-aware lists, a
+    // twitter handle has to *look* like one, and the URL is the last resort.
+    let twitter = source == "twitter" || source == "x";
+    let handle_keys: &[&str] = if twitter {
         &[
+            // raw GraphQL user (gallery-dl's default, `metadata-user = false`):
+            // `{"core": {"screen_name": handle, "name": display}}`
+            "user.core.screen_name",
+            "author.core.screen_name",
+            "user.legacy.screen_name",
+            "author.legacy.screen_name",
+            // flattened user (`metadata-user = true`): name = screen name
+            "user.name",
+            "author.name",
             "screen_name",
+            "user.screen_name",
             "user_account",
+            "handle",
+            "username",
+            "user.username",
+            "user_nick",
+            "user.nick",
+        ]
+    } else {
+        &[
+            "user.account",
+            "user_account",
+            "screen_name",
+            "user.screen_name",
             "handle",
             "user_nick",
             "username",
-            "user.screen_name",
             "user.username",
             "user.nick",
-        ],
-    );
-    let author_name = if twitter {
-        None
-    } else {
-        first_string_path(
-            meta,
-            &[
-                "user_name",
-                "artist_name",
-                "creator_name",
-                "author_name",
-                "display_name",
-                "nick",
-                "full_name",
-                "artist",
-                "uploader",
-                "user.name",
-            ],
-        )
+        ]
     };
+    let author_handle = if twitter {
+        first_string_path_matching(meta, handle_keys, looks_like_screen_name)
+            .or_else(|| post.url.as_deref().and_then(handle_from_url))
+    } else {
+        first_string_path(meta, handle_keys)
+    };
+    let name_keys: &[&str] = if twitter {
+        &[
+            // raw GraphQL user: the display name sits next to the screen name
+            "user.core.name",
+            "author.core.name",
+            "user.legacy.name",
+            "author.legacy.name",
+            // flattened user: `nick` is the display name
+            "user.nick",
+            "author.nick",
+            "user_name",
+            "fullname",
+            "display_name",
+            "full_name",
+            "nick",
+            "user.name",
+        ]
+    } else {
+        &[
+            "user_name",
+            "artist_name",
+            "creator_name",
+            "author_name",
+            "display_name",
+            "nick",
+            "full_name",
+            "artist",
+            "uploader",
+            "user.name",
+        ]
+    };
+    let author_name = first_string_path_matching(meta, name_keys, |name| {
+        !same_handle(name, author_handle.as_deref())
+    });
     let author_id = first_string_path(
         meta,
         &[
@@ -419,6 +518,9 @@ pub fn from_gallery_metadata(
             "uid",
             "author_id",
             "user.id",
+            // raw GraphQL user: the numeric id is `rest_id`
+            "user.rest_id",
+            "author.rest_id",
         ],
     )
     .or_else(|| author_handle.clone());
@@ -540,9 +642,13 @@ mod tests {
         assert_eq!(author.display(), "handle");
     }
 
+    /// gallery-dl's twitter user object is `{name: <screen name>, nick: <display
+    /// name>}` (`extractor/twitter.py`: `"name": core["screen_name"], "nick":
+    /// core["name"]`). Swapping the two put a display name in the handle slot,
+    /// which is exactly what `@tamanegi@FANBOX` was.
     #[test]
     fn twitter_author_survives_both_gallery_dl_shapes() {
-        // modern shape: flat user_id plus a display name we deliberately ignore
+        // modern shape: flat handle plus a display name, which is kept now
         let flat = json!({
             "category": "twitter",
             "tweet_id": 1,
@@ -550,29 +656,32 @@ mod tests {
             "fullname": "アソビニン",
             "user_id": 4242,
         });
-        let post = from_gallery_metadata(&flat, vec![], "twitter", None).unwrap();
-        let author = post.author.unwrap();
+        let author = from_gallery_metadata(&flat, vec![], "twitter", None)
+            .unwrap()
+            .author
+            .unwrap();
         assert_eq!(author.source_id, "4242");
         assert_eq!(author.handle.as_deref(), Some("asobinin"));
-        assert_eq!(
-            author.name, None,
-            "twitter keeps the handle, not the display name"
-        );
+        assert_eq!(author.name.as_deref(), Some("アソビニン"));
+        assert_eq!(author.display(), "アソビニン");
 
-        // older shape: everything nested under `user`
+        // nested shape: `user.name` is the handle, `user.nick` the display name
         let nested = json!({
             "category": "twitter",
             "tweet_id": 2,
-            "user": { "id": 77, "nick": "nested_handle", "name": "Nested Name" },
+            "user": { "id": 77, "name": "nested_handle", "nick": "Nested Name" },
         });
-        let post = from_gallery_metadata(&nested, vec![], "twitter", None).unwrap();
-        let label = post.author.as_ref().unwrap().display();
-        let author = post.author.unwrap();
+        let author = from_gallery_metadata(&nested, vec![], "twitter", None)
+            .unwrap()
+            .author
+            .unwrap();
         assert_eq!(author.source_id, "77");
         assert_eq!(author.handle.as_deref(), Some("nested_handle"));
-        assert_eq!(label, "nested_handle");
+        assert_eq!(author.name.as_deref(), Some("Nested Name"));
+        assert_eq!(author.display(), "Nested Name");
 
-        // other sources still prefer the human name
+        // other sources still prefer the human name, and pixiv's account is the
+        // handle (gallery-dl's pixiv user dict: `account` + `name`)
         let pixiv = json!({
             "category": "pixiv",
             "illust_id": 5,
@@ -580,8 +689,101 @@ mod tests {
             "user_account": "nightjar_",
             "user_id": 9,
         });
-        let post = from_gallery_metadata(&pixiv, vec![], "pixiv", None).unwrap();
-        assert_eq!(post.author.as_ref().unwrap().display(), "Nightjar");
+        let author = from_gallery_metadata(&pixiv, vec![], "pixiv", None)
+            .unwrap()
+            .author
+            .unwrap();
+        assert_eq!(author.display(), "Nightjar");
+        assert_eq!(author.handle.as_deref(), Some("nightjar_"));
+    }
+
+    /// The reported case: the display name carries an `@`, and the handle only
+    /// exists in the URL (`x.com/<handle>/status/…`).
+    #[test]
+    fn a_display_name_never_becomes_the_twitter_handle() {
+        let meta = json!({
+            "category": "twitter",
+            "tweet_id": 3,
+            "post_url": "https://x.com/tamaneg2346/status/3",
+            "user": { "id": 7, "name": "tamanegi@FANBOX", "nick": "tamanegi@FANBOX" },
+        });
+        let author = from_gallery_metadata(&meta, vec![], "twitter", None)
+            .unwrap()
+            .author
+            .unwrap();
+        assert_eq!(
+            author.handle.as_deref(),
+            Some("tamaneg2346"),
+            "the display name is not a handle, so the URL answers"
+        );
+        assert_eq!(author.name.as_deref(), Some("tamanegi@FANBOX"));
+        assert_eq!(author.display(), "tamanegi@FANBOX");
+
+        // a handle that only lives in `nick` is still accepted (defensive: some
+        // shapes put the screen name there)
+        let only_nick = json!({
+            "category": "twitter",
+            "tweet_id": 4,
+            "user": { "id": 8, "nick": "asobinin" },
+        });
+        let author = from_gallery_metadata(&only_nick, vec![], "twitter", None)
+            .unwrap()
+            .author
+            .unwrap();
+        assert_eq!(author.handle.as_deref(), Some("asobinin"));
+
+        // a display name that *is* the handle is dropped, so captions cannot
+        // print `**@x** (@x)`
+        let same = json!({
+            "category": "twitter",
+            "tweet_id": 5,
+            "user": { "id": 9, "name": "asobinin", "nick": "@Asobinin" },
+        });
+        let author = from_gallery_metadata(&same, vec![], "twitter", None)
+            .unwrap()
+            .author
+            .unwrap();
+        assert_eq!(author.handle.as_deref(), Some("asobinin"));
+        assert_eq!(author.name, None, "the same word twice is noise");
+    }
+
+    /// gallery-dl's *default* emits the raw GraphQL user object
+    /// (`metadata-user = false` → `_transform_user = util.identity`), where the
+    /// handle is `core.screen_name` and the display name `core.name`.
+    #[test]
+    fn the_raw_graphql_user_shape_is_understood_too() {
+        let meta = json!({
+            "category": "twitter",
+            "tweet_id": 6,
+            "user": {
+                "rest_id": "11",
+                "core": { "screen_name": "tamaneg2346", "name": "tamanegi@FANBOX" },
+            },
+        });
+        let author = from_gallery_metadata(&meta, vec![], "twitter", None)
+            .unwrap()
+            .author
+            .unwrap();
+        assert_eq!(author.source_id, "11", "rest_id is the numeric id");
+        assert_eq!(author.handle.as_deref(), Some("tamaneg2346"));
+        assert_eq!(author.name.as_deref(), Some("tamanegi@FANBOX"));
+    }
+
+    #[test]
+    fn the_url_only_answers_for_a_twitter_profile_path() {
+        assert_eq!(
+            handle_from_url("https://twitter.com/SomeOne/status/1"),
+            Some("SomeOne".into())
+        );
+        assert_eq!(
+            handle_from_url("https://x.com/SomeOne/status/1?s=20"),
+            Some("SomeOne".into())
+        );
+        // twitter's own non-profile paths, and other sites, are not handles
+        assert_eq!(handle_from_url("https://x.com/i/status/1"), None);
+        assert_eq!(handle_from_url("https://x.com/home"), None);
+        assert_eq!(handle_from_url("https://t.me/night_art/42"), None);
+        assert_eq!(handle_from_url("not a url"), None);
     }
 
     #[test]
