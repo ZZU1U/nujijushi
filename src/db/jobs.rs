@@ -140,10 +140,23 @@ pub fn count_pending(conn: &Connection, kind: &str) -> Result<i64> {
 }
 
 /// Fail jobs left running by a previous process.
-pub fn reconcile_except(conn: &Connection, kind: &str) -> Result<usize> {
+pub fn reconcile_except(conn: &Connection, kinds: &[&str]) -> Result<usize> {
+    let placeholders = vec!["?"; kinds.len()].join(", ");
+    let sql = format!(
+        "UPDATE jobs SET state = 'failed', message = 'interrupted by restart', updated_at = ?
+         WHERE state IN ('pending', 'running') AND kind NOT IN ({placeholders})"
+    );
+    let now = fmt_ts(Utc::now());
+    Ok(conn.execute(
+        &sql,
+        rusqlite::params_from_iter(std::iter::once(now.as_str()).chain(kinds.iter().copied())),
+    )?)
+}
+
+pub fn interrupt_kind(conn: &Connection, kind: &str) -> Result<usize> {
     Ok(conn.execute(
         "UPDATE jobs SET state = 'failed', message = 'interrupted by restart', updated_at = ?1
-         WHERE state IN ('pending', 'running') AND kind <> ?2",
+         WHERE kind = ?2 AND state = 'running'",
         params![fmt_ts(Utc::now()), kind],
     )?)
 }

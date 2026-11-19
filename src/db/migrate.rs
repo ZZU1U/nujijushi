@@ -17,6 +17,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0010_duplicate_artwork.sql"),
     include_str!("../../migrations/0011_watch_enabled.sql"),
     include_str!("../../migrations/0012_guest_reputation.sql"),
+    include_str!("../../migrations/0013_tag_suggestions.sql"),
 ];
 
 pub fn schema_version(conn: &Connection) -> Result<i64> {
@@ -41,6 +42,7 @@ pub fn migrate(conn: &mut Connection) -> Result<i64> {
         // different version. Check the schema before applying these migrations.
         let installed = match version {
             12 => has_table(conn, "reputation_events")?,
+            13 => has_table(conn, "post_tag_suggestion_batches")?,
             _ => version <= current,
         };
         if installed && version <= current {
@@ -87,6 +89,9 @@ mod tests {
             "jobs",
             "media",
             "post_tag_removals",
+            "post_tag_suggestion_batches",
+            "post_tag_suggestion_images",
+            "post_tag_suggestions",
             "post_tags",
             "posts",
             "queue",
@@ -99,6 +104,7 @@ mod tests {
             "sends",
             "settings",
             "tag_aliases",
+            "tag_franchise_associations",
             "tag_rules",
             "tags",
             "watched_items",
@@ -138,6 +144,34 @@ mod tests {
         assert!(has_table(&conn, "reputation_events").unwrap());
         assert_eq!(schema_version(&conn).unwrap(), MIGRATIONS.len() as i64);
         migrate(&mut conn).unwrap();
+    }
+
+    #[test]
+    fn preserves_tag_suggestions_from_earlier_development_archives() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..11] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.execute_batch(MIGRATIONS[12]).unwrap();
+        conn.pragma_update(None, "user_version", 12).unwrap();
+        conn.execute(
+            "INSERT INTO tag_franchise_associations (character_tag_id, origin, franchise)
+             VALUES (42, 'manual', 'custom_franchise')",
+            [],
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+        assert!(has_table(&conn, "reputation_events").unwrap());
+        assert_eq!(schema_version(&conn).unwrap(), 13);
+        let franchise: String = conn
+            .query_row(
+                "SELECT franchise FROM tag_franchise_associations WHERE character_tag_id = 42",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(franchise, "custom_franchise");
     }
 
     #[test]

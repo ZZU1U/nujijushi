@@ -61,6 +61,10 @@ pub fn router(ws: Arc<WebState>) -> Router {
         .route("/posts/{id}", get(post_page).post(post_update))
         .route("/posts/{id}/tags", post(post_tag_action))
         .route(
+            "/posts/{id}/tag-suggestions",
+            post(super::tag_suggestions::action),
+        )
+        .route(
             "/watches",
             get(super::curation::watches_page).post(super::curation::create_watch),
         )
@@ -683,13 +687,21 @@ async fn post_page(
     Query(query): Query<PostFilter>,
 ) -> WebResult<Html<String>> {
     let app = &ws.app;
-    let (post, tags, removals) = app
+    let suggestions_enabled = app.cfg.tag_suggestions.enabled;
+    let (post, tags, removals, tag_review) = app
         .db
         .call(move |conn| {
+            let post = post_db::get(conn, id)?;
+            let tag_review = if suggestions_enabled {
+                crate::db::tag_suggestions::review(conn, &post)?
+            } else {
+                None
+            };
             Ok((
-                post_db::get(conn, id)?,
+                post,
                 tag_db::provenance(conn, id)?,
                 tag_db::removals(conn, id)?,
+                tag_review,
             ))
         })
         .await?;
@@ -716,6 +728,7 @@ async fn post_page(
         .call(move |conn| queue_db::for_post(conn, id))
         .await?;
     let now = chrono::Utc::now();
+    let tag_review = tag_review.map(|review| super::tag_suggestions::review_view(review, now));
     let mut captions = Vec::new();
     for channel in &channels {
         let decision = crate::nsfw::evaluate(&post, channel, &rules);
@@ -806,6 +819,8 @@ async fn post_page(
             })),
             "media_total": media_total,
             "media": media,
+            "tag_review": tag_review,
+            "can_suggest_tags": suggestions_enabled && post.media.iter().any(|media| !media.is_video),
             "captions": captions,
             "ratings": Rating::all().iter().map(|r| r.as_str()).collect::<Vec<_>>(),
             "states": PostState::all().iter().map(|s| s.as_str()).collect::<Vec<_>>(),
@@ -1447,6 +1462,7 @@ fn kind_label(kind: &str) -> &str {
         crate::jobs::KIND_PUBLISH_ITEM => "publish item",
         crate::jobs::KIND_STORAGE_DRAIN => "storage upload",
         crate::jobs::KIND_WATCH_CHECK => "watch check",
+        crate::jobs::KIND_TAG_SUGGESTIONS => "suggest tags",
         other => other,
     }
 }
@@ -1519,8 +1535,27 @@ async fn jobs_retry(
 /// Machine-readable state for the live UI: `static/app.js` polls this instead of
 /// re-downloading whole pages, so the templates stay server-rendered and nothing
 /// here needs a JS build step.
-async fn api_status(State(ws): State<Arc<WebState>>) -> WebResult<Response> {
-    let payload = status_payload(&ws.app).await?;
+#[derive(serde::Deserialize)]
+struct StatusQuery {
+    tag_post: Option<i64>,
+}
+
+async fn api_status(
+    State(ws): State<Arc<WebState>>,
+    Query(query): Query<StatusQuery>,
+) -> WebResult<Response> {
+    let mut payload = status_payload(&ws.app).await?;
+    if let Some(post_id) = query.tag_post
+        && ws.app.cfg.tag_suggestions.enabled
+    {
+        let job = ws
+            .app
+            .db
+            .call(move |conn| crate::db::tag_suggestions::latest_job(conn, post_id))
+            .await?;
+        payload["tag_suggestion_job"] =
+            json!(job.as_ref().map(|job| job_view(job, chrono::Utc::now())));
+    }
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(payload)).into_response())
 }
 

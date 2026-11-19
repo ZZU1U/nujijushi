@@ -4,6 +4,7 @@ pub mod auth;
 mod curation;
 pub mod forms;
 pub mod routes;
+mod tag_suggestions;
 pub mod views;
 
 use std::sync::Arc;

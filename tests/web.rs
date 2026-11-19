@@ -1517,3 +1517,344 @@ printf '[]\n'
     stop_tx.send(()).unwrap();
     task.await.unwrap();
 }
+
+fn tagger_harness(port: u16) -> Harness {
+    let mut h = harness();
+    let cfg = Arc::make_mut(&mut h.state.cfg);
+    cfg.tag_suggestions.enabled = true;
+    cfg.tag_suggestions.tagger_port = std::num::NonZeroU16::new(port).unwrap();
+    h.ws = WebState::new(h.state.clone()).unwrap();
+    h
+}
+
+async fn add_tagger_post(h: &Harness, source_id: &str) -> i64 {
+    let mut post = NormalizedPost::new("local", source_id);
+    post.tags = vec!["hidden_source".into(), "original".into()];
+    post.raw_json = Some(r#"{"tag_string_copyright":"source_series"}"#.into());
+    let media = [
+        (b"still-one".as_slice(), false),
+        (b"video".as_slice(), true),
+        (b"still-two".as_slice(), false),
+        (b"animated".as_slice(), false),
+    ]
+    .iter()
+    .enumerate()
+    .map(|(index, &(bytes, is_video))| {
+        let hash = format!("{source_id}{index}deadbeef");
+        let ext = if is_video { "mp4" } else { "png" };
+        let path = h.state.blobs.path_for(&hash, ext);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+        NewMedia {
+            blob_hash: hash,
+            ext: ext.into(),
+            mime: None,
+            width: None,
+            height: None,
+            bytes: bytes.len() as i64,
+            is_video,
+            poster_hash: None,
+            sensitive: false,
+            meta_json: None,
+        }
+    })
+    .collect::<Vec<_>>();
+    h.state
+        .db
+        .call(move |conn| Ok(nujijushi::db::posts::upsert(conn, &post, &media)?.0))
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn tag_suggestions_review_is_explicit_and_preserves_existing_tags_and_removals() {
+    use axum::{
+        Router,
+        body::{Bytes, to_bytes},
+        response::IntoResponse,
+        routing::post,
+    };
+    use nujijushi::db::{posts, tag_suggestions, tags};
+    use nujijushi::jobs::worker::JobWorker;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    let companion = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut h = tagger_harness(companion.local_addr().unwrap().port());
+    Arc::make_mut(&mut h.state.cfg).proxy_url =
+        Some(format!("http://{}", proxy.local_addr().unwrap()));
+    h.ws = WebState::new(h.state.clone()).unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let handler = {
+        let requests = requests.clone();
+        move |body: Bytes| {
+            let requests = requests.clone();
+            async move {
+                requests.fetch_add(1, Ordering::Relaxed);
+                match body.as_ref() {
+                    b"still-one" | b"still-two" => "3861\tpikachu\t0.96\n3901\thidden_source\t0.93\n3902\tunknown_character\t0.92\n3903\tlow_confidence\t0.7\n".into_response(),
+                    b"animated" => StatusCode::UNPROCESSABLE_ENTITY.into_response(),
+                    _ => panic!("unexpected image request"),
+                }
+            }
+        }
+    };
+    let server = tokio::spawn(async move {
+        axum::serve(companion, Router::new().route("/v1/predict", post(handler)))
+            .await
+            .unwrap()
+    });
+    let post_id = add_tagger_post(&h, "tagged01").await;
+    h.state
+        .db
+        .with(|conn| {
+            let source = tags::provenance(conn, post_id)?
+                .into_iter()
+                .find(|tag| tag.name == "hidden_source")
+                .unwrap();
+            assert!(tags::suppress_source(conn, post_id, source.id)?);
+            tags::set_alias(conn, "variant_spelling", "fixed_character")
+        })
+        .unwrap();
+
+    let path = format!("/posts/{post_id}/tag-suggestions");
+    let generate = format!("csrf={}&action=generate", h.ws.csrf);
+    let mut anonymous = h.post(&path, &generate);
+    anonymous.headers_mut().remove(header::COOKIE);
+    assert!(h.send(anonymous).await.status().is_redirection());
+    assert_eq!(
+        h.send(h.post(&path, "action=generate&csrf=bad"))
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let (first, second) = tokio::join!(
+        h.send(h.post(&path, &generate)),
+        h.send(h.post(&path, &generate))
+    );
+    assert_eq!(first.status(), StatusCode::SEE_OTHER);
+    assert_eq!(second.status(), StatusCode::SEE_OTHER);
+    assert!(h.jobs().await.len() == 1);
+    assert_eq!(requests.load(Ordering::Relaxed), 0);
+    let job = &h.jobs().await[0];
+    assert_eq!(job.state, "pending");
+
+    h.state
+        .db
+        .with(|conn| {
+            for _ in 0..26 {
+                let id = job_db::create(conn, "test", "", 0)?;
+                job_db::set_state(conn, id, "done", None)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    let status = h
+        .send(h.get(&format!("/api/status?tag_post={post_id}")))
+        .await;
+    let body = to_bytes(status.into_body(), usize::MAX).await.unwrap();
+    let status: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(status["tag_suggestion_job"]["id"], job.id);
+    assert!(
+        status["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| entry["id"] != job.id)
+    );
+
+    assert_eq!(JobWorker::new(h.state.clone()).drain().await.unwrap(), 1);
+    assert_eq!(h.job_state(job.id).await, "done");
+    assert_eq!(requests.load(Ordering::Relaxed), 3);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(40), proxy.accept())
+            .await
+            .is_err()
+    );
+    let detail = h.send(h.get(&format!("/posts/{post_id}"))).await;
+    let html = String::from_utf8(
+        to_bytes(detail.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(html.contains("href=\"#media-1\">Image 1"), "{html}");
+    assert!(html.contains("href=\"#media-3\">Image 3"));
+    assert!(!html.contains("href=\"#media-2\">Image 2"));
+    let review = h
+        .state
+        .db
+        .with(|conn| {
+            assert_eq!(tags::for_post(conn, post_id)?, vec!["original"]);
+            Ok(tag_suggestions::review(conn, &posts::get(conn, post_id)?)?.unwrap())
+        })
+        .unwrap();
+    assert_eq!(
+        review
+            .suggestions
+            .iter()
+            .map(|item| item.tag.as_str())
+            .collect::<Vec<_>>(),
+        ["pikachu", "unknown_character", "source_series", "pokemon"]
+    );
+    assert_eq!(review.suggestions[0].images, [1, 3]);
+    let resolve = |id, action, input| {
+        format!(
+            "csrf={}&job_id={}&suggestion_id={id}&action={action}&tag={input}",
+            h.ws.csrf, job.id
+        )
+    };
+    let character = review.suggestions[0].id;
+    let status = h
+        .send(h.post(&path, &resolve(character, "accept", "hidden_source")))
+        .await
+        .status();
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    h.state
+        .db
+        .with(|conn| tags::add_manual(conn, post_id, &["keep_manual".into()]))
+        .unwrap();
+    let saved = h
+        .send(h.post(&path, &resolve(character, "accept", "Variant+Spelling")))
+        .await;
+    assert_eq!(saved.status(), StatusCode::SEE_OTHER);
+    let discarded = h
+        .send(h.post(
+            &path,
+            &resolve(review.suggestions[3].id, "discard", "pokemon"),
+        ))
+        .await;
+    assert_eq!(discarded.status(), StatusCode::SEE_OTHER);
+    h.state
+        .db
+        .with(|conn| {
+            assert_eq!(
+                tags::for_post(conn, post_id)?,
+                vec!["original", "keep_manual", "fixed_character"]
+            );
+            assert_eq!(tags::removals(conn, post_id)?[0].name, "hidden_source");
+            let review = tag_suggestions::review(conn, &posts::get(conn, post_id)?)?.unwrap();
+            assert_eq!(review.suggestions.len(), 2);
+            let mut updated = NormalizedPost::new("local", "tagged01");
+            updated.tags = vec!["hidden_source".into(), "original".into()];
+            updated.raw_json = Some("{}".into());
+            posts::upsert(conn, &updated, &[])?;
+            assert!(
+                tag_suggestions::review(conn, &posts::get(conn, post_id)?)?
+                    .unwrap()
+                    .stale
+            );
+            Ok(())
+        })
+        .unwrap();
+    let stale = h
+        .send(h.post(&path, &resolve(review.suggestions[2].id, "accept", "stale")))
+        .await;
+    assert_eq!(stale.status(), StatusCode::BAD_REQUEST);
+    server.abort();
+}
+
+#[tokio::test]
+async fn restarted_suggestion_worker_fails_abandoned_jobs_and_keeps_pending_requests() {
+    let h = tagger_harness(8790);
+    let abandoned = add_tagger_post(&h, "abandoned01").await;
+    let pending = add_tagger_post(&h, "pending001").await;
+    let (abandoned, _) = nujijushi::jobs::create_tag_suggestions_job(&h.state, abandoned)
+        .await
+        .unwrap();
+    let (pending, _) = nujijushi::jobs::create_tag_suggestions_job(&h.state, pending)
+        .await
+        .unwrap();
+    h.state
+        .db
+        .with(|conn| {
+            assert_eq!(job_db::claim_pending(conn, 1)?[0].id, abandoned);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        nujijushi::jobs::worker::reconcile(&h.state).await.unwrap(),
+        1
+    );
+    assert_eq!(h.job_state(abandoned).await, "failed");
+    assert_eq!(h.job_state(pending).await, "pending");
+}
+
+#[tokio::test]
+async fn a_slow_tagger_keeps_its_archive_lock_and_does_not_delay_publishing() {
+    use nujijushi::jobs::worker::{JobWorker, reconcile};
+    use std::time::Duration;
+    use tokio::sync::Notify;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let h = tagger_harness(listener.local_addr().unwrap().port());
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let handler = {
+        let started = started.clone();
+        let release = release.clone();
+        move |body: axum::body::Bytes| {
+            let started = started.clone();
+            let release = release.clone();
+            async move {
+                if body.as_ref() == b"still-one" {
+                    started.notify_one();
+                    release.notified().await;
+                }
+                ""
+            }
+        }
+    };
+    let server = tokio::spawn(async move {
+        let router = axum::Router::new().route("/v1/predict", axum::routing::post(handler));
+        axum::serve(listener, router).await.unwrap();
+    });
+    let post = add_tagger_post(&h, "slowtag01").await;
+    let waiting = add_tagger_post(&h, "waiting01").await;
+    let (slow, _) = nujijushi::jobs::create_tag_suggestions_job(&h.state, post)
+        .await
+        .unwrap();
+    let (waiting, _) = nujijushi::jobs::create_tag_suggestions_job(&h.state, waiting)
+        .await
+        .unwrap();
+    let worker = JobWorker::new(h.state.clone());
+    let active = tokio::spawn(async move { worker.drain().await.unwrap() });
+    tokio::time::timeout(Duration::from_secs(5), started.notified())
+        .await
+        .unwrap();
+    let other = AppState::open((*h.state.cfg).clone(), Some(h.mock.clone())).unwrap();
+    assert_eq!(reconcile(&other).await.unwrap(), 0);
+    let (_, duplicate) = nujijushi::jobs::create_tag_suggestions_job(&other, post)
+        .await
+        .unwrap();
+    assert!(!duplicate);
+    let channel = h.add_channel().await;
+    let (_, queue_id) = h.queue_a_post("95", &channel).await;
+    let publish = nujijushi::jobs::create_publish_item_job(&other, queue_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), JobWorker::new(other).drain())
+            .await
+            .unwrap()
+            .unwrap(),
+        1
+    );
+    assert_eq!(h.job_state(publish).await, "done");
+    assert_eq!(h.mock.send_count(), 1);
+    assert_eq!(h.job_state(slow).await, "running");
+    assert_eq!(h.job_state(waiting).await, "pending");
+    release.notify_one();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), active)
+            .await
+            .unwrap()
+            .unwrap(),
+        1
+    );
+    assert_eq!(h.job_state(slow).await, "done");
+    server.abort();
+}

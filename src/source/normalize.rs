@@ -244,6 +244,10 @@ fn collect_tags(value: &Value, keys: &[&str]) -> Vec<String> {
     tags::normalize_all(out)
 }
 
+pub(crate) fn copyright_tags(metadata: &Value) -> Vec<String> {
+    collect_tags(metadata, &["tag_string_copyright", "tags_copyright"])
+}
+
 fn parse_timestamp(value: &Value) -> Option<DateTime<Utc>> {
     if let Some(n) = value.as_i64() {
         // seconds or milliseconds since epoch

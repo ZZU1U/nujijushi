@@ -1,5 +1,6 @@
 //! Import orchestration: source -> blob store -> database, plus job bookkeeping.
 
+pub mod tag_suggestions;
 mod watch;
 pub mod worker;
 
@@ -337,6 +338,7 @@ pub const KIND_PUBLISH_CHANNEL: &str = "publish_channel";
 pub const KIND_PUBLISH_ITEM: &str = "publish_item";
 pub const KIND_STORAGE_DRAIN: &str = "storage_drain";
 pub const KIND_WATCH_CHECK: &str = "watch_check";
+pub const KIND_TAG_SUGGESTIONS: &str = "suggest_tags";
 
 /// Create the job row for a target (CLI / web UI).
 pub async fn create_job(state: &AppState, target: &str) -> Result<i64> {
@@ -381,6 +383,16 @@ pub async fn create_watch_check_job(state: &AppState, watch_id: i64) -> Result<(
     state
         .db
         .call(move |conn| crate::db::watches::enqueue(conn, watch_id, KIND_WATCH_CHECK))
+        .await
+}
+
+pub async fn create_tag_suggestions_job(state: &AppState, post_id: i64) -> Result<(i64, bool)> {
+    if !state.cfg.tag_suggestions.enabled {
+        return Err(Error::invalid("Tag suggestions are disabled"));
+    }
+    state
+        .db
+        .call(move |conn| crate::db::tag_suggestions::enqueue(conn, post_id, KIND_TAG_SUGGESTIONS))
         .await
 }
 
@@ -458,6 +470,7 @@ pub async fn run_job(state: &AppState, job: &job_db::Job) -> Result<JobReport> {
     let label = match job.kind.as_str() {
         KIND_IMPORT => "importing",
         KIND_WATCH_CHECK => "scanning source",
+        KIND_TAG_SUGGESTIONS => "analyzing artwork",
         KIND_PUBLISH_CHANNEL | KIND_PUBLISH_ITEM => "publishing",
         KIND_STORAGE_DRAIN => "uploading mirrors",
         other => return Err(Error::invalid(format!("unknown job kind: {other}"))),
@@ -472,6 +485,9 @@ pub async fn run_job(state: &AppState, job: &job_db::Job) -> Result<JobReport> {
 
     let result = run_kind(state, job).await;
     match &result {
+        Ok(_) if job.kind == KIND_TAG_SUGGESTIONS => {
+            // The suggestion batch and its success status commit together.
+        }
         Ok(report) => {
             let message = report.message();
             let (total, post_id) = match report {
@@ -524,6 +540,7 @@ async fn run_kind(state: &AppState, job: &job_db::Job) -> Result<JobReport> {
             Ok(JobReport::Import(outcome))
         }
         KIND_WATCH_CHECK => watch::check(state, payload_i64(job)?, job.id).await,
+        KIND_TAG_SUGGESTIONS => tag_suggestions::run(state, payload_i64(job)?, job.id).await,
         KIND_PUBLISH_CHANNEL => {
             let channel_id = payload_i64(job)?;
             let channel = state

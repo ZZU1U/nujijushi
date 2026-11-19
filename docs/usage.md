@@ -26,6 +26,9 @@
 | `nujijushi users ls\|grant\|ban` | who may talk to the bot, and their roles |
 | `nujijushi rule add <tag> block\|nsfw` · `rule ls` · `rule rm` | content rules |
 | `nujijushi alias set <from> <to>` | tag aliasing for future imports and new manual tags |
+| `nujijushi tagger map <character-id> <franchise>` | set a local character-to-franchise override |
+| `nujijushi tagger unmap <character-id>` | remove your override and use the catalog or cache again |
+| `nujijushi tagger mappings` | list effective mappings, IDs, and their origins |
 | `nujijushi log [--limit N]` | send audit log |
 | `nujijushi gc [--dry-run]` | delete unreferenced blobs and thumbnails |
 | `nujijushi export [--out DIR] [--with-media]` | backup: DB snapshot + JSONL + channels.json (+ blobs) |

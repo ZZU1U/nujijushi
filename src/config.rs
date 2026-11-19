@@ -29,6 +29,7 @@ pub struct Config {
     pub bind: String,
     /// Where imported posts are mirrored (local folder, WebDAV, Telegram).
     pub storage: StorageConfig,
+    pub tag_suggestions: TagSuggestionsConfig,
     /// Proxy for Telegram, storage uploads and the t.me embed fallback.
     pub proxy_url: Option<String>,
     /// Hosts that must bypass the proxy (comma separated).
@@ -39,6 +40,24 @@ pub struct Config {
     pub max_concurrent_imports: usize,
     pub caption_limit: usize,
     pub max_upload_bytes: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct TagSuggestionsConfig {
+    pub enabled: bool,
+    pub tagger_port: std::num::NonZeroU16,
+    pub online_fallback: bool,
+}
+
+impl Default for TagSuggestionsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            tagger_port: std::num::NonZeroU16::new(8790).unwrap(),
+            online_fallback: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,6 +180,8 @@ struct FileConfig {
     proxy: ProxySection,
     #[serde(default)]
     storage: StorageSection,
+    #[serde(default)]
+    tag_suggestions: TagSuggestionsConfig,
     #[serde(default)]
     access: AccessSection,
 }
@@ -347,6 +368,7 @@ impl Config {
             ui_token,
             bind,
             storage: parse_storage(&file.storage)?,
+            tag_suggestions: file.tag_suggestions,
             proxy_url: env_str("NUJIJUSHI_PROXY")
                 .or(file.proxy.url)
                 .map(|url| url.trim().to_string())
@@ -455,6 +477,12 @@ gallery_dl = "gallery-dl"
 ffmpeg = "ffmpeg"
 timeout_secs = {timeout}
 max_concurrent = 2
+
+[tag_suggestions]
+# Start the standalone WD Tagger companion before enabling this.
+enabled = false
+tagger_port = 8790
+online_fallback = false
 
 [limits]
 caption_chars = 1024
@@ -654,6 +682,24 @@ pub fn random_token() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tag_suggestions_and_online_fallback_are_opt_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let defaults = Config::load_from_home(dir.path().to_path_buf()).unwrap();
+        assert!(!defaults.tag_suggestions.enabled);
+        assert!(!defaults.tag_suggestions.online_fallback);
+        assert_eq!(defaults.tag_suggestions.tagger_port.get(), 8790);
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[tag_suggestions]\nenabled = true\ntagger_port = 12345\nonline_fallback = true\n",
+        )
+        .unwrap();
+        let configured = Config::load_from_home(dir.path().to_path_buf()).unwrap();
+        assert!(configured.tag_suggestions.enabled);
+        assert!(configured.tag_suggestions.online_fallback);
+        assert_eq!(configured.tag_suggestions.tagger_port.get(), 12345);
+    }
 
     #[test]
     fn defaults_without_file() {

@@ -7,7 +7,7 @@
     <p class="hint">{{ media | length }} item(s) · {{ media_total }}</p>
     <div class="media-grid">
       {% for m in media %}
-      <figure>
+      <figure id="media-{{ loop.index }}">
         {% if m.is_video %}
         <video controls preload="none" poster="/thumb/{{ m.thumb }}" src="/media/{{ m.hash }}"></video>
         {% else %}
@@ -64,6 +64,49 @@
       </label>
       <button type="submit">save tags</button>
     </form>
+
+    {% if can_suggest_tags or tag_review %}
+    <section class="panel inset" aria-label="Tag suggestions">
+      {% if tag_review %}
+      <div {% if tag_review.job.active %}data-job="{{ tag_review.job.id }}" data-state="{{ tag_review.job.state }}" data-tag-review="{{ post.id }}"{% endif %}>
+        <p class="hint" aria-live="polite">
+          <span class="badge" data-role="state">{{ tag_review.job.state }}</span>
+          <span data-role="message">{{ tag_review.job.message }}</span>
+          {% if tag_review.job.active %}
+          <span data-role="counts" {% if not tag_review.job.total %}hidden{% endif %}>{{ tag_review.job.progress }}/{{ tag_review.job.total }}</span>
+          <a data-tag-refresh href="/posts/{{ post.id }}">Refresh status</a>
+          {% endif %}
+        </p>
+      </div>
+      {% if tag_review.stale %}
+      <p class="hint">The artwork or source metadata changed. Suggest tags again to review the current post.</p>
+      {% endif %}
+      {% for suggestion in tag_review.suggestions %}
+      <form method="post" action="/posts/{{ post.id }}/tag-suggestions" class="panel inset">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <input type="hidden" name="job_id" value="{{ tag_review.job.id }}">
+        <input type="hidden" name="suggestion_id" value="{{ suggestion.id }}">
+        <label>{{ suggestion.kind }}
+          <input name="tag" value="{{ suggestion.tag }}" aria-label="Edit suggested {{ suggestion.kind }} tag {{ suggestion.tag }}">
+        </label>
+        <p class="hint">
+          {% if suggestion.wiki_url %}<a href="{{ suggestion.wiki_url }}">{{ suggestion.evidence }}</a>{% else %}{{ suggestion.evidence }}{% endif %}
+          {% if suggestion.character_tag_id %} · ID {{ suggestion.character_tag_id }}{% endif %}
+          {% for position in suggestion.images %} · <a href="#media-{{ position }}">Image {{ position }}</a>{% endfor %}
+        </p>
+        <button type="submit" name="action" value="accept">Save tag</button>
+        <button type="submit" name="action" value="discard" class="ghost">Discard</button>
+      </form>
+      {% endfor %}
+      {% endif %}
+      {% if can_suggest_tags and (not tag_review or not tag_review.job.active) %}
+      <form method="post" action="/posts/{{ post.id }}/tag-suggestions">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <button type="submit" name="action" value="generate">{{ 'Suggest again' if tag_review else 'Suggest tags' }}</button>
+      </form>
+      {% endif %}
+    </section>
+    {% endif %}
 
     <form method="post" action="/posts/{{ post.id }}" class="panel inset">
       <input type="hidden" name="csrf" value="{{ csrf }}">

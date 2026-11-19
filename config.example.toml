@@ -23,6 +23,13 @@ max_concurrent = 2
 # (single image, reduced resolution, marked "public embed (degraded)").
 public_telegram_fallback = true
 
+[tag_suggestions]
+# Optional WD Tagger companion listening on 127.0.0.1.
+enabled = false
+tagger_port = 8790
+# Allow catalog-only Danbooru queries for unresolved character-to-franchise matches.
+online_fallback = false
+
 [bot]
 # Telegram command interface (started by `nujijushi run`; `--no-bot` disables it per run).
 enabled = true

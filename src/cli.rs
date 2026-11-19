@@ -239,11 +239,34 @@ pub enum Command {
         cmd: RuleCmd,
     },
 
+    /// Inspect or override the local character-to-franchise catalog.
+    Tagger {
+        #[command(subcommand)]
+        cmd: TaggerCmd,
+    },
+
     /// Show the send log
     Log {
         #[arg(long, default_value_t = 20)]
         limit: i64,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TaggerCmd {
+    /// Add or replace an operator's franchise mapping for a character ID.
+    Map {
+        #[arg(value_parser = clap::value_parser!(i64).range(1..))]
+        character_id: i64,
+        franchise: String,
+    },
+    /// Remove an operator override and use the catalog or cache again.
+    Unmap {
+        #[arg(value_parser = clap::value_parser!(i64).range(1..))]
+        character_id: i64,
+    },
+    /// List effective mappings and where they came from.
+    Mappings,
 }
 
 #[derive(Debug, Subcommand)]
@@ -635,6 +658,7 @@ async fn dispatch(state: &AppState, cmd: Command) -> Result<()> {
         } => cmd_ls(state, filter_state, source, tag, nsfw, search, limit).await,
         Command::Show { id, channel, raw } => cmd_show(state, id, channel, raw).await,
         Command::Tag { id, tags, remove } => cmd_tag(state, id, tags, remove),
+        Command::Tagger { cmd } => cmd_tagger(state, cmd),
         Command::Rate { id, rating } => cmd_rate(state, id, rating),
         Command::Nsfw { id, value } => cmd_nsfw(state, id, value),
         Command::Approve { ids, points } => {
@@ -889,6 +913,23 @@ async fn cmd_doctor(cfg: Config, strict: bool, offline: bool) -> Result<()> {
 
     checks.push(tool_check("gallery-dl", &cfg.gallery_dl, &["--version"]).await);
     checks.push(tool_check("ffmpeg", &cfg.ffmpeg, &["-version"]).await);
+    let tagger = &cfg.tag_suggestions;
+    let (level, detail) = if tagger.enabled {
+        match crate::jobs::tag_suggestions::health(tagger.tagger_port).await {
+            Ok(()) => (
+                Level::Ok,
+                format!("ready on 127.0.0.1:{}", tagger.tagger_port),
+            ),
+            Err(err) => (Level::Warn, err.to_string()),
+        }
+    } else {
+        (Level::Ok, "disabled".into())
+    };
+    checks.push(Check {
+        level,
+        label: "WD Tagger".into(),
+        detail,
+    });
 
     let cookies = cfg.cookies_dir();
     let mut found_cookies = 0;
@@ -1666,6 +1707,43 @@ fn pretty_metadata(text: &str) -> String {
         Ok(value) => serde_json::to_string_pretty(&value).unwrap_or_else(|_| text.to_string()),
         Err(_) => text.to_string(),
     }
+}
+
+fn cmd_tagger(state: &AppState, cmd: TaggerCmd) -> Result<()> {
+    use crate::db::tag_suggestions;
+
+    match cmd {
+        TaggerCmd::Map {
+            character_id,
+            franchise,
+        } => {
+            state
+                .db
+                .with(|conn| tag_suggestions::set_mapping(conn, character_id, &franchise))?;
+            println!("saved franchise override for character {character_id}");
+        }
+        TaggerCmd::Unmap { character_id } => {
+            let removed = state
+                .db
+                .with(|conn| tag_suggestions::remove_mapping(conn, character_id))?;
+            if removed {
+                println!("removed franchise override for character {character_id}");
+            } else {
+                println!("no franchise override for character {character_id}");
+            }
+        }
+        TaggerCmd::Mappings => {
+            for mapping in state.db.with(|conn| tag_suggestions::mappings(conn))? {
+                if let Some(franchise) = mapping.franchise {
+                    println!(
+                        "{}\t{}\t{}",
+                        mapping.character_tag_id, franchise, mapping.origin
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn cmd_tag(state: &AppState, id: i64, tags: Vec<String>, remove: bool) -> Result<()> {
@@ -2799,6 +2877,32 @@ mod parse_tests {
             parse(&["approve", "--points", "15", "42"]).cmd,
             Command::Approve { ids, points: Some(15) } if ids == [42]
         ));
+    }
+
+    #[test]
+    fn tagger_catalog_commands_accept_numeric_character_ids() {
+        assert!(matches!(
+            parse(&["tagger", "map", "3861", "pokemon"]).cmd,
+            Command::Tagger {
+                cmd: TaggerCmd::Map {
+                    character_id: 3861,
+                    ..
+                }
+            },
+        ));
+        assert!(matches!(
+            parse(&["tagger", "unmap", "3861"]).cmd,
+            Command::Tagger {
+                cmd: TaggerCmd::Unmap { character_id: 3861 }
+            },
+        ));
+        assert!(matches!(
+            parse(&["tagger", "mappings"]).cmd,
+            Command::Tagger {
+                cmd: TaggerCmd::Mappings
+            },
+        ));
+        assert!(Args::try_parse_from(["nujijushi", "tagger", "map", "0", "pokemon"]).is_err());
     }
 
     #[test]

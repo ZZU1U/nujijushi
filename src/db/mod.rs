@@ -9,6 +9,7 @@ pub mod posts;
 pub mod queue;
 pub mod queue_alerts;
 pub mod reputation;
+pub mod tag_suggestions;
 pub mod tags;
 pub mod usage;
 pub mod users;

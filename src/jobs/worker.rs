@@ -14,6 +14,7 @@ const QUICK_KINDS: &[&str] = &[
     crate::jobs::KIND_STORAGE_DRAIN,
 ];
 const IMPORT_KINDS: &[&str] = &[crate::jobs::KIND_IMPORT, crate::jobs::KIND_WATCH_CHECK];
+const TAG_SUGGESTIONS_LOCK: &str = "suggest-tags.lock";
 const QUICK_JOBS: i64 = 4;
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -66,11 +67,47 @@ impl JobWorker {
     pub async fn drain(&self) -> Result<usize> {
         let quick = self.claim(QUICK_KINDS, QUICK_JOBS).await?;
         let imports = self.claim(IMPORT_KINDS, self.import_limit()).await?;
-        let (quick, imports) = tokio::join!(self.run_claimed(quick), self.run_claimed(imports));
-        let count = quick + imports;
+        let (quick, imports, suggestions) = tokio::join!(
+            self.run_claimed(quick),
+            self.run_claimed(imports),
+            self.drain_suggestions(),
+        );
+        let count = quick + imports + suggestions?;
         self.drain_mirrors(if count == 0 { 5 } else { 10 }).await;
         crate::duplicates::index_batch(&self.state).await?;
         Ok(count)
+    }
+
+    async fn drain_suggestions(&self) -> Result<usize> {
+        if !self.state.cfg.tag_suggestions.enabled {
+            return Ok(0);
+        }
+        let Some(_lock) = self.state.try_staging_lock(TAG_SUGGESTIONS_LOCK).await? else {
+            return Ok(0);
+        };
+        let jobs = self
+            .state
+            .db
+            .call(|conn| {
+                let kind = crate::jobs::KIND_TAG_SUGGESTIONS;
+                // Owning the archive lock means no live worker owns a running job.
+                job_db::interrupt_kind(conn, kind)?;
+                job_db::claim_pending_of(conn, &[kind], 1)
+            })
+            .await?;
+        Ok(self.run_claimed(jobs).await)
+    }
+
+    async fn poll_suggestions(&self) {
+        if !self.state.cfg.tag_suggestions.enabled {
+            std::future::pending::<()>().await;
+        }
+        loop {
+            if let Err(err) = self.drain_suggestions().await {
+                tracing::warn!("tag suggestion worker: {err}");
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
     }
 
     async fn poll_jobs(&self, kinds: &'static [&'static str], limit: i64, mirrors: bool) {
@@ -107,6 +144,7 @@ impl JobWorker {
             _ = shutdown => {},
             _ = self.poll_jobs(QUICK_KINDS, QUICK_JOBS, false) => {},
             _ = self.poll_jobs(IMPORT_KINDS, self.import_limit(), true) => {},
+            _ = self.poll_suggestions() => {},
             _ = self.poll_duplicates() => {},
         }
         Ok(())
@@ -118,8 +156,22 @@ impl JobWorker {
 pub async fn reconcile(state: &AppState) -> Result<usize> {
     let mut fixed = state
         .db
-        .call(|conn| job_db::reconcile_except(conn, crate::jobs::KIND_WATCH_CHECK))
+        .call(|conn| {
+            job_db::reconcile_except(
+                conn,
+                &[
+                    crate::jobs::KIND_WATCH_CHECK,
+                    crate::jobs::KIND_TAG_SUGGESTIONS,
+                ],
+            )
+        })
         .await?;
+    if let Some(_lock) = state.try_staging_lock(TAG_SUGGESTIONS_LOCK).await? {
+        fixed += state
+            .db
+            .call(|conn| job_db::interrupt_kind(conn, crate::jobs::KIND_TAG_SUGGESTIONS))
+            .await?;
+    }
     let running = state
         .db
         .call(|conn| job_db::running_of(conn, crate::jobs::KIND_WATCH_CHECK))

@@ -202,7 +202,9 @@
       bar.setAttribute('aria-valuemax', String(job.total));
       bar.setAttribute('aria-valuenow', String(job.progress));
     }
-    setText(row.querySelector('[data-role="counts"]'), job.progress + '/' + job.total);
+    const counts = row.querySelector('[data-role="counts"]');
+    setText(counts, job.progress + '/' + job.total);
+    if (counts && row.hasAttribute('data-tag-review')) counts.hidden = job.total === 0;
     setText(row.querySelector('[data-role="message"]'), job.message);
     setText(row.querySelector('[data-role="age"]'), job.age);
     row.querySelectorAll('[data-watch-action]').forEach((button) => {
@@ -217,6 +219,7 @@
     }
 
     if (wasLive && !isLive(job.state)) {
+      setText(row.querySelector('[data-tag-refresh]'), job.state === 'done' ? 'Review suggestions' : 'See details');
       const label = job.kind_label || job.kind;
       const detail = job.message ? ' — ' + job.message : '';
       toast(label + ' #' + job.id + ' ' + job.state + detail, job.state === 'done' ? 'ok' : 'fail');
@@ -230,6 +233,8 @@
     const byId = new Map(jobs.map((job) => [String(job.id), job]));
     const watchJobs = Array.isArray(status && status.watch_jobs) ? status.watch_jobs : [];
     watchJobs.forEach((job) => byId.set(String(job.id), job));
+    const tagJob = status && status.tag_suggestion_job;
+    if (tagJob) byId.set(String(tagJob.id), tagJob);
     let live = false;
 
     all('[data-job]').forEach((row) => {
@@ -272,6 +277,8 @@
   function liveStatus() {
     if (typeof window.fetch !== 'function') return;
     if (!document.querySelector('[data-job], [data-channel], [data-queue], [data-duplicates-indexing]')) return;
+    const tagReview = document.querySelector('[data-tag-review]');
+    const statusUrl = tagReview ? '/api/status?tag_post=' + encodeURIComponent(tagReview.dataset.tagReview) : '/api/status';
 
     let timer = null;
     let quietPolls = 0;
@@ -296,7 +303,7 @@
       clearTimeout(timer);
       if (stopped || inFlight || document.hidden) return;
       inFlight = true;
-      fetch('/api/status', {
+      fetch(statusUrl, {
         credentials: 'same-origin',
         cache: 'no-store',
         headers: { accept: 'application/json' },

@@ -10,8 +10,7 @@ use crate::error::{Error, Result};
 /// Used for storage uploads and the t.me embed fallback; the Telegram client
 /// gets the same proxy (see `tg::teloxide_impl`).
 pub fn client(cfg: &Config) -> Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder()
-        .user_agent(format!("nujijushi/{}", crate::VERSION))
+    let mut builder = client_builder()
         .connect_timeout(Duration::from_secs(15))
         .redirect(reqwest::redirect::Policy::limited(5));
 
@@ -36,6 +35,20 @@ pub fn client(cfg: &Config) -> Result<reqwest::Client> {
     builder
         .build()
         .map_err(|err| Error::config(format!("cannot build the http client: {err}")))
+}
+
+fn client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder().user_agent(format!("nujijushi/{}", crate::VERSION))
+}
+
+/// The tagger address is constructed from a loopback IP and a configured port.
+pub(crate) fn loopback_client() -> Result<reqwest::Client> {
+    client_builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(2))
+        .build()
+        .map_err(|err| Error::config(format!("cannot build the local HTTP client: {err}")))
 }
 
 /// `--proxy` style arguments for an external tool, or nothing.

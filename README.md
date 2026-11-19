@@ -68,6 +68,19 @@ Install `gallery-dl` for gallery-site imports and `ffmpeg` if you want video thu
    Set `[bot] queue_alerts = true` to DM the Telegram users in `[access] admins` about empty queues and unconfirmed sends. Each recipient must start a private chat with the bot first.
    Set `[bot] guest_reputation = true` to score guest suggestions and show their balance in `/whoami`.
 
+## Optional artwork tag suggestions
+
+Install and start the [standalone WD Tagger companion](contrib/wd-tagger/README.md) on the machine running `nujijushi`. Add this section to `config.toml` and restart `nujijushi`.
+
+```toml
+[tag_suggestions]
+enabled = true
+tagger_port = 8790
+online_fallback = false
+```
+
+Open a post and choose **Suggest tags**. Review the character and franchise tags, then save or discard each one. Images go to the companion over loopback. If enabled, the online fallback sends recognized catalog IDs and names to Danbooru for unresolved franchise matches.
+
 ## Documentation
 
 | Guide | Covers |

@@ -56,6 +56,21 @@ macro_rules! string_enum {
 }
 
 string_enum! {
+    SuggestionKind {
+        Character => "character",
+        Franchise => "franchise",
+    } default Character
+}
+
+string_enum! {
+    AssociationOrigin {
+        Manual => "manual",
+        Starter => "starter",
+        Lookup => "lookup",
+    } default Starter
+}
+
+string_enum! {
     /// Platform-reported content rating.
     Rating {
         Sfw => "sfw",
