@@ -5,8 +5,8 @@ use teloxide::net::Download;
 use teloxide::prelude::*;
 use teloxide::types as tt;
 use teloxide::types::{
-    BotCommand, ChatId, ChatMemberKind, FileId, InputFile, InputMedia, InputMediaPhoto,
-    InputMediaVideo, Message, MessageId, ParseMode, Recipient, UserId,
+    AllowedUpdate, BotCommand, ChatId, ChatMemberKind, FileId, InputFile, InputMedia,
+    InputMediaPhoto, InputMediaVideo, Message, MessageId, ParseMode, Recipient, UserId,
 };
 use teloxide::{Bot, RequestError};
 
@@ -18,6 +18,14 @@ use super::transport::{
     AdminStatus, MediaKind, OutgoingMedia, SendOptions, SentBatch, TgError, TgResult, Transport,
 };
 use crate::error::Error;
+
+const BOT_UPDATES: [AllowedUpdate; 5] = [
+    AllowedUpdate::Message,
+    AllowedUpdate::EditedMessage,
+    AllowedUpdate::ChannelPost,
+    AllowedUpdate::EditedChannelPost,
+    AllowedUpdate::MyChatMember,
+];
 
 pub struct BotTransport {
     bot: Bot,
@@ -123,7 +131,7 @@ fn recipient(chat: &str) -> TgResult<Recipient> {
     if username.is_empty() || username.contains(char::is_whitespace) {
         return Err(TgError::Permanent(format!("invalid chat id: {chat}")));
     }
-    Ok(Recipient::ChannelUsername(username.to_string()))
+    Ok(Recipient::ChannelUsername(format!("@{username}")))
 }
 
 fn map_user(user: &tt::User) -> BotUser {
@@ -359,6 +367,7 @@ impl Transport for BotTransport {
             .offset(offset)
             .timeout(timeout.clamp(1, 120))
             .limit(100)
+            .allowed_updates(BOT_UPDATES)
             .await
             .map_err(map_error)?;
         Ok(updates.into_iter().map(map_update).collect())
@@ -460,6 +469,7 @@ impl Transport for BotTransport {
         self.bot
             .set_webhook(parsed)
             .secret_token(secret.to_string())
+            .allowed_updates(BOT_UPDATES)
             .await
             .map_err(map_error)?;
         Ok(())
@@ -489,13 +499,106 @@ mod tests {
         );
         assert_eq!(
             recipient("@my_channel").unwrap(),
-            Recipient::ChannelUsername("my_channel".into())
+            Recipient::ChannelUsername("@my_channel".into())
         );
         assert_eq!(
             recipient("my_channel").unwrap(),
-            Recipient::ChannelUsername("my_channel".into())
+            Recipient::ChannelUsername("@my_channel".into())
         );
         assert!(recipient("  ").is_err());
         assert!(recipient("@bad name").is_err());
+    }
+
+    #[tokio::test]
+    async fn sends_full_handle_and_subscribes_to_membership_updates() {
+        use axum::{Json, Router, body::Bytes, extract::Path, routing::post};
+        use serde_json::{Value, json};
+
+        fn assert_updates(allowed: &Value) {
+            let allowed = allowed.as_array().unwrap();
+            assert!(allowed.contains(&json!("message")));
+            assert!(allowed.contains(&json!("my_chat_member")));
+        }
+
+        async fn telegram_api(Path(method): Path<String>, body: Bytes) -> Json<Value> {
+            if method.eq_ignore_ascii_case("setwebhook") {
+                let body = std::str::from_utf8(&body).unwrap();
+                let field = |name: &str| {
+                    body.split_once(&format!("name=\"{name}\""))
+                        .and_then(|(_, part)| part.split_once("\r\n\r\n"))
+                        .and_then(|(_, value)| value.split_once("\r\n"))
+                        .unwrap()
+                        .0
+                };
+                assert_updates(&serde_json::from_str(field("allowed_updates")).unwrap());
+                assert_eq!(field("secret_token"), "smoke-test-secret");
+                return Json(json!({"ok": true, "result": true}));
+            }
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            let channel = json!({"id": -1001234567890i64, "type": "channel", "title": "Art", "username": "art_channel"});
+            let result = match method.to_ascii_lowercase().as_str() {
+                "getchat" => {
+                    assert_eq!(body["chat_id"], "@art_channel");
+                    let mut full = channel;
+                    full["max_reaction_count"] = json!(1);
+                    full["accepted_gift_types"] = json!({
+                        "unlimited_gifts": false, "limited_gifts": false,
+                        "unique_gifts": false, "premium_subscription": false,
+                    });
+                    full
+                }
+                "getupdates" => {
+                    assert_updates(&body["allowed_updates"]);
+                    let bot = json!({"id": 1, "is_bot": true, "first_name": "Test Bot"});
+                    json!([{
+                            "update_id": 10,
+                            "my_chat_member": {
+                                "chat": channel,
+                                "from": {"id": 2, "is_bot": false, "first_name": "Admin"},
+                                "date": 1700000000,
+                                "old_chat_member": {"user": bot, "status": "left"},
+                                "new_chat_member": {
+                                    "user": bot, "status": "administrator", "is_anonymous": false,
+                                    "can_be_edited": false, "can_manage_chat": true, "can_change_info": false,
+                                    "can_post_messages": true, "can_delete_messages": true, "can_manage_video_chats": false,
+                                    "can_invite_users": false, "can_restrict_members": false, "can_promote_members": false
+                                }
+                            }
+                    }])
+                }
+                other => panic!("unexpected Telegram method {other}"),
+            };
+            Json(json!({"ok": true, "result": result}))
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let routes = Router::new().route("/bot1:test/{method}", post(telegram_api));
+            axum::serve(listener, routes).await.unwrap();
+        });
+        let home = tempfile::tempdir().unwrap();
+        let cfg = crate::config::Config::load_from_home(home.path().to_path_buf()).unwrap();
+        let client = crate::http::client(&cfg).unwrap();
+        let mut transport = BotTransport::new("1:test", client).unwrap();
+        transport.bot = transport
+            .bot
+            .set_api_url(format!("http://{address}").parse().unwrap());
+
+        let chat = transport.get_chat("@art_channel").await.unwrap();
+        assert!(chat.is_channel);
+        assert_eq!(chat.id, -1001234567890);
+
+        let updates = transport.get_updates(0, 1).await.unwrap();
+        let BotUpdateKind::MemberChange(change) = &updates[0].kind else {
+            panic!("expected a membership update");
+        };
+        assert!(change.is_channel && change.became_admin);
+        assert_eq!(change.chat_id, chat.id);
+        transport
+            .set_webhook("https://example.test/tg/webhook", "smoke-test-secret")
+            .await
+            .unwrap();
+        server.abort();
     }
 }

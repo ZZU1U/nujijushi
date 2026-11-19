@@ -129,7 +129,7 @@
   <section class="panel">
     <h2>jobs <a class="hint" href="/jobs">all jobs →</a></h2>
     {% if jobs %}
-    <table class="compact">
+    <table class="compact dashboard-jobs">
       {% for j in jobs %}
       <tr data-job="{{ j.id }}" data-state="{{ j.state }}">
         <td>#{{ j.id }}</td>
@@ -144,7 +144,7 @@
           <span class="hint" data-role="counts">{{ j.progress }}/{{ j.total }}</span>
           {% else %}<span class="hint">—</span>{% endif %}
         </td>
-        <td class="hint" data-role="message">{{ j.message }}</td>
+        <td class="hint job-message" data-role="message">{{ j.message }}</td>
       </tr>
       {% endfor %}
     </table>

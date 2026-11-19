@@ -13,7 +13,7 @@
 | `nujijushi show <id> [--channel C] [--raw]` | details + rendered caption; `--raw` dumps the stored source metadata, post-level and per item |
 | `nujijushi tag <id> <tag>… [--remove]` · `rate` · `nsfw auto\|yes\|no` | curation |
 | `nujijushi approve/reject <id>…` · `rm <id>` | post state |
-| `nujijushi channel add <alias> <@name\|id>` | register a channel (validated with `getChat`) |
+| `nujijushi channel add [alias] <@name\|id>` | register a channel (validated with `getChat`) |
 | `nujijushi channel ls\|edit\|rm\|pause\|resume` | channel + schedule management |
 | `nujijushi channel discover\|enable\|disable` | channels the bot was added to, waiting for a name |
 | `nujijushi queue add\|ls\|skip\|pin\|reset\|rm` | queue management |
@@ -34,6 +34,8 @@ Global: `--home DIR` (or `$NUJIJUSHI_HOME`), `-v/-vv` for more logging.
 ## Channel discovery
 
 When the running bot becomes a channel admin, nujijushi registers the channel as disabled and assigns it an alias. List discovered channels with `nujijushi channel discover`, then enable one with `nujijushi channel enable <alias>`.
+
+For a channel the bot already administers, you can also register it directly with `nujijushi channel add art -1001234567890` or `nujijushi channel add art @yourchannel`.
 
 ## Scheduling
 
@@ -149,7 +151,7 @@ running checks can finish. Artist and search access
 uses the same gallery-dl configuration and credentials as regular imports. Review new
 posts and queue the ones you want to publish.
 
-The **Duplicates** inbox compares still images from different sources. It shows exact
+Open **Review duplicates** from **Posts** to compare still images from different sources. The inbox shows exact
 files and likely resize or recompression matches, with the matched image positions.
 **Dismiss pair** hides a suggestion even after a re-import. The background worker
 indexes existing and new artwork in small batches, and the inbox shows when indexing

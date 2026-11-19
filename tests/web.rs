@@ -710,7 +710,15 @@ async fn the_dashboard_and_import_pages_expose_the_live_hooks() {
         .await
         .unwrap();
 
+    let watch = h
+        .state
+        .db
+        .call(|conn| job_db::create(conn, nujijushi::jobs::KIND_WATCH_CHECK, "1", 0))
+        .await
+        .unwrap();
     let dashboard = body_text(h.send(h.get("/")).await).await;
+    assert!(dashboard.contains("class=\"compact dashboard-jobs\""));
+    assert!(job_row(&dashboard, watch).contains(">watch check</span>"));
     assert!(
         dashboard.contains(&format!("data-channel=\"{}\"", channel.id)),
         "channel hook: {dashboard}"

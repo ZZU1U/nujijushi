@@ -245,13 +245,17 @@ pub enum Command {
 
 #[derive(Debug, Subcommand)]
 pub enum ChannelCmd {
-    /// Add a channel: `channel add <alias> <@name|id>`
+    /// Add a channel: `channel add [alias] <@name|id>`
     Add {
         /// Short handle used by the bot and the CLI (letters, digits, - and _)
-        #[arg(value_name = "ALIAS", id = "alias_positional")]
+        #[arg(
+            value_name = "ALIAS",
+            id = "alias_positional",
+            allow_negative_numbers = true
+        )]
         alias: Option<String>,
         /// Channel `@username` or numeric chat id
-        #[arg(value_name = "CHAT")]
+        #[arg(value_name = "CHAT", allow_negative_numbers = true)]
         chat: Option<String>,
         /// Skip the getChat validation call
         #[arg(long)]
@@ -395,7 +399,7 @@ pub struct ChannelOpts {
     pub alias: Option<String>,
     #[arg(long)]
     pub title: Option<String>,
-    #[arg(long, value_name = "@name|-100123…")]
+    #[arg(long, value_name = "@name|-100123…", allow_negative_numbers = true)]
     pub tg_id: Option<String>,
     /// Minutes between posts
     #[arg(long)]
@@ -1735,10 +1739,22 @@ async fn cmd_channel(state: &AppState, cmd: ChannelCmd) -> Result<()> {
             no_verify,
             opts,
         } => {
-            let chat_id = chat
-                .or_else(|| opts.tg_id.clone())
+            let (alias, chat) = if chat.is_none()
+                && opts.tg_id.is_none()
+                && alias
+                    .as_deref()
+                    .is_some_and(|value| value.starts_with('@') || value.parse::<i64>().is_ok())
+            {
+                (None, alias)
+            } else {
+                (alias, chat)
+            };
+            let chat_id = opts
+                .tg_id
+                .clone()
+                .or(chat)
                 .filter(|chat| !chat.trim().is_empty())
-                .ok_or_else(|| Error::invalid("usage: nujijushi channel add <alias> <@name|id>"))?;
+                .ok_or_else(|| Error::invalid("usage: nujijushi channel add [alias] <@name|id>"))?;
             let mut channel = Channel::new("", chat_id.clone());
             if let Some(alias) = alias.or_else(|| opts.alias.clone()) {
                 channel.alias = crate::model::slugify(&alias);
@@ -2759,6 +2775,48 @@ mod parse_tests {
                 assert!(chat.is_none());
             }
             other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn channel_add_accepts_negative_ids_without_an_argument_separator() {
+        let id = "-1001234567890";
+        for (argv, expected_alias, expected_chat, expected_option) in [
+            (
+                vec!["channel", "add", "art", id, "--no-verify"],
+                Some("art"),
+                Some(id),
+                None,
+            ),
+            (
+                vec!["channel", "add", "--tg-id", id, "--no-verify"],
+                None,
+                None,
+                Some(id),
+            ),
+            (
+                vec!["channel", "add", id, "--no-verify"],
+                Some(id),
+                None,
+                None,
+            ),
+        ] {
+            let Command::Channel {
+                cmd:
+                    ChannelCmd::Add {
+                        alias,
+                        chat,
+                        no_verify,
+                        opts,
+                    },
+            } = parse(&argv).cmd
+            else {
+                panic!("expected channel add");
+            };
+            assert_eq!(alias.as_deref(), expected_alias);
+            assert_eq!(chat.as_deref(), expected_chat);
+            assert_eq!(opts.tg_id.as_deref(), expected_option);
+            assert!(no_verify);
         }
     }
 

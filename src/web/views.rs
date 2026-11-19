@@ -138,6 +138,7 @@ mod tests {
             .unwrap();
         assert!(html.contains("nujijushi · dashboard"));
         assert!(html.contains("recent sends"));
+        assert!(!html.contains("href=\"/duplicates\""));
         assert!(html.contains(r#"class="num">3"#));
     }
 
@@ -236,6 +237,8 @@ mod tests {
         assert!(html.contains("queued · night-shift"), "{html}");
         assert!(html.contains("sent · main"));
         assert!(html.contains("Select all on page"));
+        assert_eq!(html.matches("href=\"/duplicates\"").count(), 1);
+        assert!(html.contains("class=\"hint post-duplicates-link\""));
         assert!(html.contains("for=\"post-pick-2\""));
         assert!(html.contains("name=\"sel_2\" id=\"post-pick-2\""));
         assert!(html.contains("aria-label=\"Open post #2\""));

@@ -12,8 +12,7 @@
     <a class="brand" href="/"><span class="dot"></span>nujijushi</a>
     <nav>
       <a href="/" class="{{ 'active' if page == 'dashboard' else '' }}">dashboard</a>
-      <a href="/posts" class="{{ 'active' if page == 'posts' else '' }}">posts</a>
-      <a href="/duplicates" class="{{ 'active' if page == 'duplicates' else '' }}">duplicates</a>
+      <a href="/posts" class="{{ 'active' if page == 'posts' or page == 'duplicates' else '' }}">posts</a>
       <a href="/channels" class="{{ 'active' if page == 'channels' else '' }}">channels</a>
       <a href="/import" class="{{ 'active' if page == 'import' else '' }}">import</a>
       <a href="/watches" class="{{ 'active' if page == 'watches' else '' }}">watched sources</a>
