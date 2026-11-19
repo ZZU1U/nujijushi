@@ -404,9 +404,12 @@ pub async fn from_forwarded(
     if staged.is_empty() {
         return Ok(Vec::new());
     }
-    let source_id = match message.forward_from_chat_id {
-        Some(chat_id) => format!("{chat_id}/{}", message.message_id),
-        None => format!("forward/{}", message.message_id),
+    let source_id = match (
+        message.forward_from_chat_id,
+        message.forward_from_message_id,
+    ) {
+        (Some(chat_id), Some(message_id)) => format!("{chat_id}/{message_id}"),
+        _ => format!("forward/{}/{}", message.chat_id, message.message_id),
     };
     let mut post = NormalizedPost::new("telegram_forward", source_id);
     post.description = message

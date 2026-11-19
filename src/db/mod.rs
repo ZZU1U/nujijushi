@@ -8,6 +8,7 @@ pub mod mirrors;
 pub mod posts;
 pub mod queue;
 pub mod queue_alerts;
+pub mod reputation;
 pub mod tags;
 pub mod usage;
 pub mod users;

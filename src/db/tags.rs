@@ -198,27 +198,29 @@ pub fn add_manual(conn: &Connection, post_id: i64, raw: &[String]) -> Result<()>
 }
 
 pub fn replace_manual(conn: &mut Connection, post_id: i64, raw: &[String]) -> Result<()> {
-    super::transaction(conn, |conn| {
-        let existing = provenance(conn, post_id)?;
-        let mut aliases = load_aliases(conn)?;
-        // The form includes stored names. Remap only names newly entered by the operator.
-        for tag in existing.iter().filter(|tag| tag.manual) {
-            aliases.remove(&tag.name);
+    super::transaction(conn, |conn| replace_manual_in(conn, post_id, raw))
+}
+
+pub(crate) fn replace_manual_in(conn: &Connection, post_id: i64, raw: &[String]) -> Result<()> {
+    let existing = provenance(conn, post_id)?;
+    let mut aliases = load_aliases(conn)?;
+    // The form includes stored names. Remap only names newly entered by the operator.
+    for tag in existing.iter().filter(|tag| tag.manual) {
+        aliases.remove(&tag.name);
+    }
+    let names = apply_aliases(normalize_all(raw), &aliases);
+    for tag in existing.iter().filter(|tag| tag.manual) {
+        if !names.contains(&tag.name) {
+            conn.execute(
+                "DELETE FROM post_tags WHERE post_id = ?1 AND tag_id = ?2 AND origin = 'manual'",
+                rusqlite::params![post_id, tag.id],
+            )?;
         }
-        let names = apply_aliases(normalize_all(raw), &aliases);
-        for tag in existing.iter().filter(|tag| tag.manual) {
-            if !names.contains(&tag.name) {
-                conn.execute(
-                    "DELETE FROM post_tags WHERE post_id = ?1 AND tag_id = ?2 AND origin = 'manual'",
-                    rusqlite::params![post_id, tag.id],
-                )?;
-            }
-        }
-        for name in &names {
-            link(conn, post_id, name, "manual")?;
-        }
-        Ok(())
-    })
+    }
+    for name in &names {
+        link(conn, post_id, name, "manual")?;
+    }
+    Ok(())
 }
 
 pub fn suppress_source(conn: &Connection, post_id: i64, tag_id: i64) -> Result<bool> {

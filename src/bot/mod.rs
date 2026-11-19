@@ -6,6 +6,7 @@ pub mod handlers;
 pub(crate) mod menus;
 pub mod queue_alerts;
 pub mod reply;
+pub mod reputation_notifications;
 
 use std::sync::Arc;
 

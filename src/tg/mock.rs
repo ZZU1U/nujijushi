@@ -254,7 +254,18 @@ impl Transport for MockTransport {
             media,
             opts,
         });
-        Ok(SentBatch { message_ids: ids })
+        let matched = state.chats.values().find(|info| {
+            chat.parse::<i64>().ok() == Some(info.id)
+                || info
+                    .username
+                    .as_deref()
+                    .is_some_and(|name| chat.trim_start_matches('@').eq_ignore_ascii_case(name))
+        });
+        Ok(SentBatch {
+            message_ids: ids,
+            chat_id: matched.map(|info| info.id).or_else(|| chat.parse().ok()),
+            chat_username: matched.and_then(|info| info.username.clone()),
+        })
     }
 
     async fn send_text(&self, chat: &str, html: &str) -> TgResult<()> {

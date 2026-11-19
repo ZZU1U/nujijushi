@@ -38,13 +38,25 @@ pub struct QueueEntry {
 
 /// Add a post to a channel queue. Returns false when it was already there.
 pub fn enqueue(conn: &Connection, post_id: i64, channel_id: i64, priority: i64) -> Result<bool> {
-    let inserted = conn.execute(
-        "INSERT INTO queue (post_id, channel_id, state, priority, pinned, added_at)
+    Ok(enqueue_new(conn, post_id, channel_id, priority)?.is_some())
+}
+
+pub fn enqueue_new(
+    conn: &Connection,
+    post_id: i64,
+    channel_id: i64,
+    priority: i64,
+) -> Result<Option<i64>> {
+    Ok(conn
+        .query_row(
+            "INSERT INTO queue (post_id, channel_id, state, priority, pinned, added_at)
          VALUES (?1, ?2, 'queued', ?3, 0, ?4)
-         ON CONFLICT (post_id, channel_id) DO NOTHING",
-        params![post_id, channel_id, priority, fmt_ts(Utc::now())],
-    )?;
-    Ok(inserted > 0)
+         ON CONFLICT (post_id, channel_id) DO NOTHING
+         RETURNING id",
+            params![post_id, channel_id, priority, fmt_ts(Utc::now())],
+            |row| row.get(0),
+        )
+        .optional()?)
 }
 
 pub fn get(conn: &Connection, id: i64) -> Result<QueueItem> {
@@ -143,13 +155,38 @@ pub fn for_post(conn: &Connection, post_id: i64) -> Result<Vec<(i64, i64, QueueS
 
 /// Take the lease for a queue item. False when another worker got there first.
 pub fn acquire(conn: &Connection, id: i64, token: &str) -> Result<bool> {
+    acquire_for_target(conn, id, token, None)
+}
+
+pub fn acquire_for_target(
+    conn: &Connection,
+    id: i64,
+    token: &str,
+    target: Option<&str>,
+) -> Result<bool> {
     let updated = conn.execute(
         "UPDATE queue SET state = 'sending', lease_token = ?1, lease_at = ?2,
-            attempts = attempts + 1
-         WHERE id = ?3 AND state = 'queued'",
-        params![token, fmt_ts(Utc::now()), id],
+            attempts = attempts + 1, delivery_target = ?3, delivery_chat_id = NULL, delivery_username = NULL
+         WHERE id = ?4 AND state = 'queued'",
+        params![token, fmt_ts(Utc::now()), target, id],
     )?;
     Ok(updated > 0)
+}
+
+pub fn mark_partial(
+    conn: &Connection,
+    id: i64,
+    error: &str,
+    ids: &str,
+    chat: Option<i64>,
+    username: Option<&str>,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE queue SET state = 'unknown', last_error = ?1, tg_message_ids = ?2,
+            delivery_chat_id = ?3, delivery_username = ?4, lease_token = NULL, lease_at = NULL WHERE id = ?5",
+        params![error, ids, chat, username, id],
+    )?;
+    Ok(())
 }
 
 pub fn mark_sent(
@@ -239,25 +276,56 @@ pub fn reconcile_stale(conn: &Connection, cutoff: DateTime<Utc>) -> Result<usize
 
 /// Resolve an `unknown` item by hand.
 pub fn resolve_unknown(
-    conn: &Connection,
+    conn: &mut Connection,
     id: i64,
     delivered: bool,
     message_ids: Option<&str>,
 ) -> Result<()> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let item = get(&tx, id)?;
+    if item.state != QueueState::Unknown {
+        return Err(Error::invalid("only an unconfirmed send can be resolved"));
+    }
     if delivered {
-        conn.execute(
+        let mut ids = super::reputation::parse_message_ids(message_ids.unwrap_or_default());
+        for id in
+            super::reputation::parse_message_ids(item.tg_message_ids.as_deref().unwrap_or_default())
+        {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        let recorded_ids =
+            (!ids.is_empty()).then(|| ids.iter().map(i32::to_string).collect::<Vec<_>>().join(","));
+        tx.execute(
             "UPDATE queue SET state = 'sent', sent_at = COALESCE(sent_at, ?1),
-                tg_message_ids = COALESCE(tg_message_ids, ?2), lease_token = NULL
+                tg_message_ids = COALESCE(?2, tg_message_ids), lease_token = NULL, lease_at = NULL
              WHERE id = ?3",
-            params![fmt_ts(Utc::now()), message_ids, id],
+            params![fmt_ts(Utc::now()), recorded_ids, id],
+        )?;
+        let post = posts::get(&tx, item.post_id)?;
+        let (target, chat, username): (String, Option<i64>, Option<String>) = tx.query_row(
+            "SELECT COALESCE(q.delivery_target, c.tg_id), q.delivery_chat_id, q.delivery_username
+             FROM queue q JOIN channels c ON c.id = q.channel_id WHERE q.id = ?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        super::reputation::record_publication(
+            &tx,
+            &post,
+            &target,
+            chat,
+            username.as_deref(),
+            &ids,
         )?;
     } else {
-        conn.execute(
-            "UPDATE queue SET state = 'queued', lease_token = NULL, last_error = NULL
+        tx.execute(
+            "UPDATE queue SET state = 'queued', lease_token = NULL, lease_at = NULL, last_error = NULL, tg_message_ids = NULL
              WHERE id = ?1",
             [id],
         )?;
     }
+    tx.commit()?;
     Ok(())
 }
 

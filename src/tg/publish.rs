@@ -170,6 +170,8 @@ pub fn build_plan(
 #[derive(Debug, Default)]
 pub struct SendOutcome {
     pub message_ids: Vec<i32>,
+    pub chat_id: Option<i64>,
+    pub chat_username: Option<String>,
     pub error: Option<TgError>,
 }
 
@@ -192,7 +194,11 @@ pub async fn send_plan(
             .run(|| transport.send_batch(&chat, media.clone(), opts))
             .await;
         match batch {
-            Ok(sent) => outcome.message_ids.extend(sent.message_ids),
+            Ok(sent) => {
+                outcome.chat_id = outcome.chat_id.or(sent.chat_id);
+                outcome.chat_username = outcome.chat_username.or(sent.chat_username);
+                outcome.message_ids.extend(sent.message_ids);
+            }
             Err(err) => {
                 outcome.error = Some(err);
                 return outcome;
@@ -445,7 +451,8 @@ async fn execute_plan(
         return Ok(PublishOutcome::DryRun(Box::new(plan)));
     }
     let transport = state.require_transport()?;
-    let Some(_token) = crate::queue::lease::acquire(state, queue_id).await? else {
+    let Some(_token) = crate::queue::lease::acquire(state, queue_id, channel.tg_id.clone()).await?
+    else {
         return Ok(PublishOutcome::NotDue(
             "someone else holds the lease for this item".to_string(),
         ));
@@ -465,11 +472,24 @@ async fn execute_plan(
         let sent_at = Utc::now();
         let jitter = rand::rng().random_range(0..=channel.jitter_secs.max(0));
         let next_due = scheduler::next_due(channel, sent_at, jitter);
+        let published_ids = ids.clone();
+        let target = channel.tg_id.clone();
         state
             .db
             .call(move |conn| {
-                queue_db::mark_sent(conn, queue_id, &joined, sent_at)?;
-                crate::db::channels::record_success(conn, channel_id, sent_at, next_due)?;
+                let tx =
+                    conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                queue_db::mark_sent(&tx, queue_id, &joined, sent_at)?;
+                crate::db::channels::record_success(&tx, channel_id, sent_at, next_due)?;
+                crate::db::reputation::record_publication(
+                    &tx,
+                    &plan.post,
+                    &target,
+                    outcome.chat_id,
+                    outcome.chat_username.as_deref(),
+                    &published_ids,
+                )?;
+                tx.commit()?;
                 Ok(())
             })
             .await?;
@@ -509,12 +529,14 @@ async fn execute_plan(
         state
             .db
             .call(move |conn| {
-                conn.execute(
-                    "UPDATE queue SET state = 'unknown', last_error = ?1, tg_message_ids = ?2,
-                        lease_token = NULL, lease_at = NULL WHERE id = ?3",
-                    rusqlite::params![detail, ids, queue_id],
-                )?;
-                Ok(())
+                queue_db::mark_partial(
+                    conn,
+                    queue_id,
+                    &detail,
+                    &ids,
+                    outcome.chat_id,
+                    outcome.chat_username.as_deref(),
+                )
             })
             .await?;
     } else if error.is_retryable() {

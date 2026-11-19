@@ -38,6 +38,8 @@ pub struct SendOptions {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SentBatch {
     pub message_ids: Vec<i32>,
+    pub chat_id: Option<i64>,
+    pub chat_username: Option<String>,
 }
 
 impl SentBatch {
@@ -227,6 +229,7 @@ mod tests {
     fn batch_ids() {
         let batch = SentBatch {
             message_ids: vec![1, 2, 3],
+            ..SentBatch::default()
         };
         assert_eq!(batch.ids_csv(), "1,2,3");
     }

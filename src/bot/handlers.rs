@@ -108,7 +108,28 @@ impl<'a> Bot<'a> {
                     .await
             }
             "help" => self.reply(message, &help_text(&self.access, role)).await,
-            "whoami" => self.reply(message, &whoami_text(user, role)).await,
+            "whoami" => {
+                let reputation = if self.state.cfg.guest_reputation {
+                    if role.is_admin() {
+                        Some("∞".to_string())
+                    } else {
+                        let user_id = user.id;
+                        let balance = self
+                            .state
+                            .db
+                            .call(move |conn| crate::db::reputation::balance(conn, user_id))
+                            .await?;
+                        Some(crate::db::reputation::format_points(balance))
+                    }
+                } else {
+                    None
+                };
+                let mut text = whoami_text(user, role);
+                if let Some(reputation) = reputation {
+                    text.push_str(&format!("\nReputation: {reputation}"));
+                }
+                self.reply(message, &text).await
+            }
             "status" => self.status(message).await,
             "channels" => self.channels(message).await,
             "queue" => self.queue(message, command.arg(0)).await,
@@ -133,7 +154,7 @@ impl<'a> Bot<'a> {
                 } else {
                     PostState::Rejected
                 };
-                self.set_state(message, &command.args, state).await
+                self.set_state(message, role, &command.args, state).await
             }
             "nsfw" => self.set_nsfw(message, command.arg(0), command.arg(1)).await,
             "rate" => {
@@ -365,6 +386,22 @@ impl<'a> Bot<'a> {
         {
             return self.reply(message, "Daily import limit reached.").await;
         }
+        if let (Some(chat), Some(id)) = (
+            message.forward_from_chat_id,
+            message.forward_from_message_id,
+        ) {
+            let mut targets = vec![chat.to_string()];
+            if let Some(username) = &message.forward_from_chat_username {
+                targets.push(format!("@{username}"));
+            }
+            if let Some(matched) =
+                crate::jobs::known_telegram_submission(self.state, user.id, &targets, id).await?
+            {
+                return self
+                    .reply(message, &reply::esc(&matched.status.describe()))
+                    .await;
+            }
+        }
         let posts = telegram::from_forwarded(self.state, self.transport.as_ref(), message).await?;
         if posts.is_empty() {
             return self
@@ -372,11 +409,13 @@ impl<'a> Bot<'a> {
                 .await;
         }
         let outcome = crate::jobs::import_posts(self.state, posts, Some(user.id), None).await?;
-        self.reply(
-            message,
-            &format!("Archived {}.", reply::esc(&outcome.summary())),
-        )
-        .await
+        let summary = reply::esc(&outcome.summary());
+        let text = if outcome.suggestions.is_empty() {
+            format!("Archived {summary}.")
+        } else {
+            summary
+        };
+        self.reply(message, &text).await
     }
 
     // ---------------------------------------------------------------- browsing
@@ -617,13 +656,14 @@ impl<'a> Bot<'a> {
             return self.reply(message, "Daily queue limit reached.").await;
         }
 
+        let approved_only = self.state.cfg.guest_reputation && !role.is_admin();
         let post_id = match post_id {
             Some(raw) => raw.trim_start_matches('#').parse::<i64>().ok(),
             None => {
                 let channel_id = channel.id;
                 self.state
                     .db
-                    .call(move |conn| post_db::next_unenqueued(conn, channel_id))
+                    .call(move |conn| post_db::next_unenqueued(conn, channel_id, approved_only))
                     .await?
             }
         };
@@ -633,7 +673,8 @@ impl<'a> Bot<'a> {
                 .await;
         };
 
-        let outcome = crate::queue::enqueue_checked(self.state, &channel, post_id, 0).await?;
+        let outcome =
+            crate::queue::enqueue_as(self.state, &channel, post_id, 0, role.is_admin()).await?;
         self.reply(
             message,
             &format!(
@@ -665,27 +706,65 @@ impl<'a> Bot<'a> {
     async fn set_state(
         &self,
         message: &BotMessage,
+        role: Role,
         args: &[String],
         state: PostState,
     ) -> Result<()> {
-        let ids = parse_ids(args);
-        if ids.is_empty() {
-            return self
-                .reply(message, "Usage: <code>/approve &lt;id…&gt;</code>")
-                .await;
+        let approval = state == PostState::Approved;
+        let usage = if approval && role.is_admin() && self.state.cfg.guest_reputation {
+            "Usage: <code>/approve &lt;id…&gt;</code> or <code>/approve --points &lt;5–20&gt; &lt;id&gt;</code>"
+        } else if approval {
+            "Usage: <code>/approve &lt;id…&gt;</code>"
+        } else {
+            "Usage: <code>/reject &lt;id…&gt;</code>"
+        };
+        let (ids, points) = match args {
+            [flag, amount, id] if flag == "--points" && approval && role.is_admin() => {
+                let Ok(points) = amount.parse::<i64>() else {
+                    return self.reply(message, usage).await;
+                };
+                (parse_ids(std::slice::from_ref(id)), Some(points))
+            }
+            _ if args.iter().any(|arg| arg.starts_with("--")) => {
+                return self.reply(message, usage).await;
+            }
+            _ => (parse_ids(args), None),
+        };
+        if ids.is_empty() || (points.is_some() && ids.len() != 1) {
+            return self.reply(message, usage).await;
         }
         let count = ids.len();
-        self.state
+        let enabled = self.state.cfg.guest_reputation;
+        let result = self
+            .state
             .db
             .call(move |conn| {
-                for id in &ids {
-                    post_db::set_state(conn, *id, state)?;
+                let tx =
+                    conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                for id in ids {
+                    crate::db::reputation::review(
+                        &tx,
+                        id,
+                        state,
+                        enabled,
+                        role.is_admin(),
+                        points,
+                    )?;
                 }
+                tx.commit()?;
                 Ok(())
             })
-            .await?;
-        self.reply(message, &format!("{count} post(s) → {state}"))
-            .await
+            .await;
+        match result {
+            Ok(()) => {
+                self.reply(message, &format!("{count} post(s) → {state}"))
+                    .await
+            }
+            Err(crate::error::Error::Invalid(reason)) => {
+                self.reply(message, &reply::esc(&reason)).await
+            }
+            Err(err) => Err(err),
+        }
     }
 
     async fn set_nsfw(

@@ -195,11 +195,11 @@ fn extract_files(message: &tt::Message) -> Vec<BotFile> {
 }
 
 fn map_message(message: &tt::Message) -> BotMessage {
-    let (forward_id, forward_title) = match message.forward_origin() {
-        Some(tt::MessageOrigin::Channel { chat, .. })
-        | Some(tt::MessageOrigin::Chat {
-            sender_chat: chat, ..
-        }) => (Some(chat.id.0), chat.title().map(str::to_string)),
+    let (forward_chat, forward_message) = match message.forward_origin() {
+        Some(tt::MessageOrigin::Channel {
+            chat, message_id, ..
+        }) => (Some(chat), Some(message_id.0)),
+        Some(tt::MessageOrigin::Chat { sender_chat, .. }) => (Some(sender_chat), None),
         _ => (None, None),
     };
     BotMessage {
@@ -211,8 +211,11 @@ fn map_message(message: &tt::Message) -> BotMessage {
         caption: message.caption().map(str::to_string),
         files: extract_files(message),
         media_group_id: message.media_group_id().map(|group| group.0.clone()),
-        forward_from_chat_id: forward_id,
-        forward_from_chat_title: forward_title,
+        forward_from_chat_id: forward_chat.map(|chat| chat.id.0),
+        forward_from_chat_title: forward_chat.and_then(|chat| chat.title().map(str::to_string)),
+        forward_from_chat_username: forward_chat
+            .and_then(|chat| chat.username().map(str::to_string)),
+        forward_from_message_id: forward_message,
     }
 }
 
@@ -334,6 +337,8 @@ impl Transport for BotTransport {
             let message = self.send_one(recip, item, opts).await?;
             return Ok(SentBatch {
                 message_ids: vec![message.id.0],
+                chat_id: Some(message.chat.id.0),
+                chat_username: message.chat.username().map(str::to_string),
             });
         }
         let inputs: Vec<InputMedia> = media.into_iter().map(to_input_media).collect();
@@ -344,7 +349,10 @@ impl Transport for BotTransport {
             .protect_content(opts.protect)
             .await
             .map_err(map_error)?;
+        let chat = messages.first().map(|message| &message.chat);
         Ok(SentBatch {
+            chat_id: chat.map(|chat| chat.id.0),
+            chat_username: chat.and_then(|chat| chat.username().map(str::to_string)),
             message_ids: messages.into_iter().map(|m| m.id.0).collect(),
         })
     }

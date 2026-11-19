@@ -123,20 +123,62 @@ pub fn upsert(
     super::transaction(conn, |conn| upsert_post(conn, np, media))
 }
 
+#[derive(Debug)]
+pub struct StoredImport {
+    pub post_id: Option<i64>,
+    pub created: bool,
+    pub suggestion: Option<super::reputation::Suggestion>,
+}
+
 /// Apply archive changes and import-time curation in the same commit. Watched
-/// imports leave an existing post untouched, even across separate processes.
+/// imports and matched guest suggestions leave an existing post untouched.
 pub fn store_import(
     conn: &mut Connection,
     post: &NormalizedPost,
     media: &[NewMedia],
     submitted_by: Option<i64>,
     insert_only: bool,
-) -> Result<(i64, bool)> {
+    config: &crate::config::Config,
+) -> Result<StoredImport> {
+    use super::reputation;
+
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     if insert_only && let Some(id) = find_by_source_id(&tx, &post.source, &post.source_id)? {
-        return Ok((id, false));
+        return Ok(StoredImport {
+            post_id: Some(id),
+            created: false,
+            suggestion: None,
+        });
+    }
+    let guest = match submitted_by {
+        Some(user) if reputation::is_guest(&tx, &config.access, user)? => Some(user),
+        _ => None,
+    };
+    let rated_guest = guest.filter(|_| config.guest_reputation);
+    if let Some(user) = rated_guest
+        && let Some(matched) = reputation::match_suggestion(
+            &tx,
+            &config.access,
+            &post.source,
+            &post.source_id,
+            media,
+            user,
+        )?
+    {
+        tx.commit()?;
+        return Ok(StoredImport {
+            post_id: matched.post_id,
+            created: false,
+            suggestion: Some(matched.status),
+        });
     }
     let (id, created) = upsert_post(&tx, post, media)?;
+    if created {
+        tx.execute(
+            "UPDATE posts SET operator_import = ?1 WHERE id = ?2",
+            params![guest.is_none(), id],
+        )?;
+    }
     if let Some(user) = submitted_by {
         set_submitted_by(&tx, id, user)?;
     }
@@ -146,8 +188,18 @@ pub fn store_import(
         set_state(&tx, id, PostState::Rejected)?;
         set_notes(&tx, id, Some(&format!("auto-rejected: blocked tag {hit}")))?;
     }
+    let suggestion = if let Some(user) = rated_guest {
+        Some(reputation::register_new(&tx, id, user)?)
+    } else {
+        reputation::reattach_known(&tx, id, &post.source, &post.source_id, media)?;
+        None
+    };
     tx.commit()?;
-    Ok((id, created))
+    Ok(StoredImport {
+        post_id: Some(id),
+        created,
+        suggestion,
+    })
 }
 
 fn upsert_post(conn: &Connection, np: &NormalizedPost, media: &[NewMedia]) -> Result<(i64, bool)> {
@@ -605,17 +657,21 @@ pub fn cards_by_ids(conn: &Connection, ids: &[i64]) -> Result<Vec<PostCard>> {
 }
 
 /// Newest approved post that is not queued for this channel yet.
-pub fn next_unenqueued(conn: &Connection, channel_id: i64) -> Result<Option<i64>> {
+pub fn next_unenqueued(
+    conn: &Connection,
+    channel_id: i64,
+    approved_only: bool,
+) -> Result<Option<i64>> {
     Ok(conn
         .query_row(
             "SELECT p.id FROM posts p
-             WHERE p.state IN ('approved', 'new')
+             WHERE (p.state = 'approved' OR (NOT ?2 AND p.state = 'new'))
                AND p.nsfw_override IS NOT 0
                AND NOT EXISTS (
                    SELECT 1 FROM queue q WHERE q.post_id = p.id AND q.channel_id = ?1
                )
              ORDER BY p.imported_at DESC, p.id DESC LIMIT 1",
-            [channel_id],
+            params![channel_id, approved_only],
             |row| row.get(0),
         )
         .optional()?)

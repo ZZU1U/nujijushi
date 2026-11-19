@@ -435,6 +435,88 @@ async fn a_single_queue_item_can_be_published_as_a_job() {
 }
 
 #[tokio::test]
+async fn web_review_validates_rewards_and_queues_new_suggestions_atomically() {
+    use nujijushi::db::{posts, reputation};
+
+    let mut h = harness();
+    Arc::make_mut(&mut h.state.cfg).guest_reputation = true;
+    h.ws = WebState::new(h.state.clone()).unwrap();
+    let review_post = h.post_only("900").await;
+    let queue_post = h.post_only("901").await;
+    h.state
+        .db
+        .call(move |conn| {
+            reputation::register_new(conn, review_post, 90)?;
+            reputation::register_new(conn, queue_post, 90)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let path = format!("/posts/{review_post}");
+    let html = body_text(h.send(h.get(&path)).await).await;
+    assert!(html.contains("Guest approval reward"));
+    for form in [
+        "csrf=wrong&state=approved&approval_points=17".to_owned(),
+        format!("csrf={}&state=approved&approval_points=21", h.ws.csrf),
+    ] {
+        assert_eq!(
+            h.send(h.post(&path, &form)).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert_eq!(
+        h.state
+            .db
+            .with(|conn| Ok(posts::get(conn, review_post)?.state))
+            .unwrap(),
+        PostState::New
+    );
+    let form = format!("csrf={}&state=approved&approval_points=17", h.ws.csrf);
+    assert_eq!(
+        h.send(h.post(&path, &form)).await.status(),
+        StatusCode::SEE_OTHER
+    );
+    assert_eq!(
+        h.state
+            .db
+            .with(|conn| reputation::balance(conn, 90))
+            .unwrap(),
+        1700
+    );
+
+    let channel = h.add_channel().await;
+    let form = format!(
+        "csrf={}&action=queue&sel_{queue_post}=on&channel={}",
+        h.ws.csrf, channel.id
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            h.send(h.post("/posts", &form)).await.status(),
+            StatusCode::SEE_OTHER
+        );
+    }
+    assert_eq!(
+        h.state
+            .db
+            .with(|conn| Ok(posts::get(conn, queue_post)?.state))
+            .unwrap(),
+        PostState::Approved
+    );
+    assert_eq!(
+        h.state
+            .db
+            .with(|conn| reputation::balance(conn, 90))
+            .unwrap(),
+        2700
+    );
+    assert!(
+        h.mock.texts().is_empty(),
+        "the web request must not send Telegram DMs"
+    );
+}
+
+#[tokio::test]
 async fn a_csrf_failure_queues_nothing() {
     let h = harness();
     let channel = h.add_channel().await;

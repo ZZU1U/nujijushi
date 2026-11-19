@@ -28,6 +28,7 @@ public_telegram_fallback = true
 enabled = true
 # DM configured admins about empty queues and unconfirmed sends.
 queue_alerts = false
+guest_reputation = false  # score guest submissions and require admin review before guests queue new posts
 # polling: ask Telegram for updates (works anywhere, no public address needed).
 # webhook: Telegram POSTs to /tg/webhook on the web server; needs a public HTTPS URL
 #          (put a TLS proxy in front of [web] bind) and reaches it with a secret header.

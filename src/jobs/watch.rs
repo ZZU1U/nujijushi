@@ -121,11 +121,13 @@ async fn import_one(state: &AppState, source: &'static str, id: &str, url: &str)
         _ => Err(Error::other("gallery-dl did not return the expected post")),
     };
     gallerydl::cleanup_staging(&downloaded);
-    let (post_id, added) = result?;
-    if added {
+    let stored = result?;
+    if stored.created
+        && let Some(post_id) = stored.post_id
+    {
         enqueue_import_mirrors(state, &[post_id]).await;
     }
-    Ok(added)
+    Ok(stored.created)
 }
 
 #[cfg(test)]

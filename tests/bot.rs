@@ -73,6 +73,8 @@ fn private_message(from: i64, id: i32, body: &str) -> BotMessage {
         media_group_id: None,
         forward_from_chat_id: None,
         forward_from_chat_title: None,
+        forward_from_chat_username: None,
+        forward_from_message_id: None,
     }
 }
 
@@ -189,6 +191,232 @@ impl Harness {
             .unwrap();
         post_id
     }
+}
+
+#[tokio::test]
+async fn reputation_reviews_and_queueing_use_admin_permissions() {
+    use nujijushi::db::{posts, reputation, users};
+    use nujijushi::model::PostState;
+
+    let h = harness(
+        MockTransport::new(),
+        &format!("{OPEN_CONFIG}\n[bot]\nguest_reputation = true"),
+    );
+    h.send(private_message(GUEST, 1, "/whoami")).await;
+    assert!(h.last_text().contains("Reputation: 0"));
+    let post = h.add_post("5", 1, &["original"]).await;
+    h.state
+        .db
+        .call(move |conn| reputation::register_new(conn, post, GUEST))
+        .await
+        .unwrap();
+    let channel = h.add_channel("main", NsfwPolicy::Reject).await;
+
+    h.send(private_message(GUEST, 2, &format!("/approve {post}")))
+        .await;
+    assert!(h.last_text().contains("only an admin"));
+    h.send(private_message(GUEST, 3, &format!("/push main {post}")))
+        .await;
+    assert!(h.last_text().contains("approve the post first"));
+    h.state
+        .db
+        .call(move |conn| posts::set_rating(conn, post, Rating::Explicit))
+        .await
+        .unwrap();
+    h.send(private_message(ADMIN, 4, &format!("/push main {post}")))
+        .await;
+    assert!(h.last_text().contains("skipped"));
+    assert_eq!(
+        h.state
+            .db
+            .with(|conn| Ok(posts::get(conn, post)?.state))
+            .unwrap(),
+        PostState::New
+    );
+    assert_eq!(
+        h.state
+            .db
+            .with(|conn| reputation::balance(conn, GUEST))
+            .unwrap(),
+        0
+    );
+
+    h.state
+        .db
+        .call(move |conn| posts::set_rating(conn, post, Rating::Sfw))
+        .await
+        .unwrap();
+    h.send(private_message(ADMIN, 5, &format!("/push main {post}")))
+        .await;
+    assert!(h.last_text().contains("queued as"));
+    assert_eq!(
+        h.state
+            .db
+            .with(|conn| Ok(posts::get(conn, post)?.state))
+            .unwrap(),
+        PostState::Approved
+    );
+    assert_eq!(
+        h.state
+            .db
+            .with(|conn| reputation::balance(conn, GUEST))
+            .unwrap(),
+        1000
+    );
+    assert_eq!(h.mock.send_count(), 0);
+
+    nujijushi::bot::reputation_notifications::check(&h.state).await;
+    assert!(
+        h.mock
+            .texts()
+            .iter()
+            .any(|(chat, text)| chat == &GUEST.to_string() && text.contains("+10 · balance 10"))
+    );
+
+    h.send(private_message(
+        ADMIN,
+        6,
+        &format!("/approve --points 12 {post}"),
+    ))
+    .await;
+    assert_eq!(
+        h.state
+            .db
+            .with(|conn| reputation::balance(conn, GUEST))
+            .unwrap(),
+        1200
+    );
+    h.mock
+        .as_ref()
+        .clone()
+        .with_text_failure(TgError::Permanent("DM failed".into()));
+    let before = h.mock.texts().len();
+    nujijushi::bot::reputation_notifications::check(&h.state).await;
+    nujijushi::bot::reputation_notifications::check(&h.state).await;
+    assert_eq!(h.mock.texts().len(), before);
+    assert_eq!(
+        h.state
+            .db
+            .with(|conn| reputation::balance(conn, GUEST))
+            .unwrap(),
+        1200
+    );
+
+    h.state
+        .db
+        .call(move |conn| users::set_role(conn, GUEST, "admin"))
+        .await
+        .unwrap();
+    h.send(private_message(GUEST, 7, "/whoami")).await;
+    assert!(h.last_text().contains("Reputation: ∞"));
+    assert_eq!(
+        h.state
+            .db
+            .with(|conn| reputation::balance(conn, GUEST))
+            .unwrap(),
+        1200
+    );
+    assert_eq!(
+        h.state
+            .db
+            .with(|conn| nujijushi::db::queue::count_state(conn, channel.id, QueueState::Queued))
+            .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn guest_links_and_forwards_find_deliveries_across_channels() {
+    use nujijushi::db::{channels, reputation};
+    use nujijushi::queue::EnqueueOutcome;
+    use nujijushi::tg::publish::{PublishOutcome, publish_item};
+
+    let mock = MockTransport::new().with_chat(ChatInfo {
+        id: -100123,
+        title: Some("Public".into()),
+        username: Some("test_channel".into()),
+        is_channel: true,
+        is_private: false,
+    });
+    let h = harness(
+        mock,
+        &format!("{OPEN_CONFIG}\n[bot]\nguest_reputation = true"),
+    );
+    let public = h.add_channel("public", NsfwPolicy::Allow).await;
+    let mut private = Channel::new("Private", "-100456");
+    private.nsfw_policy = NsfwPolicy::Allow;
+    private.id = h
+        .state
+        .db
+        .with(|conn| channels::insert(conn, &private))
+        .unwrap();
+
+    let mut sent = Vec::new();
+    for (channel, source_id) in [(&public, "1"), (&private, "2")] {
+        let post = h.add_post(source_id, 1, &["original"]).await;
+        let EnqueueOutcome::Queued(queue) =
+            nujijushi::queue::enqueue_checked(&h.state, channel, post, 0)
+                .await
+                .unwrap()
+        else {
+            panic!("expected queued post");
+        };
+        let PublishOutcome::Published { message_ids, .. } =
+            publish_item(&h.state, queue, false).await.unwrap()
+        else {
+            panic!("expected published post");
+        };
+        sent.push(message_ids[0]);
+    }
+
+    let public_url = format!("https://t.me/test_channel/{}", sent[0]);
+    for _ in 0..2 {
+        let result = nujijushi::jobs::import_target(&h.state, &public_url, Some(GUEST))
+            .await
+            .unwrap();
+        assert!(result.summary().contains(&public_url));
+    }
+    assert_eq!(
+        h.state
+            .db
+            .with(|conn| reputation::balance(conn, GUEST))
+            .unwrap(),
+        -100
+    );
+    let private_url = format!("https://t.me/c/456/{}", sent[1]);
+    let mut forward = private_message(GUEST, 994, "");
+    forward.forward_from_chat_id = Some(-100456);
+    forward.forward_from_message_id = Some(sent[1]);
+    forward.files = vec![photo("not-downloaded")];
+    h.send(forward).await;
+    assert!(h.last_text().contains(&private_url));
+    assert!(h.mock.downloads().is_empty());
+    assert_eq!(
+        h.state
+            .db
+            .with(|conn| reputation::balance(conn, GUEST))
+            .unwrap(),
+        -200
+    );
+
+    let before = h.mock.texts().len();
+    let also = AppState::open(h.state.cfg.as_ref().clone(), h.state.transport.clone()).unwrap();
+    tokio::join!(
+        nujijushi::bot::reputation_notifications::check(&h.state),
+        nujijushi::bot::reputation_notifications::check(&also),
+    );
+    let texts = h.mock.texts();
+    assert_eq!(texts.len() - before, 2);
+    assert!(
+        texts
+            .iter()
+            .any(|(_, text)| text.contains(&private_url) && text.contains("Reputation −1"))
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|(_, text)| text.contains(&public_url) && text.contains("Reputation −1"))
+    );
 }
 
 #[tokio::test]

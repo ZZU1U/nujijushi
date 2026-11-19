@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Local, Utc};
 use clap::{Args as ClapArgs, Parser, Subcommand};
 
-use crate::bot::queue_alerts;
+use crate::bot::{queue_alerts, reputation_notifications};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::model::{Attribution, Channel, ParseMode, PostState, QueueState, Rating, TagStyle};
@@ -124,6 +124,9 @@ pub enum Command {
     Approve {
         #[arg(required = true)]
         ids: Vec<i64>,
+        /// Total points for one guest suggestion (5–20)
+        #[arg(long)]
+        points: Option<i64>,
     },
 
     /// Mark posts as rejected
@@ -564,7 +567,7 @@ pub async fn run() -> Result<()> {
             let state = open_state(cfg)?;
             reconcile_interrupted_jobs(&state).await?;
             println!("scheduler  not running in `serve` - `nujijushi run` publishes on schedule");
-            queue_alerts::monitor_while(&state, crate::web::serve(state.clone(), bind)).await
+            monitor_notifications(&state, crate::web::serve(state.clone(), bind)).await
         }
         Command::Bot { once } => {
             let state = open_state(cfg)?;
@@ -576,9 +579,10 @@ pub async fn run() -> Result<()> {
             if once {
                 cmd_bot(&state, true).await?;
                 queue_alerts::check(&state).await;
+                reputation_notifications::check(&state).await;
                 Ok(())
             } else {
-                queue_alerts::monitor_while(&state, cmd_bot(&state, false)).await
+                monitor_notifications(&state, cmd_bot(&state, false)).await
             }
         }
         Command::Gc { dry_run } => cmd_gc(cfg, dry_run),
@@ -606,6 +610,14 @@ pub async fn run() -> Result<()> {
     }
 }
 
+async fn monitor_notifications<T>(
+    state: &AppState,
+    command: impl std::future::Future<Output = T>,
+) -> T {
+    reputation_notifications::monitor_while(state, queue_alerts::monitor_while(state, command))
+        .await
+}
+
 async fn dispatch(state: &AppState, cmd: Command) -> Result<()> {
     match cmd {
         Command::Import {
@@ -625,8 +637,10 @@ async fn dispatch(state: &AppState, cmd: Command) -> Result<()> {
         Command::Tag { id, tags, remove } => cmd_tag(state, id, tags, remove),
         Command::Rate { id, rating } => cmd_rate(state, id, rating),
         Command::Nsfw { id, value } => cmd_nsfw(state, id, value),
-        Command::Approve { ids } => cmd_set_state(state, ids, PostState::Approved),
-        Command::Reject { ids } => cmd_set_state(state, ids, PostState::Rejected),
+        Command::Approve { ids, points } => {
+            cmd_set_state(state, ids, PostState::Approved, points).await
+        }
+        Command::Reject { ids } => cmd_set_state(state, ids, PostState::Rejected, None).await,
         Command::Rm { id } => {
             let removed = state
                 .db
@@ -658,9 +672,10 @@ async fn dispatch(state: &AppState, cmd: Command) -> Result<()> {
             if once {
                 command.await?;
                 queue_alerts::check(state).await;
+                reputation_notifications::check(state).await;
                 Ok(())
             } else {
-                queue_alerts::monitor_while(state, command).await
+                monitor_notifications(state, command).await
             }
         }
         Command::Log { limit } => cmd_log(state, limit).await,
@@ -1084,6 +1099,20 @@ async fn cmd_doctor(cfg: Config, strict: bool, offline: bool) -> Result<()> {
             "disabled in config ([bot] enabled = false)".into()
         },
     });
+    checks.push(Check {
+        level: if cfg.guest_reputation && cfg.bot_token.is_none() {
+            Level::Warn
+        } else {
+            Level::Ok
+        },
+        label: "guest reputation".into(),
+        detail: match (cfg.guest_reputation, cfg.bot_token.is_some()) {
+            (false, _) => "off ([bot] guest_reputation = false)",
+            (true, true) => "enabled",
+            (true, false) => "enabled, but Telegram notifications require TG_BOT_TOKEN",
+        }
+        .into(),
+    });
     let alert_admins = queue_alerts::recipients(&cfg.access.admins).len();
     let alert_token = cfg
         .bot_token
@@ -1417,6 +1446,9 @@ async fn cmd_import(
             }
         }
     }
+    if channel.is_some() {
+        reputation_notifications::check(state).await;
+    }
     if failures == targets.len() {
         return Err(Error::other(format!(
             "all {failures} import target(s) failed"
@@ -1690,16 +1722,30 @@ fn cmd_nsfw(state: &AppState, id: i64, value: String) -> Result<()> {
     Ok(())
 }
 
-fn cmd_set_state(state: &AppState, ids: Vec<i64>, target: PostState) -> Result<()> {
-    let mut changed = 0;
-    state.db.with(|conn| {
-        for id in &ids {
-            crate::db::posts::set_state(conn, *id, target)?;
-            changed += 1;
-        }
-        Ok(())
-    })?;
-    println!("{changed} post(s) -> {target}");
+async fn cmd_set_state(
+    state: &AppState,
+    ids: Vec<i64>,
+    target: PostState,
+    points: Option<i64>,
+) -> Result<()> {
+    if points.is_some() && ids.len() != 1 {
+        return Err(Error::invalid("--points takes one post ID"));
+    }
+    let enabled = state.cfg.guest_reputation;
+    let count = ids.len();
+    state
+        .db
+        .call(move |conn| {
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            for id in ids {
+                crate::db::reputation::review(&tx, id, target, enabled, true, points)?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+        .await?;
+    println!("{count} post(s) -> {target}");
+    reputation_notifications::check(state).await;
     Ok(())
 }
 
@@ -1968,6 +2014,7 @@ async fn cmd_queue(state: &AppState, cmd: QueueCmd) -> Result<()> {
         } => {
             let channel = resolve_channel(state, &channel).await?;
             let summary = crate::queue::enqueue_many(state, &channel, &ids, priority).await;
+            reputation_notifications::check(state).await;
             for (id, outcome) in &summary.outcomes {
                 match outcome {
                     crate::queue::EnqueueOutcome::Queued(queue_id) => {
@@ -2744,6 +2791,14 @@ mod parse_tests {
         let mut full = vec!["nujijushi"];
         full.extend_from_slice(args);
         Args::try_parse_from(full).expect("the CLI definition must accept this")
+    }
+
+    #[test]
+    fn approve_accepts_a_custom_guest_reward() {
+        assert!(matches!(
+            parse(&["approve", "--points", "15", "42"]).cmd,
+            Command::Approve { ids, points: Some(15) } if ids == [42]
+        ));
     }
 
     #[test]

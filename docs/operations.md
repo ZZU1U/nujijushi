@@ -87,6 +87,17 @@ scraped from its `?embed=1` page — one image, reduced size, marked
 `public embed (degraded)` on the post. Real fidelity for arbitrary channels needs MTProto,
 which nujijushi does not do.
 
+### Guest reputation
+
+Set `guest_reputation = true` under `[bot]` to start counting new guest suggestions. The default is off. Telegram's `/whoami` shows a signed balance for guests and **∞** for admins. The bot DMs guests about changes, including the reason and resulting balance.
+
+- **Approved suggestion** earns 10 points total by default. An admin can choose a total of 5–20 in the post detail form, with `/approve --points N ID`, or with `nujijushi approve --points N ID`. An admin queueing a new post approves it at the default reward.
+- **Rejected suggestion** costs 3 points total. Both decisions split the total among the distinct guests who suggested the post before the first review. A changed verdict adjusts the same shares. Later suggestions leave that split intact.
+- **Rediscovery** earns 2 points for the first guest to suggest an unpublished, admin-added post, even if it has already entered the queue.
+- **Published duplicate** costs 1 point once per guest and includes a link to the Telegram message. Private post links still require access to the destination. Unconfirmed sends and confirmations without message IDs carry no penalty.
+
+With scoring enabled, guests need admin approval before they can queue a post and admins finalize scored reviews. Disabling the setting pauses scores and DMs and retains balances. Enabling it does not award points for old reviews.
+
 ### Polling or webhook
 
 By default, nujijushi uses long polling (`getUpdates`) over an outbound connection. Use webhook mode if your host can receive HTTPS from Telegram on port 443, 80, 88, or 8443. Behind CGNAT or a router that cannot forward those ports, keep `mode = "polling"`. Polling supports `[proxy]`.

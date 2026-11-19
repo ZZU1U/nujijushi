@@ -16,10 +16,19 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0009_watched_sources.sql"),
     include_str!("../../migrations/0010_duplicate_artwork.sql"),
     include_str!("../../migrations/0011_watch_enabled.sql"),
+    include_str!("../../migrations/0012_guest_reputation.sql"),
 ];
 
 pub fn schema_version(conn: &Connection) -> Result<i64> {
     Ok(conn.pragma_query_value(None, "user_version", |row| row.get(0))?)
+}
+
+fn has_table(conn: &Connection, name: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1)",
+        [name],
+        |row| row.get(0),
+    )?)
 }
 
 /// Apply all pending migrations. Each migration runs in its own transaction.
@@ -28,16 +37,24 @@ pub fn migrate(conn: &mut Connection) -> Result<i64> {
     let target = MIGRATIONS.len() as i64;
     for (index, sql) in MIGRATIONS.iter().enumerate() {
         let version = index as i64 + 1;
-        if version <= current {
+        // Development archives can already contain either feature under a
+        // different version. Check the schema before applying these migrations.
+        let installed = match version {
+            12 => has_table(conn, "reputation_events")?,
+            _ => version <= current,
+        };
+        if installed && version <= current {
             continue;
         }
         let tx = conn.transaction()?;
-        tx.execute_batch(sql)?;
-        tx.pragma_update(None, "user_version", version)?;
+        if !installed {
+            tx.execute_batch(sql)?;
+        }
+        tx.pragma_update(None, "user_version", version.max(current))?;
         tx.commit()?;
         tracing::info!(version, "applied migration");
     }
-    Ok(target)
+    Ok(target.max(current))
 }
 
 #[cfg(test)]
@@ -73,6 +90,12 @@ mod tests {
             "post_tags",
             "posts",
             "queue",
+            "reputation_events",
+            "reputation_keys",
+            "reputation_posts",
+            "reputation_publications",
+            "reputation_subjects",
+            "reputation_suggestions",
             "sends",
             "settings",
             "tag_aliases",
@@ -100,6 +123,21 @@ mod tests {
                 && media_columns.iter().any(|column| column == "meta_json"),
             "media.sensitive / media.meta_json are missing: {media_columns:?}"
         );
+    }
+
+    #[test]
+    fn upgrades_when_a_development_archive_already_uses_version_twelve() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..11] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 12).unwrap();
+        assert!(!has_table(&conn, "reputation_events").unwrap());
+
+        migrate(&mut conn).unwrap();
+        assert!(has_table(&conn, "reputation_events").unwrap());
+        assert_eq!(schema_version(&conn).unwrap(), MIGRATIONS.len() as i64);
+        migrate(&mut conn).unwrap();
     }
 
     #[test]

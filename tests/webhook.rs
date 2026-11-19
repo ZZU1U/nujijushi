@@ -73,6 +73,8 @@ fn whoami_update() -> UpdateKind {
         media_group_id: None,
         forward_from_chat_id: None,
         forward_from_chat_title: None,
+        forward_from_chat_username: None,
+        forward_from_message_id: None,
     })
 }
 

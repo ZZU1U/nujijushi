@@ -88,6 +88,8 @@ pub struct BotMessage {
     /// Original channel when this message is a forward.
     pub forward_from_chat_id: Option<i64>,
     pub forward_from_chat_title: Option<String>,
+    pub forward_from_chat_username: Option<String>,
+    pub forward_from_message_id: Option<i32>,
 }
 
 impl BotMessage {
@@ -245,6 +247,8 @@ mod tests {
             media_group_id: None,
             forward_from_chat_id: None,
             forward_from_chat_title: None,
+            forward_from_chat_username: None,
+            forward_from_message_id: None,
         };
         assert_eq!(message.body(), Some("hello"));
     }

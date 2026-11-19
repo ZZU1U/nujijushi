@@ -28,60 +28,62 @@ impl EnqueueOutcome {
     }
 }
 
-/// Enqueue a post after applying the channel's policy. Skipped posts are not queued.
+/// Enqueue a post as an operator (web or CLI).
 pub async fn enqueue_checked(
     state: &AppState,
     channel: &Channel,
     post_id: i64,
     priority: i64,
 ) -> Result<EnqueueOutcome> {
-    let rules = state
-        .db
-        .call(|conn| crate::db::tags::TagRules::load(conn))
-        .await?;
-    let post = state
-        .db
-        .call(move |conn| crate::db::posts::get(conn, post_id))
-        .await?;
-    let decision = crate::nsfw::evaluate(&post, channel, &rules);
-    if let crate::nsfw::Verdict::Reject(reason) = decision.verdict {
-        return Ok(EnqueueOutcome::Skipped(reason));
-    }
-    // `evaluate` already refuses nsfw for a channel whose policy is `reject`
-    if post.state == PostState::Rejected {
-        return Ok(EnqueueOutcome::Skipped("post is rejected".to_string()));
-    }
+    enqueue_as(state, channel, post_id, priority, true).await
+}
 
-    let channel_id = channel.id;
-    let inserted = state
+/// Keep the policy decision, queue row, and implicit approval in one write.
+pub async fn enqueue_as(
+    state: &AppState,
+    channel: &Channel,
+    post_id: i64,
+    priority: i64,
+    admin: bool,
+) -> Result<EnqueueOutcome> {
+    let channel = channel.clone();
+    let reputation = state.cfg.guest_reputation;
+    state
         .db
-        .call(move |conn| crate::db::queue::enqueue(conn, post_id, channel_id, priority))
-        .await?;
-    if !inserted {
-        return Ok(EnqueueOutcome::AlreadyQueued);
-    }
-    let queue_id = {
-        let channel_id = channel.id;
-        state
-            .db
-            .call(move |conn| {
-                conn.query_row(
-                    "SELECT id FROM queue WHERE post_id = ?1 AND channel_id = ?2",
-                    rusqlite::params![post_id, channel_id],
-                    |row| row.get::<_, i64>(0),
-                )
-                .map_err(Into::into)
-            })
-            .await?
-    };
-    if post.state == PostState::New {
-        let post_id = post.id;
-        state
-            .db
-            .call(move |conn| crate::db::posts::set_state(conn, post_id, PostState::Approved))
-            .await?;
-    }
-    Ok(EnqueueOutcome::Queued(queue_id))
+        .call(move |conn| {
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let rules = crate::db::tags::TagRules::load(&tx)?;
+            let post = crate::db::posts::get(&tx, post_id)?;
+            let decision = crate::nsfw::evaluate(&post, &channel, &rules);
+            if let crate::nsfw::Verdict::Reject(reason) = decision.verdict {
+                return Ok(EnqueueOutcome::Skipped(reason));
+            }
+            if post.state == PostState::Rejected {
+                return Ok(EnqueueOutcome::Skipped("post is rejected".into()));
+            }
+            if reputation && !admin && post.state != PostState::Approved {
+                return Ok(EnqueueOutcome::Skipped(
+                    "an admin must approve the post first".into(),
+                ));
+            }
+            let Some(queue_id) = crate::db::queue::enqueue_new(&tx, post_id, channel.id, priority)?
+            else {
+                return Ok(EnqueueOutcome::AlreadyQueued);
+            };
+            if post.state == PostState::New {
+                crate::db::reputation::review(
+                    &tx,
+                    post_id,
+                    PostState::Approved,
+                    reputation,
+                    admin,
+                    None,
+                )?;
+            }
+            tx.commit()?;
+            Ok(EnqueueOutcome::Queued(queue_id))
+        })
+        .await
 }
 
 /// What a batch enqueue did, per post, so each interface can phrase it its own

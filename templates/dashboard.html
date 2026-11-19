@@ -38,6 +38,7 @@
           <input type="hidden" name="csrf" value="{{ csrf }}">
           <input type="hidden" name="id" value="{{ item.id }}">
           <input type="hidden" name="channel" value="{{ item.channel_id }}">
+          <input type="number" name="message_id" min="1" aria-label="Telegram message ID (optional)" placeholder="Message ID">
           <button name="action" value="delivered" class="small">delivered</button>
           <button name="action" value="not_delivered" class="small ghost">not delivered</button>
         </form>

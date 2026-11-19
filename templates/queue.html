@@ -44,6 +44,7 @@
           <input type="hidden" name="id" value="{{ i.id }}">
           <input type="hidden" name="channel" value="{{ channel.id }}">
           {% if i.state == 'unknown' %}
+            <input type="number" name="message_id" min="1" aria-label="Telegram message ID (optional)" placeholder="Message ID">
             <button name="action" value="delivered" class="small">delivered</button>
             <button name="action" value="not_delivered" class="small ghost">not delivered</button>
           {% else %}

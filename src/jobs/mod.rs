@@ -6,7 +6,8 @@ pub mod worker;
 use std::path::{Path, PathBuf};
 
 use crate::blob::Ingested;
-use crate::db::posts::NewMedia;
+use crate::db::posts::{NewMedia, StoredImport};
+use crate::db::reputation::{self, MatchedSuggestion, Suggestion};
 use crate::db::{jobs as job_db, posts as post_db};
 use crate::error::{Error, Result};
 use crate::source::{NormalizedPost, gallerydl, telegram};
@@ -19,6 +20,7 @@ pub struct ImportOutcome {
     pub updated: usize,
     pub files: usize,
     pub skipped: Vec<(String, String)>,
+    pub suggestions: Vec<Suggestion>,
 }
 
 impl ImportOutcome {
@@ -28,6 +30,19 @@ impl ImportOutcome {
     /// file(s)" was mostly zeros. What changed is what matters:
     /// `new post · 3 files`, `12 posts (10 new, 2 updated) · 34 files`.
     pub fn summary(&self) -> String {
+        if !self.suggestions.is_empty() {
+            let mut lines = Vec::new();
+            for suggestion in &self.suggestions {
+                let description = suggestion.describe();
+                if !lines.contains(&description) {
+                    lines.push(description);
+                }
+            }
+            if !self.skipped.is_empty() {
+                lines.push(format!("{} skipped", self.skipped.len()));
+            }
+            return lines.join("\n");
+        }
         let posts = self.post_ids.len();
         let mut out = if posts == 1 {
             if self.created == 1 {
@@ -81,6 +96,33 @@ pub async fn import_target_tracked(
     submitted_by: Option<i64>,
     job_id: Option<i64>,
 ) -> Result<ImportOutcome> {
+    if let (Some(user), Some(link)) = (submitted_by, telegram::parse_link(target)) {
+        let targets = vec![link.channel];
+        if let Some(matched) =
+            known_telegram_submission(state, user, &targets, link.message_id).await?
+        {
+            return Ok(suggestion_outcome(matched));
+        }
+        if state.cfg.guest_reputation
+            && let Some(transport) = &state.transport
+            && let Ok(Ok(info)) = tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                transport.get_chat(&targets[0]),
+            )
+            .await
+        {
+            let mut aliases = vec![info.id.to_string()];
+            if let Some(name) = info.username {
+                aliases.push(format!("@{name}"));
+            }
+            aliases.retain(|alias| !alias.eq_ignore_ascii_case(&targets[0]));
+            if let Some(matched) =
+                known_telegram_submission(state, user, &aliases, link.message_id).await?
+            {
+                return Ok(suggestion_outcome(matched));
+            }
+        }
+    }
     let copy_chat = copy_chat_for(state, submitted_by);
     let posts = crate::source::fetch_target(state, target, copy_chat.as_deref()).await?;
     let outcome = import_posts(state, posts.clone(), submitted_by, job_id).await?;
@@ -95,7 +137,7 @@ pub async fn import_target_tracked(
             .collect::<Vec<_>>(),
     );
 
-    if outcome.post_ids.is_empty() {
+    if outcome.post_ids.is_empty() && outcome.suggestions.is_empty() {
         let detail = outcome
             .skipped
             .first()
@@ -104,6 +146,42 @@ pub async fn import_target_tracked(
         return Err(Error::other(format!("import of {target} failed: {detail}")));
     }
     Ok(outcome)
+}
+
+/// A link or forward of one of our own publications can be identified without
+/// downloading it, including when the guest cannot access the destination.
+pub async fn known_telegram_submission(
+    state: &AppState,
+    user: i64,
+    targets: &[String],
+    message: i32,
+) -> Result<Option<MatchedSuggestion>> {
+    if !state.cfg.guest_reputation || message <= 0 || targets.is_empty() {
+        return Ok(None);
+    }
+    let cfg = state.cfg.clone();
+    let targets = targets.to_vec();
+    state
+        .db
+        .call(move |conn| {
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let matched = if reputation::is_guest(&tx, &cfg.access, user)? {
+                reputation::known_message(&tx, &targets, message, user)?
+            } else {
+                None
+            };
+            tx.commit()?;
+            Ok(matched)
+        })
+        .await
+}
+
+fn suggestion_outcome(matched: MatchedSuggestion) -> ImportOutcome {
+    ImportOutcome {
+        post_ids: matched.post_id.into_iter().collect(),
+        suggestions: vec![matched.status],
+        ..ImportOutcome::default()
+    }
 }
 
 /// Store already-fetched posts (used by imports and by forwarded Telegram posts).
@@ -115,16 +193,21 @@ pub async fn import_posts(
 ) -> Result<ImportOutcome> {
     let mut outcome = ImportOutcome::default();
     let total = posts.len() as i64;
+    let mut mirrored = Vec::new();
     for (index, post) in posts.iter().enumerate() {
         match store_post(state, post, submitted_by, false).await {
-            Ok((post_id, created)) => {
-                outcome.post_ids.push(post_id);
-                outcome.files += post.files.len();
-                if created {
-                    outcome.created += 1;
-                } else {
-                    outcome.updated += 1;
+            Ok(stored) => {
+                outcome.post_ids.extend(stored.post_id);
+                if stored.suggestion.is_none() || stored.created {
+                    outcome.files += post.files.len();
+                    mirrored.extend(stored.post_id);
+                    if stored.created {
+                        outcome.created += 1;
+                    } else {
+                        outcome.updated += 1;
+                    }
                 }
+                outcome.suggestions.extend(stored.suggestion);
             }
             Err(err) => outcome
                 .skipped
@@ -143,7 +226,7 @@ pub async fn import_posts(
         }
     }
 
-    enqueue_import_mirrors(state, &outcome.post_ids).await;
+    enqueue_import_mirrors(state, &mirrored).await;
     Ok(outcome)
 }
 
@@ -162,7 +245,7 @@ async fn store_post(
     post: &NormalizedPost,
     submitted_by: Option<i64>,
     insert_only: bool,
-) -> Result<(i64, bool)> {
+) -> Result<StoredImport> {
     let mut media: Vec<NewMedia> = Vec::new();
     for file in &post.files {
         let (ingested, thumb) = ingest(state, &file.path).await?;
@@ -196,9 +279,12 @@ async fn store_post(
     }
 
     let post = post.clone();
+    let cfg = state.cfg.clone();
     state
         .db
-        .call(move |conn| post_db::store_import(conn, &post, &media, submitted_by, insert_only))
+        .call(move |conn| {
+            post_db::store_import(conn, &post, &media, submitted_by, insert_only, &cfg)
+        })
         .await
 }
 
@@ -554,6 +640,7 @@ mod tests {
             skipped: (0..skipped)
                 .map(|i| (format!("post-{i}"), "nope".to_string()))
                 .collect(),
+            suggestions: Vec::new(),
         }
     }
 

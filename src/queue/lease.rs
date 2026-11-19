@@ -14,13 +14,13 @@ pub fn new_token() -> String {
 }
 
 /// Take the lease for a queue item. `None` means another worker won the race.
-pub async fn acquire(state: &AppState, queue_id: i64) -> Result<Option<String>> {
+pub async fn acquire(state: &AppState, queue_id: i64, target: String) -> Result<Option<String>> {
     let token = new_token();
     let claimed = state
         .db
         .call({
             let token = token.clone();
-            move |conn| queue_db::acquire(conn, queue_id, &token)
+            move |conn| queue_db::acquire_for_target(conn, queue_id, &token, Some(&target))
         })
         .await?;
     Ok(claimed.then_some(token))

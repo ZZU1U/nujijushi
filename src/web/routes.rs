@@ -608,15 +608,16 @@ async fn posts_bulk(
                 PostState::Rejected
             };
             let ids_for_db = ids.clone();
+            let enabled = app.cfg.guest_reputation;
             app.db
                 .call(move |conn| {
-                    // all or nothing: a failing id must not leave half the batch done
-                    crate::db::transaction(conn, |conn| {
-                        for id in &ids_for_db {
-                            post_db::set_state(conn, *id, state)?;
-                        }
-                        Ok(())
-                    })
+                    let tx =
+                        conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                    for id in ids_for_db {
+                        crate::db::reputation::review(&tx, id, state, enabled, true, None)?;
+                    }
+                    tx.commit()?;
+                    Ok(())
                 })
                 .await?;
             format!("{} post(s) -> {}", ids.len(), state)
@@ -705,6 +706,11 @@ async fn post_page(
         .call(move |conn| post_db::submitter(conn, id))
         .await?;
 
+    let guest_review = app.cfg.guest_reputation
+        && app
+            .db
+            .call(move |conn| crate::db::reputation::reviewable(conn, id))
+            .await?;
     let post_queues = app
         .db
         .call(move |conn| queue_db::for_post(conn, id))
@@ -773,6 +779,7 @@ async fn post_page(
             "page": "posts",
             "csrf": ws.csrf,
             "flash": query.flash,
+            "guest_review": guest_review,
             "post": {
                 "id": post.id,
                 "source": post.source,
@@ -815,47 +822,61 @@ async fn post_update(
 ) -> WebResult<Response> {
     check_csrf(&ws, &form.csrf)?;
     let app = &ws.app;
-    if let Some(rating) = form.rating.as_deref().filter(|r| !r.is_empty()) {
-        let rating = rating
-            .parse::<Rating>()
-            .map_err(|_| WebError(Error::invalid("bad rating")))?;
-        app.db
-            .call(move |conn| post_db::set_rating(conn, id, rating))
-            .await?;
+    let enabled = app.cfg.guest_reputation;
+    let rating = form
+        .rating
+        .as_deref()
+        .filter(|r| !r.is_empty())
+        .map(str::parse::<Rating>)
+        .transpose()
+        .map_err(|_| WebError(Error::invalid("bad rating")))?;
+    let state = form.state.as_deref().and_then(PostState::try_parse);
+    if form.approval_points.is_some() && state != Some(PostState::Approved) {
+        return Err(Error::invalid("choose approved to set a reward").into());
     }
-    if let Some(nsfw) = form.nsfw.as_deref() {
-        let value = match nsfw {
-            "yes" => Some(true),
-            "no" => Some(false),
-            _ => None,
-        };
-        app.db
-            .call(move |conn| post_db::set_nsfw_override(conn, id, value))
-            .await?;
-    }
-    if let Some(state) = form.state.as_deref().filter(|s| !s.is_empty())
-        && let Some(state) = PostState::try_parse(state)
-    {
-        app.db
-            .call(move |conn| post_db::set_state(conn, id, state))
-            .await?;
-    }
-    if let Some(tags) = form.tags.as_deref() {
-        let tags: Vec<String> = tags
-            .split([',', ' ', '\n'])
-            .map(|t| t.trim().trim_start_matches('#').to_string())
-            .filter(|t| !t.is_empty())
-            .collect();
-        app.db
-            .call(move |conn| tag_db::replace_manual(conn, id, &tags))
-            .await?;
-    }
-    if let Some(notes) = form.notes.as_deref() {
-        let notes = (!notes.trim().is_empty()).then(|| notes.trim().to_string());
-        app.db
-            .call(move |conn| post_db::set_notes(conn, id, notes.as_deref()))
-            .await?;
-    }
+    app.db
+        .call(move |conn| {
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            if let Some(state) = state {
+                let changed = post_db::get(&tx, id)?.state != state;
+                if changed || form.approval_points.is_some() {
+                    crate::db::reputation::review(
+                        &tx,
+                        id,
+                        state,
+                        enabled,
+                        true,
+                        form.approval_points,
+                    )?;
+                }
+            }
+            if let Some(rating) = rating {
+                post_db::set_rating(&tx, id, rating)?;
+            }
+            if let Some(nsfw) = form.nsfw.as_deref() {
+                let value = match nsfw {
+                    "yes" => Some(true),
+                    "no" => Some(false),
+                    _ => None,
+                };
+                post_db::set_nsfw_override(&tx, id, value)?;
+            }
+            if let Some(tags) = form.tags.as_deref() {
+                let tags: Vec<String> = tags
+                    .split([',', ' ', '\n'])
+                    .map(|t| t.trim().trim_start_matches('#').to_string())
+                    .filter(|t| !t.is_empty())
+                    .collect();
+                tag_db::replace_manual_in(&tx, id, &tags)?;
+            }
+            if let Some(notes) = form.notes.as_deref() {
+                let notes = (!notes.trim().is_empty()).then_some(notes.trim());
+                post_db::set_notes(&tx, id, notes)?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+        .await?;
     Ok(flash_redirect(&format!("/posts/{id}"), "saved"))
 }
 
@@ -1224,8 +1245,13 @@ async fn queue_action(
         }
         "delivered" => {
             // confirm an unconfirmed send: mark it sent without touching the API
+            let message_ids = match form.message_id {
+                Some(id) if id > 0 => Some(id.to_string()),
+                Some(_) => return Err(Error::invalid("message ID must be positive").into()),
+                None => None,
+            };
             app.db
-                .call(move |conn| queue_db::resolve_unknown(conn, id, true, None))
+                .call(move |conn| queue_db::resolve_unknown(conn, id, true, message_ids.as_deref()))
                 .await?;
             "marked as delivered".to_string()
         }

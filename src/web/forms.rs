@@ -85,6 +85,8 @@ pub struct PostEdit {
     pub notes: Option<String>,
     #[serde(default)]
     pub state: Option<String>,
+    #[serde(default, deserialize_with = "empty_as_none")]
+    pub approval_points: Option<i64>,
     #[serde(default)]
     pub csrf: String,
 }
@@ -184,6 +186,8 @@ pub struct QueueAction {
     pub action: String,
     #[serde(default, deserialize_with = "empty_as_none")]
     pub channel: Option<i64>,
+    #[serde(default, deserialize_with = "empty_as_none")]
+    pub message_id: Option<i32>,
     #[serde(default)]
     pub csrf: String,
 }
