@@ -108,9 +108,10 @@ token (`[web] token`) exchanged for an HttpOnly cookie; forms carry a CSRF token
 Binding to a non-loopback address is possible but logs a warning.
 
 Pages: dashboard (queue depth, next slot per channel, unconfirmed sends, recent sends,
-recent jobs) · posts grid with filters + bulk approve/reject/NSFW/queue/delete (sent posts
-hidden by default, state-coloured badges, a guest submitter is named) ·
-post detail with caption previews per channel · channel list + create · channel editor
+recent jobs) · posts grid with filters + bulk approve/reject/NSFW/queue/delete (sent and
+rejected posts are hidden by default; `?sent=all` and `?state=all` bring them back;
+state-coloured badges, a guest submitter is named) · post detail with caption previews per
+channel and the total size of the media · channel list + create · channel editor
 with live next-slot preview · ordered queue with pin/skip/requeue/remove ·
 next-slots preview · import box with job progress · **jobs** (every action, live) ·
 **users** (roles, quotas, ban/promote).

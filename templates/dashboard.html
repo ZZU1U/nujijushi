@@ -136,11 +136,13 @@
         <td><span class="badge">{{ j.kind_label }}</span></td>
         <td><span class="badge {{ 'green' if j.state == 'done' else ('red' if j.state == 'failed' else '') }}" data-role="state">{{ j.state }}</span></td>
         <td class="progress-cell">
+          {% if j.track %}
           <div class="progress" role="progressbar" aria-valuemin="0"
                aria-valuemax="{{ j.total }}" aria-valuenow="{{ j.progress }}">
             <span style="width: {{ j.percent }}%"></span>
           </div>
           <span class="hint" data-role="counts">{{ j.progress }}/{{ j.total }}</span>
+          {% else %}<span class="hint">—</span>{% endif %}
         </td>
         <td class="hint" data-role="message">{{ j.message }}</td>
       </tr>

@@ -47,6 +47,10 @@ pub struct PostFilter {
     pub author_id: Option<i64>,
     pub search: Option<String>,
     pub sent: SentFilter,
+    /// Hide `rejected` posts — the web grid's default, because a rejected post
+    /// is one the curator already said no to. A post with an explicit state
+    /// filter ignores this, so `?state=rejected` still lists them.
+    pub without_rejected: bool,
     pub limit: i64,
     pub offset: i64,
 }
@@ -393,6 +397,9 @@ fn filter_sql(filter: &PostFilter) -> (String, Vec<Value>) {
         )),
     }
 
+    if filter.without_rejected && filter.state.is_none() {
+        clauses.push("p.state != 'rejected'".into());
+    }
     if let Some(state) = filter.state {
         clauses.push("p.state = ?".into());
         values.push(Value::Text(state.as_str().into()));
@@ -613,6 +620,34 @@ mod tests {
         let (sql, values) = filter_sql(&tagged);
         assert!(sql.contains("FROM post_tags"), "{sql}");
         assert_eq!(values.len(), 1);
+    }
+
+    /// The grid's "not rejected" default is one SQL clause, and an explicit state
+    /// filter wins over it, so `?state=rejected` can never contradict itself.
+    #[test]
+    fn a_rejected_post_is_hidden_only_when_no_state_was_asked_for() {
+        let hidden = PostFilter {
+            without_rejected: true,
+            ..Default::default()
+        };
+        let (sql, values) = filter_sql(&hidden);
+        assert_eq!(sql, " WHERE p.state != 'rejected'", "{sql}");
+        assert!(values.is_empty(), "it needs no parameter: {values:?}");
+
+        for state in [PostState::Rejected, PostState::New] {
+            let explicit = PostFilter {
+                without_rejected: true,
+                state: Some(state),
+                ..Default::default()
+            };
+            let (sql, values) = filter_sql(&explicit);
+            assert_eq!(sql, " WHERE p.state = ?", "{sql}");
+            assert_eq!(values.len(), 1, "{values:?}");
+        }
+
+        // `?state=all` and the CLI drop the flag entirely
+        let (sql, _) = filter_sql(&PostFilter::default());
+        assert_eq!(sql, "", "{sql}");
     }
 
     #[test]

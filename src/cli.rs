@@ -1413,8 +1413,9 @@ async fn cmd_ls(
             None => None,
         },
         search,
-        // the CLI lists everything: scripted checks want the sent ones too
+        // the CLI lists everything: scripted checks want rejected and sent posts
         sent: crate::db::posts::SentFilter::Any,
+        without_rejected: false,
         limit,
         offset: 0,
         author_id: None,
@@ -1518,7 +1519,12 @@ async fn cmd_show(state: &AppState, id: i64, channel: Option<String>, raw: bool)
                 .join(" ")
         );
     }
-    println!("media     {} item(s)", post.media.len());
+    let total_bytes: u64 = post.media.iter().map(|m| m.bytes.max(0) as u64).sum();
+    println!(
+        "media     {} item(s) · {}",
+        post.media.len(),
+        crate::model::format_bytes(total_bytes)
+    );
     for media in &post.media {
         println!(
             "  #{} {}{} {}x{} {:.1} KiB  {}{}",

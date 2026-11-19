@@ -13,7 +13,7 @@ use nujijushi::config::Config;
 use nujijushi::db::jobs as job_db;
 use nujijushi::db::posts::NewMedia;
 use nujijushi::jobs::JobReport;
-use nujijushi::model::{Channel, NsfwPolicy, QueueState, Rating};
+use nujijushi::model::{Channel, NsfwPolicy, PostState, QueueState, Rating};
 use nujijushi::source::{NormalizedPost, PostAuthor};
 use nujijushi::state::AppState;
 use nujijushi::tg::Transport;
@@ -213,6 +213,15 @@ async fn body_text(response: axum::response::Response) -> String {
         .await
         .unwrap();
     String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+/// One job row of a rendered page, so a test can assert about *that* job.
+fn job_row(html: &str, id: i64) -> &str {
+    let start = html
+        .find(&format!("data-job=\"{id}\""))
+        .unwrap_or_else(|| panic!("no row for job {id}: {html}"));
+    let end = start + html[start..].find("</tr>").expect("row is closed");
+    &html[start..end]
 }
 
 #[tokio::test]
@@ -470,7 +479,8 @@ async fn status_is_not_readable_without_the_session_cookie() {
 #[tokio::test]
 async fn the_jobs_page_lists_progress_and_a_retry_button() {
     let h = harness();
-    // one job as the worker left it (a failed import) and one publish in flight
+    // one job as the worker left it (a failed single-target import) and one
+    // publish in flight — neither has anything to track
     let failed = h
         .state
         .db
@@ -486,15 +496,44 @@ async fn the_jobs_page_lists_progress_and_a_retry_button() {
         .await
         .unwrap()
         .expect("queued");
+    // a folder import really does walk many posts, so it *does* get a bar
+    let folder = h
+        .state
+        .db
+        .call(|conn| {
+            let id = job_db::create(
+                conn,
+                nujijushi::jobs::KIND_IMPORT,
+                "https://x.test/folder",
+                0,
+            )?;
+            job_db::progress(conn, id, 3, 8)?;
+            job_db::set_state(conn, id, "running", None)?;
+            Ok(id)
+        })
+        .await
+        .unwrap();
 
     let response = h.send(h.get("/jobs")).await;
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_text(response).await;
 
-    assert!(html.contains(&format!("data-job=\"{failed}\"")), "{html}");
-    assert!(html.contains(&format!("data-job=\"{running}\"")), "{html}");
     assert!(html.contains("publish next"), "kind label: {html}");
-    assert!(html.contains("class=\"progress\""), "progress bar: {html}");
+    let tracked = job_row(&html, folder);
+    assert!(
+        tracked.contains("class=\"progress\""),
+        "a multi-post import gets a bar: {tracked}"
+    );
+    assert!(tracked.contains("3/8"), "with its counts: {tracked}");
+    // `1/1` on a one-target job said nothing, so those rows show a dash instead
+    for (id, what) in [(failed, "a failed import"), (running, "a queued publish")] {
+        let row = job_row(&html, id);
+        assert!(
+            !row.contains("class=\"progress\""),
+            "{what} has nothing to track: {row}"
+        );
+        assert!(row.contains("—"), "{what} row: {row}");
+    }
     assert!(
         html.contains("action=\"/jobs/retry\""),
         "retry form: {html}"
@@ -584,6 +623,23 @@ async fn the_dashboard_and_import_pages_expose_the_live_hooks() {
         .await
         .unwrap()
         .expect("queued");
+    // live progress only exists for a job that walks many posts, so the import
+    // page needs one of those to have a bar to repaint
+    h.state
+        .db
+        .call(|conn| {
+            let id = job_db::create(
+                conn,
+                nujijushi::jobs::KIND_IMPORT,
+                "https://x.test/folder",
+                0,
+            )?;
+            job_db::progress(conn, id, 1, 4)?;
+            job_db::set_state(conn, id, "running", None)?;
+            Ok(id)
+        })
+        .await
+        .unwrap();
 
     let dashboard = body_text(h.send(h.get("/")).await).await;
     assert!(
@@ -668,6 +724,88 @@ async fn the_grid_hides_sent_posts_until_asked() {
     let only = body_text(h.send(h.get("/posts?sent=yes")).await).await;
     assert!(only.contains(&card(sent_post)));
     assert!(!only.contains(&card(waiting)), "sent-only means sent only");
+}
+
+/// A rejected post is the curator's "no", so the grid hides it — but an explicit
+/// state filter can always ask for it back, and the count agrees with the cards.
+#[tokio::test]
+async fn the_grid_hides_rejected_posts_until_asked() {
+    let h = harness();
+    let kept = h.post_only("1").await;
+    let rejected = h.post_only("2").await;
+    h.state
+        .db
+        .call(move |conn| nujijushi::db::posts::set_state(conn, rejected, PostState::Rejected))
+        .await
+        .unwrap();
+    let card = |id: i64| format!("href=\"/posts/{id}\"");
+    let counted = |n: usize| format!("{n} post(s)");
+
+    let html = body_text(h.send(h.get("/posts")).await).await;
+    assert!(html.contains(&card(kept)), "{html}");
+    assert!(
+        !html.contains(&card(rejected)),
+        "a rejected post is hidden: {html}"
+    );
+    assert!(html.contains(&counted(1)), "the count agrees: {html}");
+    assert!(
+        html.contains("not rejected"),
+        "the filter says what it does: {html}"
+    );
+
+    let all = body_text(h.send(h.get("/posts?state=all")).await).await;
+    assert!(all.contains(&card(rejected)) && all.contains(&card(kept)));
+    assert!(all.contains(&counted(2)), "{all}");
+
+    let only = body_text(h.send(h.get("/posts?state=rejected")).await).await;
+    assert!(only.contains(&card(rejected)), "{only}");
+    assert!(
+        !only.contains(&card(kept)),
+        "rejected-only means rejected only: {only}"
+    );
+    assert!(only.contains(&counted(1)), "{only}");
+    assert!(
+        only.contains("<option value=\"rejected\" selected"),
+        "the select keeps the choice: {only}"
+    );
+}
+
+/// The post page says how much is stored for the post, not just how many files.
+#[tokio::test]
+async fn the_post_page_totals_the_media_size() {
+    let h = harness();
+    let sizes = [400_000i64, 350_000, 500_000, 250_000];
+    let media: Vec<NewMedia> = sizes
+        .iter()
+        .enumerate()
+        .map(|(i, bytes)| NewMedia {
+            blob_hash: format!("big-{i}-").repeat(8),
+            ext: "png".into(),
+            mime: None,
+            width: Some(100),
+            height: Some(100),
+            bytes: *bytes,
+            is_video: false,
+            poster_hash: None,
+            sensitive: false,
+            meta_json: None,
+        })
+        .collect();
+    let post = NormalizedPost::new("pixiv", "sized");
+    let post_id = h
+        .state
+        .db
+        .call(move |conn| nujijushi::db::posts::upsert(conn, &post, &media))
+        .await
+        .unwrap()
+        .0;
+
+    let total = nujijushi::model::format_bytes(sizes.iter().sum::<i64>() as u64);
+    let html = body_text(h.send(h.get(&format!("/posts/{post_id}"))).await).await;
+    assert!(
+        html.contains(&format!("{} item(s) · {total}", sizes.len())),
+        "the heading totals the media: {html}"
+    );
 }
 
 /// A post that a non-admin submitted says so, with their handle; an admin's own

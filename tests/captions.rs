@@ -133,7 +133,8 @@ fn very_long_description_is_clipped_to_the_limit() {
 
 #[test]
 fn a_handle_only_author_reads_as_the_handle() {
-    // the shape a fresh twitter import produces: handle, no display name
+    // a stored row that only has a handle (an older import, or one whose user
+    // object carried no display name): the handle is the only name there is
     let channel = Channel::new("x", "@x");
     let mut post = post();
     if let Some(author) = post.author.as_mut() {

@@ -160,6 +160,27 @@ pub fn display_author(name: Option<&str>, handle: Option<&str>) -> String {
         .unwrap_or_else(|| "unknown artist".to_string())
 }
 
+/// Human file size for the UI and the CLI: `0 B`, `820 KiB`, `12.4 MiB`,
+/// `1.2 GiB`.
+///
+/// One helper, so the post page and `nujijushi show` cannot disagree on units.
+pub fn format_bytes(bytes: u64) -> String {
+    const STEP: f64 = 1024.0;
+    let size = bytes as f64;
+    if size < STEP {
+        return format!("{bytes} B");
+    }
+    let kib = size / STEP;
+    if kib < STEP {
+        return format!("{kib:.0} KiB");
+    }
+    let mib = kib / STEP;
+    if mib < STEP {
+        return format!("{mib:.1} MiB");
+    }
+    format!("{:.1} GiB", mib / STEP)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Author {
     pub id: i64,
@@ -555,5 +576,20 @@ mod slug_tests {
         assert_eq!(slugify("   "), "channel");
         assert_eq!(slugify("a  --  b"), "a-b");
         assert_eq!(slugify(&"x".repeat(60)).len(), 32);
+    }
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::format_bytes;
+
+    #[test]
+    fn sizes_read_in_the_largest_unit_that_fits() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(2048), "2 KiB");
+        assert_eq!(format_bytes(1024 * 820), "820 KiB");
+        assert_eq!(format_bytes(1024 * 1024 * 12 + 1024 * 400), "12.4 MiB");
+        assert_eq!(format_bytes(1024 * 1024 * 1024 * 3 / 2), "1.5 GiB");
     }
 }

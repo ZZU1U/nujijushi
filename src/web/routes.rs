@@ -498,6 +498,9 @@ async fn posts_page(
             Some("all") => post_db::SentFilter::Any,
             _ => post_db::SentFilter::NotSent,
         },
+        // rejected posts are the curator's "no": the grid hides them unless the
+        // state filter asks for something (`?state=all`, `?state=rejected`)
+        without_rejected: matches!(query.state.as_deref(), None | Some("")),
         author_id: None,
         search: query.search.clone().filter(|s| !s.is_empty()),
         limit: per_page,
@@ -732,7 +735,12 @@ async fn post_page(
             })
         })
         .collect();
-
+    let media_total = crate::model::format_bytes(
+        post.media
+            .iter()
+            .map(|m| m.bytes.max(0) as u64)
+            .sum::<u64>(),
+    );
     let html = ws.pages.render(
         "post_detail.html",
         &json!({
@@ -761,6 +769,7 @@ async fn post_page(
                 "label": label,
                 "admin": admin,
             })),
+            "media_total": media_total,
             "media": media,
             "captions": captions,
             "ratings": Rating::all().iter().map(|r| r.as_str()).collect::<Vec<_>>(),
@@ -1333,6 +1342,9 @@ pub fn job_view(job: &job_db::Job, now: chrono::DateTime<chrono::Utc>) -> Value 
         "progress": job.progress,
         "total": job.total,
         "percent": percent,
+        // a bar only means something when one job really processes many posts
+        // (an artist page or a folder): `1/1` for a single-target job was noise
+        "track": job.total > 1,
         "message": job.message,
         "post_id": job.post_id,
         "active": job.is_active(),

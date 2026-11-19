@@ -4,6 +4,7 @@
 <div class="detail">
   <section class="panel">
     <h2>#{{ post.id }} <span class="hint">{{ post.source }} / {{ post.source_id }}</span></h2>
+    <p class="hint">{{ media | length }} item(s) · {{ media_total }}</p>
     <div class="media-grid">
       {% for m in media %}
       <figure>

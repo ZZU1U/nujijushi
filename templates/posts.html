@@ -4,7 +4,8 @@
 <form class="filters panel" method="get" action="/posts">
   <input name="search" placeholder="search title / description / id" value="{{ filters.search }}">
   <select name="state">
-    <option value="">any state</option>
+    <option value="" {{ 'selected' if not filters.state else '' }}>not rejected</option>
+    <option value="all" {{ 'selected' if filters.state == 'all' else '' }}>any state</option>
     {% for s in states %}<option value="{{ s }}" {{ 'selected' if filters.state == s else '' }}>{{ s }}</option>{% endfor %}
   </select>
   <select name="source">

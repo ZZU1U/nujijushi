@@ -22,18 +22,38 @@ pub struct ImportOutcome {
 }
 
 impl ImportOutcome {
+    /// One short line for a job row, a bot reply or the CLI.
+    ///
+    /// A job usually holds one target, so "1 post(s): 1 new, 0 updated, 3
+    /// file(s)" was mostly zeros. What changed is what matters:
+    /// `new post · 3 files`, `12 posts (10 new, 2 updated) · 34 files`.
     pub fn summary(&self) -> String {
-        let mut out = format!(
-            "{} post(s): {} new, {} updated, {} file(s)",
-            self.post_ids.len(),
-            self.created,
-            self.updated,
-            self.files
-        );
+        let posts = self.post_ids.len();
+        let mut out = if posts == 1 {
+            if self.created == 1 {
+                "new post".to_string()
+            } else {
+                "updated post".to_string()
+            }
+        } else {
+            format!(
+                "{posts} posts ({} new, {} updated)",
+                self.created, self.updated
+            )
+        };
+        out.push_str(&format!(" · {}", plural(self.files, "file")));
         if !self.skipped.is_empty() {
-            out.push_str(&format!(", {} skipped", self.skipped.len()));
+            out.push_str(&format!(" · {} skipped", self.skipped.len()));
         }
         out
+    }
+}
+
+fn plural(count: usize, noun: &str) -> String {
+    if count == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{count} {noun}s")
     }
 }
 
@@ -506,5 +526,41 @@ pub async fn import_and_record(state: &AppState, target: &str) -> Result<ImportO
     match run_job(state, &job).await? {
         JobReport::Import(outcome) => Ok(outcome),
         JobReport::Done { .. } => Err(Error::other("expected an import job")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn outcome(created: usize, updated: usize, files: usize, skipped: usize) -> ImportOutcome {
+        ImportOutcome {
+            post_ids: (0..created + updated).map(|i| i as i64).collect(),
+            created,
+            updated,
+            files,
+            skipped: (0..skipped)
+                .map(|i| (format!("post-{i}"), "nope".to_string()))
+                .collect(),
+        }
+    }
+
+    /// A job row is one target, so the summary must not recite the zeros.
+    #[test]
+    fn summaries_say_what_changed_not_what_did_not() {
+        assert_eq!(outcome(1, 0, 3, 0).summary(), "new post · 3 files");
+        assert_eq!(outcome(0, 1, 1, 0).summary(), "updated post · 1 file");
+        assert_eq!(
+            outcome(10, 2, 34, 0).summary(),
+            "12 posts (10 new, 2 updated) · 34 files"
+        );
+        assert_eq!(
+            outcome(1, 0, 3, 2).summary(),
+            "new post · 3 files · 2 skipped"
+        );
+        assert_eq!(
+            outcome(4, 0, 4, 0).summary(),
+            "4 posts (4 new, 0 updated) · 4 files"
+        );
     }
 }

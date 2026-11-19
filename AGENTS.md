@@ -10,7 +10,7 @@ how to work here without breaking things.
 folders, Telegram posts) into a content-addressed archive with SQLite metadata, curates
 it, mirrors it to external storage, and publishes it to Telegram channels on a schedule.
 Three interfaces sit on top of the same services: **CLI**, **axum admin UI**, and a
-**Telegram bot** (long polling or webhook). 306 tests, no network needed to run them.
+**Telegram bot** (long polling or webhook). 314 tests, no network needed to run them.
 
 ## Build, test, lint
 
@@ -94,7 +94,7 @@ the MSRV or add a feature that needs nightly.
 | bot command | `src/bot/commands.rs` `MENU` + parse test, `src/bot/handlers.rs`, permission via `Perm` in `src/bot/access.rs`, help text |
 | storage sink | implement `storage::Sink`, add its config section, wire it in `storage::sinks`, test it against a real local server if it speaks HTTP |
 | caption feature | `src/render/caption.rs` context/filters + an `insta` snapshot in `tests/captions.rs` |
-| source/importer | `src/source/`, return `NormalizedPost`, route it in `source::fetch_target`, test the metadata mapping with a JSON fixture |
+| source/importer | `src/source/`, return `NormalizedPost`, route it in `source::fetch_target`, test the metadata mapping with a JSON fixture (author fields are source-specific — the twitter/pixiv disagreement is spelled out in `codebase.md`, flow 1) |
 
 ## Testing conventions
 
