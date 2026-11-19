@@ -15,6 +15,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0008_queue_alerts.sql"),
     include_str!("../../migrations/0009_watched_sources.sql"),
     include_str!("../../migrations/0010_duplicate_artwork.sql"),
+    include_str!("../../migrations/0011_watch_enabled.sql"),
 ];
 
 pub fn schema_version(conn: &Connection) -> Result<i64> {
@@ -126,5 +127,27 @@ mod tests {
         assert_eq!(tags[1].name, "imported");
         assert!(tags[1].source && !tags[1].manual);
         assert!(crate::db::tags::removals(&conn, 1).unwrap().is_empty());
+    }
+
+    #[test]
+    fn upgrading_from_v10_keeps_existing_watches_enabled() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..10] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 10).unwrap();
+        conn.execute(
+            "INSERT INTO watched_sources (name, url, initial_batch, checkpoint)
+             VALUES ('Artist', 'https://x.com/artist/media', 3, '2025-01-02T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let watch = super::super::watches::get(&conn, 1).unwrap();
+        assert!(watch.enabled);
+        assert_eq!(watch.initial_batch, 3);
+        assert!(watch.checkpoint.is_some());
     }
 }

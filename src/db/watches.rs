@@ -14,6 +14,7 @@ pub struct Watch {
     pub name: String,
     pub url: String,
     pub initial_batch: u16,
+    pub enabled: bool,
     pub checkpoint: Option<DateTime<Utc>>,
     pub last_job_id: Option<i64>,
 }
@@ -24,6 +25,7 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<Watch> {
         name: row.get("name")?,
         url: row.get("url")?,
         initial_batch: row.get("initial_batch")?,
+        enabled: row.get("enabled")?,
         checkpoint: get_ts(row, "checkpoint")?,
         last_job_id: row.get("last_job_id")?,
     })
@@ -64,9 +66,22 @@ pub fn remove(conn: &Connection, id: i64, kind: &str) -> Result<bool> {
     )? != 0)
 }
 
+pub fn set_enabled(conn: &Connection, id: i64, enabled: bool) -> Result<()> {
+    let changed = conn.execute(
+        "UPDATE watched_sources SET enabled = ?2 WHERE id = ?1",
+        params![id, enabled],
+    )?;
+    if changed == 0 {
+        return Err(Error::NotFound(format!("watch {id}")));
+    }
+    Ok(())
+}
+
 pub fn enqueue(conn: &mut Connection, watch_id: i64, kind: &str) -> Result<(i64, bool)> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    get(&tx, watch_id)?;
+    if !get(&tx, watch_id)?.enabled {
+        return Err(Error::invalid("Watch is paused"));
+    }
     let payload = watch_id.to_string();
     if let Some(id) = jobs::find_active(&tx, kind, &payload)? {
         return Ok((id, false));

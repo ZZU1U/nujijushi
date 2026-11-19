@@ -36,6 +36,13 @@
 <form method="post" action="/posts" id="bulk">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <div class="bulkbar panel">
+    {% if cards %}
+    <div class="bulk-selection" data-post-selection hidden>
+      <button type="button" class="small ghost" data-select-posts>Select all on page</button>
+      <button type="button" class="small ghost" data-clear-posts>Clear</button>
+      <span class="hint" data-post-selection-count aria-live="polite" aria-atomic="true"></span>
+    </div>
+    {% endif %}
     <span class="hint">select posts, then:</span>
     <button name="action" value="approve" class="small">approve</button>
     <button name="action" value="reject" class="small ghost">reject</button>
@@ -53,16 +60,17 @@
   {% if cards %}
   <div class="grid">
     {% for c in cards %}
-    <label class="card post{{ ' pushed' if c.pushed else '' }}">
-      <input type="checkbox" name="sel_{{ c.id }}" class="pick">
-      <a class="thumb" href="/posts/{{ c.id }}">
+    <article class="card post{{ ' pushed' if c.pushed else '' }}">
+      <input type="checkbox" name="sel_{{ c.id }}" id="post-pick-{{ c.id }}" class="pick" aria-label="Select post #{{ c.id }}" data-post-pick>
+      <label class="post-pick-area" for="post-pick-{{ c.id }}" aria-hidden="true"></label>
+      <div class="thumb">
         {% if c.thumb %}<img loading="lazy" src="/thumb/{{ c.thumb }}" alt="">{% else %}<span class="noimg">no media</span>{% endif %}
         {% if c.media_count > 1 %}<span class="count">{{ c.media_count }}</span>{% endif %}
         {% if c.nsfw %}<span class="badge red corner">nsfw</span>{% endif %}
-      </a>
+      </div>
       <div class="meta">
         <div class="row">
-          <a href="/posts/{{ c.id }}">#{{ c.id }}</a>
+          <a class="post-link" href="/posts/{{ c.id }}" aria-label="Open post #{{ c.id }}">#{{ c.id }}</a>
           <span class="badge state-{{ c.state }}">{{ c.state }}</span>
           {% if c.delivered %}<span class="badge green" title="sent to {{ c.channels }}">sent · {{ c.channels }}</span>
           {% elif c.pushed %}<span class="badge" title="queued for {{ c.channels }}">queued · {{ c.channels }}</span>{% endif %}
@@ -73,7 +81,7 @@
         <div class="snippet">{{ c.snippet }}</div>
         <div class="hint">{{ c.source }} · {{ c.imported }}</div>
       </div>
-    </label>
+    </article>
     {% endfor %}
   </div>
   {% else %}

@@ -563,7 +563,7 @@ async fn the_jobs_page_lists_progress_and_a_retry_button() {
             let id = job_db::create(
                 conn,
                 nujijushi::jobs::KIND_IMPORT,
-                "https://x.test/folder",
+                &format!("https://x.test/{}", "folder".repeat(300)),
                 0,
             )?;
             job_db::progress(conn, id, 3, 8)?;
@@ -572,13 +572,23 @@ async fn the_jobs_page_lists_progress_and_a_retry_button() {
         })
         .await
         .unwrap();
+    let watch = h
+        .state
+        .db
+        .call(|conn| job_db::create(conn, nujijushi::jobs::KIND_WATCH_CHECK, "1", 0))
+        .await
+        .unwrap();
 
     let response = h.send(h.get("/jobs")).await;
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_text(response).await;
 
     assert!(html.contains("publish next"), "kind label: {html}");
+    assert!(job_row(&html, watch).contains(">watch check</span>"));
+    assert!(html.contains("class=\"job-table-scroll\""));
     let tracked = job_row(&html, folder);
+    assert!(tracked.contains("class=\"hint job-target\""));
+    assert!(tracked.contains(&"folder".repeat(300)));
     assert!(
         tracked.contains("class=\"progress\""),
         "a multi-post import gets a bar: {tracked}"
@@ -1075,6 +1085,22 @@ fi
     let html = body_text(h.send(h.get("/watches")).await).await;
     assert!(html.contains("1 added · 0 skipped (already archived) · 1 failed · 1 pending"));
 
+    let toggle_url = format!("/watches/{watch_id}/toggle");
+    assert_eq!(
+        h.send(h.post(&toggle_url, "csrf=bad&action=pause"))
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let pause = h
+        .send(h.post(&toggle_url, &format!("{form}&action=pause")))
+        .await;
+    assert_eq!(Harness::flash(&pause), "Watch paused");
+    assert_eq!(h.send(check(&h)).await.status(), StatusCode::BAD_REQUEST);
+    let paused_page = body_text(h.send(h.get("/watches")).await).await;
+    assert!(paused_page.contains("data-watch-paused disabled"));
+    assert!(paused_page.contains(">Resume</button>"));
+
     std::fs::remove_file(base.join("fail-2")).unwrap();
     let already_archived = h.post_only("6").await;
     h.state
@@ -1087,6 +1113,20 @@ fi
     )
     .unwrap();
     let reopened = AppState::open((*h.state.cfg).clone(), h.state.transport.clone()).unwrap();
+    reopened
+        .db
+        .with(|conn| {
+            let watch = watches::get(conn, watch_id)?;
+            assert!(!watch.enabled);
+            assert!(watch.checkpoint.is_some());
+            assert_eq!(watches::pending_count(conn, watch_id)?, 1);
+            Ok(())
+        })
+        .unwrap();
+    let resume = h
+        .send(h.post(&toggle_url, &format!("{form}&action=resume")))
+        .await;
+    assert_eq!(Harness::flash(&resume), "Watch resumed");
     let worker = JobWorker::new(reopened);
     assert_eq!(h.send(check(&h)).await.status(), StatusCode::SEE_OTHER);
     assert_eq!(worker.drain().await.unwrap(), 1);

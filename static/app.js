@@ -94,6 +94,32 @@
     window.addEventListener('pageshow', settle);
   }
 
+  function bulkPostSelection() {
+    const form = document.querySelector('#bulk');
+    const controls = form && form.querySelector('[data-post-selection]');
+    if (!controls) return;
+    const picks = all('[data-post-pick]', form);
+    const selectAll = controls.querySelector('[data-select-posts]');
+    const clear = controls.querySelector('[data-clear-posts]');
+    const count = controls.querySelector('[data-post-selection-count]');
+    const update = () => {
+      const selected = picks.filter((pick) => pick.checked).length;
+      setText(count, selected + ' selected');
+      selectAll.disabled = selected === picks.length;
+      clear.disabled = selected === 0;
+    };
+    const select = (checked) => {
+      picks.forEach((pick) => { pick.checked = checked; });
+      update();
+    };
+    selectAll.addEventListener('click', () => select(true));
+    clear.addEventListener('click', () => select(false));
+    form.addEventListener('change', update);
+    window.addEventListener('pageshow', update);
+    update();
+    controls.hidden = false;
+  }
+
   /* ---------------------------------------------------------------- keyboard
    * `/` jumps to search, the way every archive tool does it.
    */
@@ -180,7 +206,7 @@
     setText(row.querySelector('[data-role="message"]'), job.message);
     setText(row.querySelector('[data-role="age"]'), job.age);
     row.querySelectorAll('[data-watch-action]').forEach((button) => {
-      button.disabled = isLive(job.state);
+      button.disabled = isLive(job.state) || button.hasAttribute('data-watch-paused');
     });
 
     // a state change flashes the row once, so a poll result is visible in place
@@ -314,6 +340,7 @@
 
   guardDoubleSubmit();
   filterBusyState();
+  bulkPostSelection();
   slashToSearch();
   liveStatus();
 })();

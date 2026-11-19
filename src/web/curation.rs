@@ -43,6 +43,7 @@ pub async fn watches_page(
                         "name": watch.name,
                         "url": watch.url,
                         "initial_batch": watch.initial_batch,
+                        "enabled": watch.enabled,
                         "job": job.as_ref().map(|job| job_view(job, now)),
                     }))
                 })
@@ -118,6 +119,41 @@ pub async fn check_watch(
             "Check queued"
         } else {
             "A check is already active"
+        },
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct WatchToggle {
+    #[serde(default)]
+    csrf: String,
+    action: WatchAction,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum WatchAction {
+    Pause,
+    Resume,
+}
+
+pub async fn toggle_watch(
+    State(ws): State<Arc<WebState>>,
+    Path(id): Path<i64>,
+    Form(form): Form<WatchToggle>,
+) -> WebResult<Response> {
+    check_csrf(&ws, &form.csrf)?;
+    let enabled = matches!(form.action, WatchAction::Resume);
+    ws.app
+        .db
+        .call(move |conn| watches::set_enabled(conn, id, enabled))
+        .await?;
+    Ok(flash_redirect(
+        "/watches",
+        if enabled {
+            "Watch resumed"
+        } else {
+            "Watch paused"
         },
     ))
 }

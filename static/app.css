@@ -73,6 +73,10 @@ th { text-align: left; color: var(--muted); font-weight: 500; font-size: .78rem;
 td { padding: .5rem; border-bottom: 1px solid #1c2229; vertical-align: top; }
 tr:last-child td { border-bottom: 0; }
 table.compact td { padding: .3rem .5rem; font-size: .9rem; }
+.job-table-scroll { overflow-x: auto; }
+.job-table { min-width: 40rem; }
+.job-table .badge { white-space: nowrap; }
+.job-table .job-target, .job-table .job-result { overflow-wrap: anywhere; width: 32%; }
 td.mini img { width: 46px; height: 46px; object-fit: cover; border-radius: 6px; }
 .row-unknown { background: #1a1113; }
 .actions { white-space: nowrap; }
@@ -101,6 +105,7 @@ button, .button {
   text-decoration: none; display: inline-block;
 }
 button:hover, .button:hover { filter: brightness(1.08); text-decoration: none; }
+button:disabled { opacity: .5; cursor: not-allowed; }
 button.small, .button.small { padding: .25rem .6rem; font-size: .82rem; font-weight: 500; }
 button.ghost, .button.ghost { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
 button.danger { background: #7f1d1d; color: #fee2e2; }
@@ -127,6 +132,7 @@ label.check input { width: auto; }
 .filters input, .filters select { width: auto; min-width: 130px; }
 .bulkbar { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; position: sticky; top: 56px; z-index: 5; }
 .bulkbar select { width: auto; }
+.bulk-selection:not([hidden]) { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
 
 /* every card in a row (and every row) is the same height: the thumbnail box and
    the two-line snippet are fixed, the meta block takes up the rest */
@@ -143,7 +149,10 @@ label.check input { width: auto; }
 .card.post.pushed .thumb img { filter: grayscale(1); }
 .card.post.pushed:hover { opacity: 1; }
 .card.post.pushed:hover .thumb img { filter: grayscale(.5); }
-.card.post .pick { position: absolute; top: .5rem; left: .5rem; width: 18px; height: 18px; z-index: 2; accent-color: var(--accent); }
+.card.post:has(.pick:checked) { opacity: 1; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.card.post .pick { position: absolute; top: .5rem; left: .5rem; width: 20px; height: 20px; z-index: 2; accent-color: var(--accent); cursor: pointer; }
+.post-pick-area { position: absolute; inset: 0; z-index: 1; margin: 0; cursor: pointer; }
+.post-link { position: relative; z-index: 2; }
 .thumb { display: block; aspect-ratio: 4 / 3; background: #0f1318; position: relative; overflow: hidden; }
 /* `contain`, not `cover`: a thumbnail that cuts the artwork in half is useless
    for deciding what to publish. The box keeps the grid aligned instead. */

@@ -235,6 +235,10 @@ mod tests {
         );
         assert!(html.contains("queued · night-shift"), "{html}");
         assert!(html.contains("sent · main"));
+        assert!(html.contains("Select all on page"));
+        assert!(html.contains("for=\"post-pick-2\""));
+        assert!(html.contains("name=\"sel_2\" id=\"post-pick-2\""));
+        assert!(html.contains("aria-label=\"Open post #2\""));
     }
 
     /// A silent queue must be explainable: the banner only shows when the

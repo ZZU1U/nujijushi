@@ -120,6 +120,8 @@ with live next-slot preview · ordered queue with pin/skip/requeue/remove ·
 next-slots preview · import box with job progress · **jobs** (every action, live) ·
 **users** (roles, quotas, ban/promote).
 
+Click a post card to select it, or click its post number to open it. **Select all on page** selects the visible page of results for bulk actions.
+
 The post detail page shows whether a tag came from the source, a manual edit, or both. Removing a source tag keeps it hidden on that post after re-import. Undo restores it if the most recent import still supplied it. Edit manual tags in the separate **Save tags** form.
 
 `GET /metrics` answers in the Prometheus text format (posts by state and nsfw, channels by
@@ -141,7 +143,9 @@ The request queues a background job. Open **jobs** to see progress or retry a fa
 Use **Watched sources** to save a Pixiv artist page, an X or Bluesky artist media feed,
 or a newest-first Danbooru or Gelbooru tag search. **Check now** starts a background
 check. The first check uses the configured post limit for that watch. Later checks
-look for newly published artwork and retry pending downloads. Artist and search access
+look for newly published artwork and retry pending downloads. Use **Pause** to block
+new checks and **Resume** to keep checking from the same point. Already queued or
+running checks can finish. Artist and search access
 uses the same gallery-dl configuration and credentials as regular imports. Review new
 posts and queue the ones you want to publish.
 

@@ -65,6 +65,7 @@ pub fn router(ws: Arc<WebState>) -> Router {
             get(super::curation::watches_page).post(super::curation::create_watch),
         )
         .route("/watches/{id}/check", post(super::curation::check_watch))
+        .route("/watches/{id}/toggle", post(super::curation::toggle_watch))
         .route("/watches/{id}/remove", post(super::curation::remove_watch))
         .route("/duplicates", get(super::curation::duplicates_page))
         .route("/duplicates/dismiss", post(super::curation::dismiss))
@@ -1419,7 +1420,7 @@ fn kind_label(kind: &str) -> &str {
         crate::jobs::KIND_PUBLISH_CHANNEL => "publish next",
         crate::jobs::KIND_PUBLISH_ITEM => "publish item",
         crate::jobs::KIND_STORAGE_DRAIN => "storage upload",
-        crate::jobs::KIND_WATCH_CHECK => "watched source check",
+        crate::jobs::KIND_WATCH_CHECK => "watch check",
         other => other,
     }
 }
