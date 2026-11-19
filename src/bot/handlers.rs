@@ -937,11 +937,16 @@ impl<'a> Bot<'a> {
         }
         let mut body = String::from("<b>users</b>\n");
         for user in &users {
+            let config_admin = self.access.config().is_admin(user.tg_id);
+            // the effective role: a config admin keeps a `guest` row from their
+            // first message, and listing that row read like a broken config
+            let role = crate::bot::access::display_role(config_admin, &user.role);
             body.push_str(&format!(
-                "<code>{}</code> {} · {}\n",
+                "<code>{}</code> {} · {}{}\n",
                 user.tg_id,
-                user.role,
-                reply::esc(&user.label())
+                role,
+                reply::esc(&user.label()),
+                if config_admin { " (config admin)" } else { "" }
             ));
         }
         self.reply(message, &body).await

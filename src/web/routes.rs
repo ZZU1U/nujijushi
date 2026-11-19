@@ -1503,11 +1503,8 @@ async fn users_page(
             .await?;
         let config_admin = app.cfg.access.is_admin(user.tg_id);
         // config wins at runtime, so show the role the bot will actually use
-        let role = if config_admin {
-            "admin"
-        } else {
-            user.role.as_str()
-        };
+        // (the same helper the CLI and the bot's /users use)
+        let role = crate::bot::access::display_role(config_admin, &user.role);
         views.push(json!({
             "tg_id": user.tg_id,
             "label": user.label(),

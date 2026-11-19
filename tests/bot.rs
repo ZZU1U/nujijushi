@@ -924,3 +924,25 @@ async fn a_promoted_user_no_longer_triggers_the_admin_dm() {
         "a promoted user is an admin now: {texts:?}"
     );
 }
+
+/// `/users` shows the effective role. A config admin keeps a `guest` row from
+/// their first message, and listing that row read like a broken config.
+#[tokio::test]
+async fn the_user_listing_shows_a_config_admin_as_admin() {
+    let harness = harness(MockTransport::new(), OPEN_CONFIG);
+    harness
+        .state
+        .db
+        .call(|conn| nujijushi::db::users::set_role(conn, ADMIN, "guest"))
+        .await
+        .unwrap();
+
+    harness.send(private_message(ADMIN, 50, "/users")).await;
+    let text = harness.last_text();
+    assert!(text.contains("admin · @user1"), "got: {text}");
+    assert!(text.contains("(config admin)"), "got: {text}");
+    assert!(
+        !text.contains("guest · @user1"),
+        "the stored row must not contradict the config: {text}"
+    );
+}

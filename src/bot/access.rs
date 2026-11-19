@@ -185,6 +185,15 @@ impl Access {
     }
 }
 
+/// The role a listing must show: config admins are admins, whatever the `users`
+/// row says (messaging the bot auto-registers a row as `guest`).
+///
+/// The CLI, the bot's `/users` and the web page all read this one function, so a
+/// listing can never contradict what `resolve` will actually allow.
+pub fn display_role(config_admin: bool, stored: &str) -> &str {
+    if config_admin { "admin" } else { stored.trim() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,6 +320,18 @@ mod tests {
         });
         assert!(access.allows(Role::Admin, Perm::Publish));
         assert!(!access.allows(Role::Guest, Perm::Publish));
+    }
+
+    /// A config admin carries a `guest` row from their first message; every
+    /// listing must show the role the bot will actually use.
+    #[test]
+    fn listings_show_the_effective_role() {
+        assert_eq!(display_role(true, "guest"), "admin");
+        assert_eq!(display_role(true, "banned"), "admin");
+        assert_eq!(display_role(true, "admin"), "admin");
+        assert_eq!(display_role(false, "guest"), "guest");
+        assert_eq!(display_role(false, "banned"), "banned");
+        assert_eq!(display_role(false, " admin "), "admin");
     }
 
     #[tokio::test]

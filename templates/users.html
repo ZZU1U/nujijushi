@@ -15,7 +15,7 @@
     <tr>
       <td>{{ u.label }}{% if u.config_admin %} <span class="badge">config</span>{% endif %}</td>
       <td class="hint">{{ u.tg_id }}</td>
-      <td><span class="badge {{ 'red' if u.role == 'banned' else ('green' if u.role == 'admin' else '') }}">{{ u.role }}</span></td>
+      <td><span class="badge {{ 'red' if u.role == 'banned' else ('green' if u.role == 'admin' else '') }}">{{ u.role }}</span>{% if u.db_role != u.role %}<span class="hint"> db: {{ u.db_role }}</span>{% endif %}</td>
       <td>{{ u.archived }}</td>
       <td>{{ u.pushed }}</td>
       <td>{{ u.sent }}</td>

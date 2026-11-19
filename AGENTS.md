@@ -10,7 +10,7 @@ how to work here without breaking things.
 folders, Telegram posts) into a content-addressed archive with SQLite metadata, curates
 it, mirrors it to external storage, and publishes it to Telegram channels on a schedule.
 Three interfaces sit on top of the same services: **CLI**, **axum admin UI**, and a
-**Telegram bot** (long polling or webhook). 296 tests, no network needed to run them.
+**Telegram bot** (long polling or webhook). 298 tests, no network needed to run them.
 
 ## Build, test, lint
 
@@ -46,8 +46,11 @@ the MSRV or add a feature that needs nightly.
    post may go to a channel (hard-blocked tags → policy → spoiler). It runs at enqueue
    time *and* again at send time. Never publish on a different code path.
 4. **Access control order** (`src/bot/access.rs`): config admins → DB role → config
-   guests → `public` auto-register → refuse; `banned` always wins. Publishing from
-   Telegram is admin-only *and* opt-in (`[access] allow_publish`, default false).
+   guests → `public` auto-register → refuse. A config admin is always an admin (the stored
+   row may still say `guest`: messaging auto-registers one); for everyone else `banned`
+   beats guest and `public`. Listings print the effective role via
+   `bot::access::display_role`, never the raw row. Publishing from Telegram is admin-only
+   *and* opt-in (`[access] allow_publish`, default false).
 5. **SQL lives only in `src/db/`.** Other modules get typed functions. From async code use
    `Db::call` (spawn_blocking); in CLI paths and tests `Db::with` is fine.
 6. **Storage layout is a public contract**: `<root>/<source>/<artist>/<source_id>/NN.ext`

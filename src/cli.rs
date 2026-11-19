@@ -2460,22 +2460,27 @@ async fn cmd_users(state: &AppState, cmd: UsersCmd) -> Result<()> {
             }
             println!("{:<14} {:<8} {:<22} last seen", "tg id", "role", "user");
             for user in &users {
-                let configured = if state.cfg.access.is_admin(user.tg_id) {
-                    " (config admin)"
-                } else {
-                    ""
+                let config_admin = state.cfg.access.is_admin(user.tg_id);
+                // the role the bot will actually use, not the raw row: a config
+                // admin who messaged once has a `guest` row and used to be listed
+                // as a guest, which reads like a broken config
+                let role = crate::bot::access::display_role(config_admin, &user.role);
+                let note = match (config_admin, user.role.as_str()) {
+                    (true, "admin") => " (config admin)".to_string(),
+                    (true, other) => format!(" (config admin; db: {other})"),
+                    (false, _) => String::new(),
                 };
                 println!(
                     "{:<14} {:<8} {:<22} {}{}",
                     user.tg_id,
-                    user.role,
+                    role,
                     user.label().chars().take(22).collect::<String>(),
                     user.last_seen_at
                         .as_deref()
                         .and_then(crate::db::parse_ts)
                         .map(|ts| ts.format("%Y-%m-%d %H:%M").to_string())
                         .unwrap_or_else(|| "-".to_string()),
-                    configured
+                    note
                 );
             }
             Ok(())
