@@ -109,9 +109,12 @@ scheduler (15 s tick)
                            partial/ambiguous: state=unknown, never re-sent
 ```
 
-`publish_item(state, queue_id, dry_run)` is the same tail for one specific queue row — the
-web "publish" button; it ignores the schedule but not the policy.
-`publish_channel` is used by the scheduler, `push`, `/publish` and the web "publish next".
+`publish_item(state, queue_id, dry_run)` is the same tail for one specific queue row; it
+ignores the schedule but not the policy.
+`publish_channel` is used by the scheduler, `push`, `/publish` and the web actions.
+
+Inside the web UI nothing calls either directly: `POST /publish` writes a `publish_channel`
+or `publish_item` job row and redirects, and the worker runs it (see Flow 3).
 
 Caption rendering lives in `render/`: `build_context` prepares safe HTML values (author,
 description, hashtags, source link, nsfw/spoiler flags), `Renderer::render` applies the
@@ -123,11 +126,33 @@ cut through. Templates: `templates/captions/default.html.j2` plus per-channel in
 `web::serve` builds `WebState { app, pages, session, csrf, webhook_secret }` and serves the
 router on `[web] bind`. Requests pass through `auth::require_session`: the session cookie is
 `blake3("nujijushi-ui-v1" + "session" + token)`, so it needs no session table; `/login`,
-`/static/app.css` and the Telegram webhook path are exempt. Handlers (`web/routes.rs`) call
+`/static/*` and the Telegram webhook path are exempt. Handlers (`web/routes.rs`) call
 the same services as the CLI, then render a template with `PageRenderer`
 (`views.rs`; `serde_json` → minijinja values, `null` becomes an empty string). Every POST
 form carries `csrf` and handlers call `check_csrf`. Media is served from the blob store at
 `/thumb/{hash}` and `/media/{hash}` (hash validated to `[A-Za-z0-9]`).
+
+Slow actions are queued, never awaited in the request:
+
+```
+POST /publish        → jobs::create_publish_channel_job / create_publish_item_job → 303
+POST /storage/drain  → jobs::create_drain_job                                   → 303
+POST /import         → one import job per target                                 → 303
+POST /jobs/retry     → a new import job with the same payload (failed imports only)
+```
+
+`enqueue_unique` refuses a duplicate while the same kind + payload is `pending`/`running`
+(`db::jobs::find_active`), so a double click cannot send twice; the lease still protects the
+send itself. The worker (`jobs::run_job` → `run_kind`) dispatches on `kind` and reports
+progress into the row, which is what the UI reads.
+
+`GET /api/status` (session-cookie gated, `Cache-Control: no-store`) returns
+`{now, jobs[], channels[]}` from `db::jobs::list` + `db::queue::counts`; `job_view` builds
+each entry so the templates and the JSON cannot drift apart. `static/app.js` polls it every
+2 s while something is live, repaints job rows, progress bars and the per-channel
+`data-role="publishing"` badges in place, and raises a toast when a job settles. Templates
+stay server-rendered: with JS off the same numbers are simply static, and nothing needs a
+build step. `/jobs` lists the last 50 jobs with a progress bar and a retry form.
 
 The webhook endpoint is separate from the UI: `POST /tg/webhook` checks
 `X-Telegram-Bot-Api-Secret-Token` in constant time, builds a `bot::Bot` and hands the body to
@@ -199,6 +224,6 @@ decides from the Bot API message, `is_retryable` drives the retry policy.
 | unit tests in each module | parsing, layout, scheduling math, truncation, access matrix, sinks |
 | `tests/flow.rs` | import → queue → publish, incl. idempotency, partial delivery, `publish_item` |
 | `tests/bot.rs` | roles, commands, discovery, t.me ingest, quotas, forwarding |
-| `tests/webhook.rs` | webhook secret, auth bypass, malformed bodies, registration |
+| `tests/web.rs` | publish/drain queued as jobs, duplicate refusal, `/api/status`, `/jobs` |
 | `tests/storage.rs` | sinks vs. a real WebDAV server, proxy routing, backfill, failures |
 | `tests/captions.rs` + `snapshots/` | the exact caption text per channel configuration |

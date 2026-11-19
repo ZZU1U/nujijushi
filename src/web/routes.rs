@@ -6,7 +6,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
-use axum::{Form, Router, middleware};
+use axum::{Form, Json, Router, middleware};
 use serde_json::{Value, json};
 
 use super::auth;
@@ -23,6 +23,7 @@ use crate::error::Error;
 use crate::model::{
     Attribution, Channel, NsfwPolicy, ParseMode, PostState, QueueState, Rating, TagStyle,
 };
+use crate::state::AppState;
 
 pub struct WebError(Error);
 
@@ -68,6 +69,9 @@ pub fn router(ws: Arc<WebState>) -> Router {
         .route("/queue/action", post(queue_action))
         .route("/publish", post(publish_action))
         .route("/storage/drain", post(storage_drain))
+        .route("/jobs", get(jobs_page))
+        .route("/jobs/retry", post(jobs_retry))
+        .route("/api/status", get(api_status))
         .route("/import", get(import_page).post(import_submit))
         .route("/users", get(users_page).post(users_action))
         .route("/logout", post(logout))
@@ -409,18 +413,7 @@ async fn dashboard(
     }
 
     let jobs = app.db.call(|conn| job_db::list(conn, 6)).await?;
-    let job_views: Vec<Value> = jobs
-        .iter()
-        .map(|job| {
-            json!({
-                "id": job.id,
-                "kind": job.kind,
-                "state": job.state,
-                "payload": job.payload,
-                "message": job.message,
-            })
-        })
-        .collect();
+    let job_views: Vec<Value> = jobs.iter().map(|job| job_view(job, now)).collect();
 
     let unknown = app
         .db
@@ -1176,11 +1169,17 @@ async fn preview_page(
 
 // ---------------------------------------------------------------- storage
 
+/// Queue an upload of whatever mirrors are still pending.
+///
+/// Uploads take minutes, so this only writes a job row: the request returns at
+/// once and the worker does the transfers.
 async fn storage_drain(State(ws): State<Arc<WebState>>) -> Response {
-    match crate::storage::drain(&ws.app, 25).await {
-        Ok(uploaded) => flash_redirect("/", &format!("{uploaded} mirror(s) uploaded")),
-        Err(err) => flash_redirect("/", &format!("storage failed: {err}")),
-    }
+    let note = match crate::jobs::create_drain_job(&ws.app, 25).await {
+        Ok(Some(id)) => format!("upload queued as job #{id} - watch the jobs panel"),
+        Ok(None) => "an upload is already queued".to_string(),
+        Err(err) => format!("cannot queue the upload: {err}"),
+    };
+    flash_redirect("/", &note)
 }
 
 // ---------------------------------------------------------------- publish
@@ -1188,6 +1187,11 @@ async fn storage_drain(State(ws): State<Arc<WebState>>) -> Response {
 /// "Publish now": either the next queued post of a channel, or one specific
 /// queue item. Deliberately bypasses the schedule (admins only — the UI is
 /// token-protected); the NSFW policy and the lease still apply.
+///
+/// The Telegram upload happens in the job worker, not in this request: an album
+/// of ten videos used to hold the POST open for minutes. A second click while
+/// the first job is still pending is refused, and the lease still keeps the send
+/// itself idempotent.
 async fn publish_action(
     State(ws): State<Arc<WebState>>,
     Form(form): Form<FormMap>,
@@ -1201,26 +1205,178 @@ async fn publish_action(
     let queue_id = forms::field(&form, "queue_id").and_then(|raw| raw.parse::<i64>().ok());
     let channel_id = forms::field(&form, "channel_id").and_then(|raw| raw.parse::<i64>().ok());
 
-    let outcome = if let Some(queue_id) = queue_id {
-        crate::tg::publish::publish_item(app, queue_id, false).await
+    let queued = if let Some(queue_id) = queue_id {
+        crate::jobs::create_publish_item_job(app, queue_id).await
     } else if let Some(channel_id) = channel_id {
-        let channel = app
-            .db
-            .call(move |conn| channel_db::get(conn, channel_id))
-            .await;
-        match channel {
-            Ok(channel) => crate::tg::publish::publish_channel(app, &channel, false, true).await,
-            Err(err) => Err(err),
-        }
+        crate::jobs::create_publish_channel_job(app, channel_id).await
     } else {
-        Err(Error::invalid("nothing selected to publish"))
+        return Ok(flash_redirect(&back, "nothing selected to publish"));
     };
 
-    let note = match outcome {
-        Ok(outcome) => outcome.describe(),
-        Err(err) => format!("publish failed: {err}"),
+    let note = match queued {
+        Ok(Some(id)) => format!("publish queued as job #{id} - the jobs panel shows it finish"),
+        Ok(None) => "a publish for this is already queued or running".to_string(),
+        Err(err) => format!("cannot queue the publish: {err}"),
     };
     Ok(flash_redirect(&back, &note))
+}
+
+// ---------------------------------------------------------------- jobs
+
+/// One job as both the templates and `/api/status` want it: same field names, so
+/// the page and the live updates cannot drift apart.
+pub fn job_view(job: &job_db::Job, now: chrono::DateTime<chrono::Utc>) -> Value {
+    let percent = if job.total > 0 {
+        (job.progress * 100 / job.total).clamp(0, 100)
+    } else if job.state == "done" {
+        100
+    } else {
+        0
+    };
+    let age = now - job.updated_at;
+    json!({
+        "id": job.id,
+        "kind": job.kind,
+        "kind_label": kind_label(&job.kind),
+        "payload": job.payload,
+        "state": job.state,
+        "progress": job.progress,
+        "total": job.total,
+        "percent": percent,
+        "message": job.message,
+        "post_id": job.post_id,
+        "active": job.is_active(),
+        "retryable": job.kind == crate::jobs::KIND_IMPORT && job.state == "failed",
+        "age_secs": age.num_seconds().max(0),
+        "age": crate::tg::publish::format_duration(age),
+        "created": job.created_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string(),
+    })
+}
+
+/// What a job kind means to a person reading the page.
+fn kind_label(kind: &str) -> &str {
+    match kind {
+        crate::jobs::KIND_IMPORT => "import",
+        crate::jobs::KIND_PUBLISH_CHANNEL => "publish next",
+        crate::jobs::KIND_PUBLISH_ITEM => "publish item",
+        crate::jobs::KIND_STORAGE_DRAIN => "storage upload",
+        other => other,
+    }
+}
+
+async fn jobs_page(
+    State(ws): State<Arc<WebState>>,
+    Query(query): Query<PostFilter>,
+) -> WebResult<Html<String>> {
+    let app = &ws.app;
+    let now = chrono::Utc::now();
+    let jobs = app.db.call(|conn| job_db::list(conn, 50)).await?;
+    let waiting = app
+        .db
+        .call(|conn| job_db::count_pending(conn, crate::jobs::KIND_IMPORT))
+        .await?;
+    let html = ws.pages.render(
+        "jobs.html",
+        &json!({
+            "page": "jobs",
+            "csrf": ws.csrf,
+            "flash": decode_flash(&query.flash),
+            "jobs": jobs.iter().map(|job| job_view(job, now)).collect::<Vec<_>>(),
+            "parallel": app.cfg.max_concurrent_imports,
+            "waiting": waiting,
+        }),
+    )?;
+    Ok(Html(html))
+}
+
+/// Re-run a failed import as a new job row, so the history keeps both attempts.
+async fn jobs_retry(
+    State(ws): State<Arc<WebState>>,
+    Form(form): Form<FormMap>,
+) -> WebResult<Response> {
+    check_csrf(&ws, forms::field(&form, "csrf").unwrap_or_default())?;
+    let app = &ws.app;
+    let Some(id) = forms::field(&form, "id").and_then(|raw| raw.parse::<i64>().ok()) else {
+        return Ok(flash_redirect("/jobs", "no job selected"));
+    };
+    let job = app
+        .db
+        .call(move |conn| job_db::get(conn, id))
+        .await?
+        .ok_or_else(|| Error::NotFound(format!("job {id}")))?;
+    if job.kind != crate::jobs::KIND_IMPORT {
+        return Ok(flash_redirect(
+            "/jobs",
+            "only imports can be retried - publishing has its own button",
+        ));
+    }
+    let target = job.payload.clone().unwrap_or_default();
+    if target.trim().is_empty() {
+        return Ok(flash_redirect("/jobs", "that job has no target to retry"));
+    }
+    let note = match crate::jobs::create_job(app, &target).await {
+        Ok(new_id) => format!("job #{id} re-queued as #{new_id}"),
+        Err(err) => format!("cannot retry job #{id}: {err}"),
+    };
+    Ok(flash_redirect("/jobs", &note))
+}
+
+// ---------------------------------------------------------------- status API
+
+/// Machine-readable state for the live UI: `static/app.js` polls this instead of
+/// re-downloading whole pages, so the templates stay server-rendered and nothing
+/// here needs a JS build step.
+async fn api_status(State(ws): State<Arc<WebState>>) -> WebResult<Response> {
+    let payload = status_payload(&ws.app).await?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(payload)).into_response())
+}
+
+/// The `/api/status` document: recent jobs plus per-channel queue depth and
+/// whether a publish is in flight. Two cheap queries.
+pub async fn status_payload(app: &AppState) -> crate::error::Result<Value> {
+    let now = chrono::Utc::now();
+    let jobs = app.db.call(|conn| job_db::list(conn, 25)).await?;
+    let channels = app.db.call(|conn| channel_db::list(conn)).await?;
+
+    let mut channel_views = Vec::with_capacity(channels.len());
+    for channel in &channels {
+        let channel_id = channel.id;
+        let counts = app
+            .db
+            .call(move |conn| queue_db::counts(conn, channel_id))
+            .await?;
+        let count = |state: &str| {
+            counts
+                .iter()
+                .filter(|(name, _)| name == state)
+                .map(|(_, n)| *n)
+                .sum::<i64>()
+        };
+        let payload = channel_id.to_string();
+        let queued_publish = jobs.iter().any(|job| {
+            job.kind == crate::jobs::KIND_PUBLISH_CHANNEL
+                && job.is_active()
+                && job.payload.as_deref() == Some(payload.as_str())
+        });
+        channel_views.push(json!({
+            "id": channel_id,
+            "alias": channel.alias,
+            "title": channel.title,
+            "queued": count(QueueState::Queued.as_str()),
+            "in_flight": count(QueueState::Sending.as_str()),
+            "publishing": queued_publish || count(QueueState::Sending.as_str()) > 0,
+            "paused": channel.paused,
+            "enabled": channel.enabled,
+            "next_due": channel.next_due_at.map(|due| due.to_rfc3339()),
+            "next": crate::tg::publish::next_slot_hint(channel, now),
+        }));
+    }
+
+    Ok(json!({
+        "now": now.to_rfc3339(),
+        "jobs": jobs.iter().map(|job| job_view(job, now)).collect::<Vec<_>>(),
+        "channels": channel_views,
+    }))
 }
 
 // ---------------------------------------------------------------- import
@@ -1230,7 +1386,12 @@ async fn import_page(
     Query(query): Query<PostFilter>,
 ) -> WebResult<Html<String>> {
     let app = &ws.app;
+    let now = chrono::Utc::now();
     let jobs = app.db.call(|conn| job_db::list(conn, 15)).await?;
+    let waiting = app
+        .db
+        .call(|conn| job_db::count_pending(conn, crate::jobs::KIND_IMPORT))
+        .await?;
     let channels = app.db.call(|conn| channel_db::list(conn)).await?;
     let html = ws.pages.render(
         "import.html",
@@ -1238,14 +1399,9 @@ async fn import_page(
             "page": "import",
             "csrf": ws.csrf,
             "flash": decode_flash(&query.flash),
-            "jobs": jobs.iter().map(|job| json!({
-                "id": job.id,
-                "kind": job.kind,
-                "state": job.state,
-                "payload": job.payload,
-                "message": job.message,
-                "created": job.created_at.with_timezone(&chrono::Local).format("%H:%M:%S").to_string(),
-            })).collect::<Vec<_>>(),
+            "jobs": jobs.iter().map(|job| job_view(job, now)).collect::<Vec<_>>(),
+            "parallel": app.cfg.max_concurrent_imports,
+            "waiting": waiting,
             "channels": channels.iter().map(|c| json!({"id": c.id, "title": c.title})).collect::<Vec<_>>(),
             "cookies": app.cfg.cookies_dir().display().to_string(),
         }),

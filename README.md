@@ -451,10 +451,11 @@ token (`[web] token`) exchanged for an HttpOnly cookie; forms carry a CSRF token
 Binding to a non-loopback address is possible but logs a warning.
 
 Pages: dashboard (queue depth, next slot per channel, unconfirmed sends, recent sends,
-import jobs) · posts grid with filters + bulk approve/reject/NSFW/queue/delete ·
+recent jobs) · posts grid with filters + bulk approve/reject/NSFW/queue/delete ·
 post detail with caption previews per channel · channel list + create · channel editor
 with live next-slot preview · ordered queue with pin/skip/requeue/remove ·
-next-slots preview · import box with job progress · **users** (roles, quotas, ban/promote).
+next-slots preview · import box with job progress · **jobs** (every action, live) ·
+**users** (roles, quotas, ban/promote).
 
 `GET /metrics` answers in the Prometheus text format (posts by state and nsfw, channels by
 enabled, queue depth per channel/state, import jobs, storage mirrors). It sits outside the
@@ -469,6 +470,36 @@ Both bypass the schedule (no waiting for the slot, active hours or daily cap) an
 confirmation; the channel's NSFW rules, the media grouping and the lease/idempotency
 protections still apply, and a successful manual send advances `next_due_at` exactly like a
 scheduled slot. CLI equivalents: `nujijushi push --channel <alias> --force`.
+They do **not** send inside the request: the click queues a job and returns, so a post with
+ten videos no longer freezes the tab (see below).
+
+### Background jobs
+
+Everything slow is a row in the `jobs` table, executed by the worker that `nujijushi run`
+starts: `import` (one per target), `publish_channel`, `publish_item` and `storage_drain`.
+A web action therefore returns immediately with a flash like
+`publish queued as job #42 — the jobs panel shows it finish`.
+
+* **`/jobs`** lists recent jobs with a progress bar, the outcome and the age; a failed
+  import gets a **retry** button (it creates a new job, so the history keeps both attempts).
+* **`/api/status`** (session cookie, `Cache-Control: no-store`) is what the page polls when
+  JavaScript is available:
+
+  ```json
+  {"now":"2026-11-19T15:14:00+00:00",
+   "jobs":[{"id":42,"kind":"publish_channel","state":"running","progress":0,"total":0,
+            "message":"publishing","post_id":null,"payload":"1","active":true,"age_secs":3}],
+   "channels":[{"id":1,"alias":"night","title":"Night Shift","queued":12,"publishing":true,
+                "paused":false,"next_due":"2026-11-19T15:40:00+00:00"}]}
+  ```
+
+  `static/app.js` polls it every 2 s while something is live, then stops; with JS off every
+  page still renders the same numbers server-side.
+* A second click while the same publish is still pending is refused, so a double submit
+  cannot send twice (the queue lease covers the send itself).
+* Imports run **2 at a time** (`[import] max_concurrent`); the import and jobs pages show
+  how many run and how many wait. gallery-dl is network- and disk-heavy, so a higher value
+  often makes the box feel worse, not better.
 
 ---
 
@@ -524,7 +555,7 @@ CI runs on every push and pull request (`.github/workflows/ci.yml`: `fmt`, `clip
 and attaches them to the GitHub release (`.github/workflows/release.yml`).
 
 ```bash
-cargo test                     # 270 tests: units, snapshots, flows, bot, webhook, storage, proxy
+cargo test                     # 283 tests: units, snapshots, flows, bot, web, webhook, storage, proxy
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
@@ -534,7 +565,8 @@ Layout: `blob` (content-addressed store) · `db` (SQLite, migrations in `migrati
 `render` (caption templates + truncation) · `media` (album planning, video posters) ·
 `queue` (scheduler, selection, leases) · `tg` (transport trait, Bot API impl, mock, publish,
 bot-api shapes) · `bot` (access, commands, handlers, replies) · `source/telegram.rs`
-(t.me ingest) · `web` (axum UI) · `jobs` (import worker + submitter notifications).
+(t.me ingest) · `web` (axum UI, `/api/status`) · `jobs` (job kinds: import, publish,
+storage drain — worker + submitter notifications).
 
 The `Transport` trait keeps publishing testable: `tg::teloxide_impl` talks to Telegram,
 `tg::mock` records calls, so the flows (lease/idempotency, spoilers, policy vetoes,

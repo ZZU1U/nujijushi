@@ -84,6 +84,9 @@ td.mini img { width: 46px; height: 46px; object-fit: cover; border-radius: 6px; 
 .badge.green { color: var(--ok); border-color: #14532d; }
 .badge.red { color: var(--err); border-color: #7f1d1d; }
 .badge.corner { position: absolute; top: .4rem; right: .4rem; background: #2a0f13; }
+.badge.accent { color: var(--accent); border-color: rgba(125, 211, 252, .35); background: rgba(125, 211, 252, .1); }
+/* `.badge` sets display, which would beat the UA rule for the hidden attribute */
+.badge[hidden] { display: none; }
 
 button, .button {
   background: var(--accent); color: #06202b; border: 0; border-radius: 8px;
@@ -179,7 +182,7 @@ pre.caption {
 
 /* ======================================================== live interaction
    Everything below reacts to attributes static/app.js sets at runtime
-   (`aria-busy`, `.is-busy`, `data-live`, `data-changed`) plus keyboard focus.
+   (`aria-busy`, `.is-busy`, `data-changed`) plus keyboard focus.
    A page served with JS off keeps exactly the look it had before this block. */
 
 :root {
@@ -258,16 +261,10 @@ button[aria-disabled="true"], .button[aria-disabled="true"] { opacity: .5; curso
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* in-place swap of the import job table: the panel settles, and only the rows
-   whose text actually changed rise in, with a short stagger */
-[data-live].live-in { animation: panel-in 200ms var(--ease-out) both; }
-[data-live] tr[data-changed] {
-  animation: row-in 260ms var(--ease-spring) both;
-  animation-delay: calc(var(--i, 0) * 30ms);
-}
-[data-live] tr[data-changed] > td { background: rgba(125, 211, 252, .06); }
+/* a job row that changed state rises in, so a poll result is visible in place */
+tr[data-changed] { animation: row-in 260ms var(--ease-spring) both; }
+tr[data-changed] > td { background: rgba(125, 211, 252, .06); }
 
-@keyframes panel-in { from { opacity: .6; } to { opacity: 1; } }
 @keyframes row-in {
   from { opacity: .2; transform: translateY(-3px); }
   to { opacity: 1; transform: none; }
@@ -283,6 +280,56 @@ button[aria-disabled="true"], .button[aria-disabled="true"] { opacity: .5; curso
     background-size: 100% 100%;
   }
   .is-busy::after { animation: none; border-color: var(--accent); }
-  [data-live].live-in, [data-live] tr[data-changed] { animation: none; }
+  tr[data-changed] { animation: none; }
   .is-busy > * { transition: none; }
+}
+
+/* ================================================== jobs: progress and toasts
+   The job rows (dashboard, /import, /jobs) carry `data-state`; static/app.js
+   only rewrites the numbers, the bar and the badge. */
+
+.progress-cell { white-space: nowrap; }
+.progress {
+  display: inline-block; vertical-align: middle;
+  width: 88px; height: 6px; overflow: hidden;
+  background: #0f1318; border: 1px solid var(--line); border-radius: 999px;
+}
+.progress > span {
+  display: block; height: 100%; width: 0;
+  background-image: linear-gradient(90deg, var(--accent), var(--accent-2));
+  transition: width 320ms var(--ease-out);
+}
+.progress-cell .hint { margin-left: .4rem; font-variant-numeric: tabular-nums; }
+
+/* a running job's bar breathes, so "working" is visible next to "0/40" */
+tr[data-state="running"] .progress > span { animation: pulse 1.6s ease-in-out infinite; }
+tr[data-state="failed"] .progress > span { background-image: none; background-color: var(--err); }
+tr[data-state="done"] .progress > span { background-image: none; background-color: var(--ok); }
+
+.toasts {
+  position: fixed; right: 1rem; bottom: 1rem; z-index: 40;
+  display: grid; gap: .4rem; max-width: min(420px, 92vw);
+}
+.toast {
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-left: 3px solid var(--accent); border-radius: 8px;
+  padding: .55rem .8rem; font-size: .85rem; color: var(--text);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .5);
+  animation: toast-in 180ms var(--ease-spring) both;
+}
+.toast.ok { border-left-color: var(--ok); }
+.toast.fail { border-left-color: var(--err); }
+.toast.out { opacity: 0; transform: translateY(4px); transition: opacity 200ms var(--ease-out), transform 200ms var(--ease-out); }
+
+@keyframes pulse { 50% { opacity: .5; } }
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(6px) scale(.98); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress > span { transition: none; }
+  tr[data-state="running"] .progress > span { animation: none; }
+  .toast { animation: none; }
+  .toast.out { transition: none; }
 }

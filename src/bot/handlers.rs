@@ -413,7 +413,7 @@ impl<'a> Bot<'a> {
                 .reply(message, "That message has no media I can download.")
                 .await;
         }
-        let outcome = crate::jobs::import_posts(self.state, posts, Some(user.id)).await?;
+        let outcome = crate::jobs::import_posts(self.state, posts, Some(user.id), None).await?;
         self.reply(
             message,
             &format!("Archived {}.", reply::esc(&outcome.summary())),

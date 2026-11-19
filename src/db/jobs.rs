@@ -115,6 +115,30 @@ pub fn list(conn: &Connection, limit: i64) -> Result<Vec<Job>> {
     Ok(out)
 }
 
+/// Id of a `pending`/`running` job with this kind and payload, if one exists.
+///
+/// Used to refuse a duplicate request (two "publish this channel" clicks) while
+/// the first one is still in the worker.
+pub fn find_active(conn: &Connection, kind: &str, payload: &str) -> Result<Option<i64>> {
+    Ok(conn
+        .query_row(
+            "SELECT id FROM jobs WHERE kind = ?1 AND payload = ?2
+               AND state IN ('pending', 'running') ORDER BY id DESC LIMIT 1",
+            params![kind, payload],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
+/// How many jobs of this kind are waiting for a worker slot (`pending`).
+pub fn count_pending(conn: &Connection, kind: &str) -> Result<i64> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM jobs WHERE kind = ?1 AND state = 'pending'",
+        [kind],
+        |row| row.get(0),
+    )?)
+}
+
 /// Fail jobs left running by a previous process.
 pub fn reconcile(conn: &Connection) -> Result<usize> {
     Ok(conn.execute(
@@ -149,4 +173,87 @@ pub fn claim_pending(conn: &Connection, limit: i64) -> Result<Vec<Job>> {
         }
     }
     Ok(claimed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn db() -> crate::db::Db {
+        crate::db::Db::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn find_active_ignores_finished_jobs() {
+        let db = db();
+        let id = db
+            .with(|conn| create(conn, "publish_channel", "7", 0))
+            .unwrap();
+        // pending and running both count: a second click must be refused
+        for state in ["pending", "running"] {
+            db.with({
+                let state = state.to_string();
+                move |conn| set_state(conn, id, &state, None)
+            })
+            .unwrap();
+            assert_eq!(
+                db.with(|conn| find_active(conn, "publish_channel", "7"))
+                    .unwrap(),
+                Some(id),
+                "a {state} job blocks the duplicate"
+            );
+        }
+        // a different payload, or another kind, is a different action
+        assert_eq!(
+            db.with(|conn| find_active(conn, "publish_channel", "8"))
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            db.with(|conn| find_active(conn, "publish_item", "7"))
+                .unwrap(),
+            None
+        );
+        // finished jobs no longer block anything
+        for state in ["done", "failed"] {
+            db.with({
+                let state = state.to_string();
+                move |conn| set_state(conn, id, &state, None)
+            })
+            .unwrap();
+            assert_eq!(
+                db.with(|conn| find_active(conn, "publish_channel", "7"))
+                    .unwrap(),
+                None,
+                "a {state} job does not block"
+            );
+        }
+    }
+
+    #[test]
+    fn count_pending_counts_only_waiting_jobs_of_that_kind() {
+        let db = db();
+        for kind in ["import", "import", "publish_channel"] {
+            db.with({
+                let kind = kind.to_string();
+                move |conn| create(conn, &kind, "x", 0)
+            })
+            .unwrap();
+        }
+        assert_eq!(
+            db.with(|conn| count_pending(conn, "import")).unwrap(),
+            2,
+            "imports wait for a slot"
+        );
+        // the worker claimed one import, so one import is left waiting …
+        db.with(|conn| claim_pending(conn, 1)).unwrap();
+        assert_eq!(db.with(|conn| count_pending(conn, "import")).unwrap(), 1);
+        // … and the count is per kind: the queued publish is untouched by it
+        assert_eq!(
+            db.with(|conn| count_pending(conn, "publish_channel"))
+                .unwrap(),
+            1,
+            "publishing is not what /import reports"
+        );
+    }
 }

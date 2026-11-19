@@ -218,6 +218,9 @@ async fn guest_import_becomes_a_job_and_reports_back() {
     let outcome = nujijushi::jobs::run_job(&harness.state, &job)
         .await
         .unwrap();
+    let nujijushi::jobs::JobReport::Import(outcome) = outcome else {
+        panic!("an import job reports an import outcome");
+    };
     assert_eq!(outcome.post_ids.len(), 1);
 
     let post = harness

@@ -10,7 +10,7 @@ how to work here without breaking things.
 folders, Telegram posts) into a content-addressed archive with SQLite metadata, curates
 it, mirrors it to external storage, and publishes it to Telegram channels on a schedule.
 Three interfaces sit on top of the same services: **CLI**, **axum admin UI**, and a
-**Telegram bot** (long polling or webhook). 270 tests, no network needed to run them.
+**Telegram bot** (long polling or webhook). 283 tests, no network needed to run them.
 
 ## Build, test, lint
 
@@ -35,6 +35,9 @@ the MSRV or add a feature that needs nightly.
    row older than `STALE_LEASE_SECS` (600 s) becomes `unknown` and is **never** re-sent
    automatically; partial deliveries (some messages of a post out, then a failure) also
    become `unknown`. If you change the publish path, keep those two properties.
+   **The web never sends to Telegram inside a request**: `POST /publish` and
+   `POST /storage/drain` only create a job (`jobs::create_*_job`, deduplicated by
+   `db::jobs::find_active`) and the worker runs it.
 2. **Telegram media rules.** ≤ `MAX_ALBUM` (10) items per album, videos never share a
    group with photos, exactly **one** captioned item per group, caption ≤ `CAPTION_LIMIT`
    (1024) characters with tags closed when truncated. All of this lives in
@@ -84,6 +87,7 @@ the MSRV or add a feature that needs nightly.
 | config key | `config.example.toml`, the starter config in `src/config.rs`, `README.md` config block, `.env.example` if env-supported, a `doctor` line, and a parse test |
 | CLI command | `src/cli.rs` enum + handler, a case in `mod parse_tests`, the README command table |
 | web page/form | `src/web/routes.rs`, a template in `templates/`, register it in `src/web/views.rs`, CSRF on POSTs, and a render test |
+| slow web action | a job kind in `src/jobs/mod.rs` (`run_kind`), a `create_*_job` constructor, fields in `web::routes::job_view` (so `/api/status` and the templates agree), a `data-`-attribute hook for `static/app.js`, and a `tests/web.rs` case |
 | bot command | `src/bot/commands.rs` `MENU` + parse test, `src/bot/handlers.rs`, permission via `Perm` in `src/bot/access.rs`, help text |
 | storage sink | implement `storage::Sink`, add its config section, wire it in `storage::sinks`, test it against a real local server if it speaks HTTP |
 | caption feature | `src/render/caption.rs` context/filters + an `insta` snapshot in `tests/captions.rs` |

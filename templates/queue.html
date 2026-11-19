@@ -11,7 +11,7 @@
   <table>
     <tr><th>#</th><th></th><th>post</th><th>state</th><th>prio</th><th>attempts</th><th>added</th><th></th></tr>
     {% for i in items %}
-    <tr class="{{ 'row-unknown' if i.state == 'unknown' else '' }}">
+    <tr class="{{ 'row-unknown' if i.state == 'unknown' else '' }}" data-queue="{{ i.id }}">
       <td>{{ i.id }}</td>
       <td class="mini">
         {% if i.thumb %}<img loading="lazy" src="/thumb/{{ i.thumb }}" alt="">{% endif %}
@@ -20,6 +20,7 @@
       <td>
         <a href="/posts/{{ i.post_id }}">#{{ i.post_id }}</a>
         {% if i.pinned %}<span class="badge">pinned</span>{% endif %}
+        <span class="badge accent" data-role="publishing" hidden>publishing…</span>
         <div class="hint">{{ i.artist }} — {{ i.snippet }}</div>
         {% if i.error %}<div class="hint err">{{ i.error }}</div>{% endif %}
       </td>
@@ -30,7 +31,7 @@
       <td class="actions">
         {% if i.state == 'queued' %}
         <form method="post" action="/publish" class="inline"
-              onsubmit="return confirm('Publish post #{{ i.post_id }} to {{ channel.title }} right now?')">
+              onsubmit="return confirm('Queue post #{{ i.post_id }} for {{ channel.title }}? The worker sends it in the background; this returns immediately.')">
           <input type="hidden" name="csrf" value="{{ csrf }}">
           <input type="hidden" name="queue_id" value="{{ i.id }}">
           <input type="hidden" name="back" value="/channels/{{ channel.id }}/queue">

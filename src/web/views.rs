@@ -29,6 +29,7 @@ const TEMPLATES: &[(&str, &str)] = &[
     ("preview.html", include_str!("../../templates/preview.html")),
     ("import.html", include_str!("../../templates/import.html")),
     ("users.html", include_str!("../../templates/users.html")),
+    ("jobs.html", include_str!("../../templates/jobs.html")),
 ];
 
 pub const APP_CSS: &str = include_str!("../../static/app.css");

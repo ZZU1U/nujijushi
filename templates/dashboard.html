@@ -42,14 +42,15 @@
   <table>
     <tr><th>channel</th><th>queue</th><th>every</th><th>nsfw</th><th>next</th><th></th></tr>
     {% for c in channels %}
-    <tr>
+    <tr data-channel="{{ c.id }}">
       <td>
         <a href="/channels/{{ c.id }}/edit">{{ c.title }}</a>
         <span class="hint">{{ c.tg_id }}</span>
         {% if c.paused %}<span class="badge red">paused</span>{% endif %}
         {% if c.failures > 0 %}<span class="badge red">{{ c.failures }} fails</span>{% endif %}
+        <span class="badge accent" data-role="publishing" hidden>publishing…</span>
       </td>
-      <td>{{ c.queued }}</td>
+      <td data-role="queued">{{ c.queued }}</td>
       <td>{{ c.interval }}m</td>
       <td><span class="badge">{{ c.nsfw_policy }}</span></td>
       <td class="hint">{{ c.reason }}</td>
@@ -57,11 +58,11 @@
         <a class="button small" href="/channels/{{ c.id }}/queue">queue</a>
         <a class="button small ghost" href="/channels/{{ c.id }}/preview">preview</a>
         <form method="post" action="/publish" class="inline"
-              onsubmit="return confirm('Publish the next queued post to {{ c.title }} right now? This ignores the schedule.')">
+              onsubmit="return confirm('Queue a publish of the next post to {{ c.title }}? The worker sends it in the background; this returns immediately.')">
           <input type="hidden" name="csrf" value="{{ csrf }}">
           <input type="hidden" name="channel_id" value="{{ c.id }}">
           <input type="hidden" name="back" value="/">
-          <button class="small" type="submit" title="publish the next queued post, ignoring the schedule">publish next</button>
+          <button class="small" type="submit" title="queue the next post for this channel, ignoring the schedule">publish next</button>
         </form>
       </td>
     </tr>
@@ -89,8 +90,8 @@
   </table>
   <form method="post" action="/storage/drain" class="inline">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <button class="small" type="submit">upload pending</button>
-    <span class="hint">mirrors are also drained automatically by the background worker</span>
+    <button class="small" type="submit" title="queue an upload of the pending mirrors">upload pending</button>
+    <span class="hint">queued as a job · mirrors are also drained automatically by the background worker</span>
   </form>
 </section>
 {% endif %}
@@ -113,20 +114,27 @@
     {% else %}<p class="hint">Nothing sent yet.</p>{% endif %}
   </section>
 
-  <section class="panel">
-    <h2>import jobs</h2>
+  <section class="panel" data-live="dashboard-jobs">
+    <h2>jobs <a class="hint" href="/jobs">all jobs →</a></h2>
     {% if jobs %}
     <table class="compact">
       {% for j in jobs %}
-      <tr>
+      <tr data-job="{{ j.id }}" data-state="{{ j.state }}">
         <td>#{{ j.id }}</td>
-        <td><span class="badge">{{ j.state }}</span></td>
-        <td class="hint">{{ j.payload }}</td>
-        <td class="hint">{{ j.message }}</td>
+        <td><span class="badge">{{ j.kind_label }}</span></td>
+        <td><span class="badge {{ 'green' if j.state == 'done' else ('red' if j.state == 'failed' else '') }}" data-role="state">{{ j.state }}</span></td>
+        <td class="progress-cell">
+          <div class="progress" role="progressbar" aria-valuemin="0"
+               aria-valuemax="{{ j.total }}" aria-valuenow="{{ j.progress }}">
+            <span style="width: {{ j.percent }}%"></span>
+          </div>
+          <span class="hint" data-role="counts">{{ j.progress }}/{{ j.total }}</span>
+        </td>
+        <td class="hint" data-role="message">{{ j.message }}</td>
       </tr>
       {% endfor %}
     </table>
-    {% else %}<p class="hint">No imports yet. <a href="/import">Import something</a>.</p>{% endif %}
+    {% else %}<p class="hint">Nothing queued. <a href="/import">Import something</a>.</p>{% endif %}
   </section>
 </div>
 {% endblock %}

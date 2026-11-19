@@ -8,15 +8,17 @@
 (function () {
   'use strict';
 
-  const POLL_MS = 3000; // import job table
-  const QUIET_POLLS_TO_STOP = 2; // consecutive polls with nothing pending/running
+  const POLL_MS = 2000; // /api/status while something is running
+  const QUIET_POLLS_TO_STOP = 2; // consecutive polls with nothing live
   const MAX_POLL_ERRORS = 3; // give up on a server that stops answering
   const BUSY_MAX_MS = 15000; // never leave the result grid dimmed forever
+  const TOAST_MS = 6000;
   const LIVE_STATES = ['pending', 'running'];
 
   const path = location.pathname.replace(/\/+$/, '') || '/';
   const all = (selector, root) => Array.from((root || document).querySelectorAll(selector));
   const text = (node) => (node.textContent || '').replace(/\s+/g, ' ').trim();
+  const isLive = (state) => LIVE_STATES.indexOf(state) !== -1;
 
   /* ------------------------------------------------------------------ forms
    * A submitted POST form is locked until the page goes away, so a double
@@ -117,21 +119,125 @@
     });
   }
 
-  /* -------------------------------------------------------- /import job table
-   * The jobs panel re-renders itself while a job is pending or running, then
-   * stops on its own so an idle tab is not polling forever.
+  /* ------------------------------------------------------------- live status
+   * Every heavy action (publish, storage upload, import) is a job row now, so a
+   * single JSON endpoint drives the whole UI: job progress bars, per-channel
+   * queue depth, "publishing…" badges and a toast when a job settles. It stops
+   * polling once nothing is live, so an idle tab stays quiet.
    */
-  function liveImportJobs() {
-    if (path !== '/import') return;
-    if (typeof window.fetch !== 'function' || typeof window.DOMParser !== 'function') return;
+  function toast(message, kind) {
+    if (!message) return;
+    let host = document.querySelector('.toasts');
+    if (!host) {
+      host = document.createElement('div');
+      host.className = 'toasts';
+      host.setAttribute('role', 'status');
+      host.setAttribute('aria-live', 'polite');
+      document.body.appendChild(host);
+    }
+    const item = document.createElement('div');
+    item.className = 'toast' + (kind ? ' ' + kind : '');
+    item.textContent = message;
+    host.appendChild(item);
+    setTimeout(() => {
+      item.classList.add('out');
+      setTimeout(() => item.remove(), 250);
+    }, TOAST_MS);
+  }
 
-    const findPanel = (root) => {
-      const table = (root || document).querySelector('.panel table.compact');
-      return table ? table.closest('.panel') : null;
-    };
+  function setText(node, value) {
+    if (!node) return;
+    const next = value === null || value === undefined ? '' : String(value);
+    if (text(node) !== next.replace(/\s+/g, ' ').trim()) node.textContent = next;
+  }
 
-    let panel = findPanel(document);
-    if (!panel) return; // no jobs panel on this render: nothing to watch
+  function percent(job) {
+    if (job.total > 0) return Math.max(0, Math.min(100, Math.round((job.progress * 100) / job.total)));
+    return job.state === 'done' ? 100 : 0;
+  }
+
+  /// Repaint one job row; returns true when the job is still live.
+  function paintJob(row, job) {
+    const before = row.dataset.state;
+    const wasLive = isLive(before);
+    row.dataset.state = job.state;
+
+    const badge = row.querySelector('[data-role="state"]');
+    if (badge) {
+      setText(badge, job.state);
+      badge.classList.toggle('green', job.state === 'done');
+      badge.classList.toggle('red', job.state === 'failed');
+    }
+
+    const bar = row.querySelector('.progress');
+    if (bar) {
+      const fill = bar.querySelector('span');
+      if (fill) fill.style.width = percent(job) + '%';
+      bar.setAttribute('aria-valuemax', String(job.total));
+      bar.setAttribute('aria-valuenow', String(job.progress));
+    }
+    setText(row.querySelector('[data-role="counts"]'), job.progress + '/' + job.total);
+    setText(row.querySelector('[data-role="message"]'), job.message);
+    setText(row.querySelector('[data-role="age"]'), job.age);
+
+    // a state change flashes the row once, so a poll result is visible in place
+    if (before && before !== job.state) {
+      delete row.dataset.changed;
+      void row.offsetWidth; // restart the animation
+      row.dataset.changed = '1';
+    }
+
+    if (wasLive && !isLive(job.state)) {
+      const label = job.kind_label || job.kind;
+      const detail = job.message ? ' — ' + job.message : '';
+      toast(label + ' #' + job.id + ' ' + job.state + detail, job.state === 'done' ? 'ok' : 'fail');
+    }
+    return isLive(job.state);
+  }
+
+  /// Apply one `/api/status` document; returns true when anything is live.
+  function applyStatus(status) {
+    const jobs = Array.isArray(status && status.jobs) ? status.jobs : [];
+    const byId = new Map(jobs.map((job) => [String(job.id), job]));
+    let live = false;
+
+    all('[data-job]').forEach((row) => {
+      const job = byId.get(row.dataset.job);
+      if (job && paintJob(row, job)) live = true;
+    });
+
+    // dashboard: queue depth and an in-flight publish per channel
+    const channels = Array.isArray(status && status.channels) ? status.channels : [];
+    channels.forEach((channel) => {
+      const row = document.querySelector('[data-channel="' + channel.id + '"]');
+      if (!row) return;
+      setText(row.querySelector('[data-role="queued"]'), channel.queued);
+      const badge = row.querySelector('[data-role="publishing"]');
+      if (badge) {
+        badge.hidden = !channel.publishing;
+        if (channel.publishing) live = true;
+      }
+    });
+
+    // queue page: which item is being sent right now
+    all('[data-queue]').forEach((row) => {
+      const queued = jobs.find(
+        (job) =>
+          job.kind === 'publish_item' &&
+          job.payload === row.dataset.queue &&
+          isLive(job.state)
+      );
+      const badge = row.querySelector('[data-role="publishing"]');
+      if (badge) badge.hidden = !queued;
+      if (queued) live = true;
+    });
+
+    return live;
+  }
+
+  function liveStatus() {
+    if (typeof window.fetch !== 'function') return;
+    if (!document.querySelector('[data-job], [data-channel], [data-queue]')) return;
 
     let timer = null;
     let quietPolls = 0;
@@ -139,73 +245,12 @@
     let inFlight = false;
     let stopped = false;
 
-    panel.dataset.live = 'import-jobs';
-
-    const hasLiveBadge = (root) =>
-      all('.badge', root).some((badge) => LIVE_STATES.indexOf(text(badge).toLowerCase()) !== -1);
-
-    // state before a swap, keyed by job id, so only rows that really changed move
-    const snapshot = (root) => {
-      const before = new Map();
-      all('table tr', root).forEach((row) => {
-        const id = text(row.querySelector('td') || { textContent: '' });
-        if (id) before.set(id, text(row));
-      });
-      return before;
-    };
-
-    const paintChanges = (root, before) => {
-      let index = 0;
-      all('table tr', root).forEach((row) => {
-        const id = text(row.querySelector('td') || { textContent: '' });
-        if (!id || before.get(id) === text(row)) return;
-        row.dataset.changed = '1';
-        row.style.setProperty('--i', String(index++));
-      });
-    };
-
     const stop = (state) => {
       stopped = true;
       clearTimeout(timer);
       inFlight = false;
-      if (panel && panel.isConnected) panel.dataset.live = state;
-    };
-
-    const poll = () => {
-      inFlight = true;
-      return fetch(location.href, { credentials: 'same-origin', cache: 'no-store' })
-        .then((response) => {
-          if (!response.ok) throw new Error('HTTP ' + response.status);
-          return response.text();
-        })
-        .then((html) => {
-          const fresh = findPanel(new DOMParser().parseFromString(html, 'text/html'));
-          if (!fresh) {
-            quietPolls += 1; // the jobs table is gone, so nothing can be running
-            return;
-          }
-          const before = snapshot(panel);
-          fresh.dataset.live = 'import-jobs';
-          fresh.classList.add('live-in');
-          panel.replaceWith(fresh);
-          panel = fresh;
-          paintChanges(fresh, before);
-          quietPolls = hasLiveBadge(fresh) ? 0 : quietPolls + 1;
-        })
-        .catch(() => {
-          errors += 1;
-          if (errors >= MAX_POLL_ERRORS) stop('stalled');
-        })
-        .then(() => {
-          inFlight = false;
-          if (!stopped && quietPolls >= QUIET_POLLS_TO_STOP) {
-            stop('settled');
-            const hint = panel && panel.querySelector('p.hint');
-            if (hint && /^refresh to update/i.test(text(hint))) {
-              hint.textContent = 'up to date · auto-refresh stopped, reload for new jobs';
-            }
-          }
-        });
+      const hint = document.querySelector('[data-live-hint]');
+      if (hint && state === 'settled') hint.textContent = 'up to date · reload for new rows';
     };
 
     const schedule = () => {
@@ -215,16 +260,45 @@
 
     function tick() {
       clearTimeout(timer);
-      if (stopped || inFlight) return;
-      if (document.hidden) return; // visibilitychange restarts the loop
-      poll().then(() => {
-        if (!stopped && !inFlight) schedule();
-      });
+      if (stopped || inFlight || document.hidden) return;
+      inFlight = true;
+      fetch('/api/status', {
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { accept: 'application/json' },
+      })
+        .then((response) => {
+          if (!response.ok) throw new Error('HTTP ' + response.status);
+          return response.json();
+        })
+        .then((status) => {
+          errors = 0;
+          quietPolls = applyStatus(status) ? 0 : quietPolls + 1;
+        })
+        .catch(() => {
+          errors += 1;
+          if (errors >= MAX_POLL_ERRORS) stop('stalled');
+        })
+        .then(() => {
+          inFlight = false;
+          if (stopped) return;
+          if (quietPolls >= QUIET_POLLS_TO_STOP) {
+            stop('settled');
+            return;
+          }
+          schedule();
+        });
     }
 
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden || stopped || inFlight) return;
-      tick(); // back on the tab: refresh now instead of waiting out the interval
+      if (document.hidden || inFlight) return;
+      if (stopped) {
+        // back on the tab: a job may have been queued from somewhere else
+        stopped = false;
+        quietPolls = 0;
+        errors = 0;
+      }
+      tick();
     });
 
     schedule();
@@ -233,5 +307,5 @@
   guardDoubleSubmit();
   filterBusyState();
   slashToSearch();
-  liveImportJobs();
+  liveStatus();
 })();

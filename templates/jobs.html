@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}jobs{% endblock %}
+{% block body %}
+<section class="panel">
+  <h2>jobs</h2>
+  <p class="hint">
+    Publishing, uploading and importing all happen here, in the background: the page you
+    clicked from returned at once and this list shows the real progress.
+    {{ parallel }} import{{ '' if parallel == 1 else 's' }} run{{ '' if parallel == 1 else '' }} in parallel{% if waiting %},
+    {{ waiting }} waiting{% endif %} — raise <code>[import] max_concurrent</code> to do more at once.
+  </p>
+  {% if jobs %}
+  <table class="compact" data-live="jobs">
+    <tr><th>#</th><th>kind</th><th>target</th><th>state</th><th>progress</th><th>result</th><th>age</th><th></th></tr>
+    {% for j in jobs %}
+    <tr data-job="{{ j.id }}" data-state="{{ j.state }}">
+      <td>{{ j.id }}</td>
+      <td><span class="badge">{{ j.kind_label }}</span></td>
+      <td class="hint">{{ j.payload }}</td>
+      <td><span class="badge {{ 'green' if j.state == 'done' else ('red' if j.state == 'failed' else '') }}" data-role="state">{{ j.state }}</span></td>
+      <td class="progress-cell">
+        <div class="progress" role="progressbar" aria-valuemin="0"
+             aria-valuemax="{{ j.total }}" aria-valuenow="{{ j.progress }}">
+          <span style="width: {{ j.percent }}%"></span>
+        </div>
+        <span class="hint" data-role="counts">{{ j.progress }}/{{ j.total }}</span>
+      </td>
+      <td class="hint" data-role="message">{{ j.message }}</td>
+      <td class="hint" data-role="age">{{ j.age }}</td>
+      <td class="actions">
+        {% if j.post_id %}<a class="button small ghost" href="/posts/{{ j.post_id }}">post</a>{% endif %}
+        {% if j.retryable %}
+        <form method="post" action="/jobs/retry" class="inline">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="id" value="{{ j.id }}">
+          <button class="small" type="submit" title="run this import again as a new job">retry</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p class="hint" data-live-hint>this list updates itself while something is running</p>
+  {% else %}
+  <p class="hint">No jobs yet. <a href="/import">Import something</a> or publish from the dashboard.</p>
+  {% endif %}
+</section>
+{% endblock %}

@@ -22,24 +22,38 @@
       <span class="hint">the worker picks jobs up within a couple of seconds</span>
     </div>
   </form>
+  <p class="hint">
+    {{ parallel }} import{{ '' if parallel == 1 else 's' }} run{{ '' if parallel == 1 else '' }} in
+    parallel{% if waiting %}, {{ waiting }} waiting{% endif %}.
+    Each target is one job; a big batch therefore continues while you browse.
+    Raise <code>[import] max_concurrent</code> to run more at once — gallery-dl is
+    network and disk heavy, so more parallelism is not always faster.
+  </p>
 </section>
 
-<section class="panel">
-  <h2>jobs</h2>
+<section class="panel" data-live="import-jobs">
+  <h2>jobs <a class="hint" href="/jobs">all jobs →</a></h2>
   {% if jobs %}
   <table class="compact">
-    <tr><th>#</th><th>state</th><th>target</th><th>result</th><th>started</th></tr>
+    <tr><th>#</th><th>state</th><th>target</th><th>progress</th><th>result</th><th>started</th></tr>
     {% for j in jobs %}
-    <tr>
+    <tr data-job="{{ j.id }}" data-state="{{ j.state }}">
       <td>{{ j.id }}</td>
-      <td><span class="badge {{ 'green' if j.state == 'done' else ('red' if j.state == 'failed' else '') }}">{{ j.state }}</span></td>
+      <td><span class="badge {{ 'green' if j.state == 'done' else ('red' if j.state == 'failed' else '') }}" data-role="state">{{ j.state }}</span></td>
       <td class="hint">{{ j.payload }}</td>
-      <td class="hint">{{ j.message }}</td>
+      <td class="progress-cell">
+        <div class="progress" role="progressbar" aria-valuemin="0"
+             aria-valuemax="{{ j.total }}" aria-valuenow="{{ j.progress }}">
+          <span style="width: {{ j.percent }}%"></span>
+        </div>
+        <span class="hint" data-role="counts">{{ j.progress }}/{{ j.total }}</span>
+      </td>
+      <td class="hint" data-role="message">{{ j.message }}</td>
       <td class="hint">{{ j.created }}</td>
     </tr>
     {% endfor %}
   </table>
-  <p class="hint">refresh to update</p>
+  <p class="hint" data-live-hint>this list updates itself while something is running</p>
   {% else %}
   <p class="hint">No jobs yet.</p>
   {% endif %}
