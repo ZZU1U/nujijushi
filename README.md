@@ -18,8 +18,10 @@ URLs / folders ──▶ gallery-dl ──▶ blob store + SQLite ──▶ queu
 
 * **Import** — `gallery-dl` (Pixiv, Twitter/X, Danbooru, ArtStation, …) or a folder on disk.
 * **Store** — content-addressed blobs (identical files stored once) + thumbnails, SQLite metadata.
-* **Curate** — approve/reject, fix ratings, add or block tags, queue per channel — CLI or web UI
-  (posts already pushed to a channel are dimmed there, with a `queued · alias` badge).
+* **Curate** — approve/reject, fix ratings, add or block tags, queue per channel — CLI or web UI.
+  The grid colours the state (`new` amber, `approved` green, `rejected` red), hides posts
+  that already went out (a `hide sent` filter brings them back) and badges a post a
+  **non-admin** submitted through the bot with their handle.
 * **Publish** — per-channel interval, active hours in the channel's timezone, daily cap,
   artist cooldown, spoilers for NSFW, album chunking, retry/backoff, and a lease protocol
   so a restart never double-posts.
@@ -221,6 +223,9 @@ the archive from a chat. `--no-bot` or `[bot] enabled = false` turns just this o
 Roles: config `[access] admins` → database role → config `guests` → `public` (auto-register)
 → refuse. `banned` always wins. Guests are quota-limited (`usage` table, per day);
 admins are exempt. The interface only answers in **private chats**; group chatter is ignored.
+Every guest submission is also **DM'd to the admins** (who submitted, how many links, which),
+and the post carries an amber `via @handle` badge in the grid — a guest can add to the
+archive, but never invisibly.
 
 Importing a **Telegram post** (`t.me/<name>/<id>` or `t.me/c/<id>/<n>`) works when the bot is
 a member of that channel: the post is forwarded into your own chat, the files are downloaded,
@@ -368,6 +373,12 @@ After a send the next slot is `now + interval ± jitter`, pushed into the next a
 window if it would land outside it. `nujijushi preview` simulates the same selection with a
 per-channel seed, so what you see is what will go out.
 
+The tick lives in `nujijushi run` (with `--no-web` it still schedules). `nujijushi serve`
+only serves the UI: it runs the job queue, so the publish buttons and imports work, but
+nothing goes out on its own. Every pass writes a heartbeat (`settings['scheduler.tick']`),
+so the dashboard can say *"nothing is publishing on a schedule"* instead of leaving a full
+queue unexplained; `/api/status` exposes the same `scheduler` block.
+
 ### Publishing is idempotent
 
 Before touching the API, the queue row is leased (`state='sending'`). Outcomes:
@@ -451,7 +462,8 @@ token (`[web] token`) exchanged for an HttpOnly cookie; forms carry a CSRF token
 Binding to a non-loopback address is possible but logs a warning.
 
 Pages: dashboard (queue depth, next slot per channel, unconfirmed sends, recent sends,
-recent jobs) · posts grid with filters + bulk approve/reject/NSFW/queue/delete ·
+recent jobs) · posts grid with filters + bulk approve/reject/NSFW/queue/delete (sent posts
+hidden by default, state-coloured badges, a guest submitter is named) ·
 post detail with caption previews per channel · channel list + create · channel editor
 with live next-slot preview · ordered queue with pin/skip/requeue/remove ·
 next-slots preview · import box with job progress · **jobs** (every action, live) ·
@@ -542,7 +554,7 @@ another site), [extension/TESTING.md](extension/TESTING.md) is the manual checkl
 | a post the platform flagged sensitive is stored as `sfw` | the flag was nested (retweet/quote objects, per-media `sensitive`) where the mapper did not look — fixed, so rebuild and re-import. Ratings are stored at import, so an existing row keeps its value: `nujijushi nsfw <id> yes`, or "mark nsfw" in the web grid |
 | `webhook registered` but the bot never answers | registration only stores the URL — Telegram only fails *later*, when it POSTs. `nujijushi doctor` prints a `webhook delivery` line with Telegram's last error (e.g. `Wrong response from the webhook: 502 Bad Gateway`); no error but still silence means nothing reaches nginx. Also: commands only work in a **private chat** with the bot, channel posts are ignored by design |
 | webhook cannot work at all | the host must accept inbound HTTPS from Telegram. If you are behind CGNAT, cannot port-forward, or your ISP blocks 80/88/443/8443, use `[bot] mode = "polling"` (the default): outbound only, works anywhere, and the next `nujijushi run` deletes the stale webhook |
-| nothing published | `nujijushi channel ls` shows the reason: paused, outside active hours, daily cap, next slot |
+| a full queue never drains | the dashboard banner says whether the scheduler is alive. `serve` does not schedule — run `nujijushi run`. If it *is* running, the channel's own state (paused, outside active hours, daily cap, `next_due_at`) is on the dashboard and in `nujijushi channel ls` |
 | channel paused itself | 3 consecutive send failures — fix the cause, then `nujijushi channel resume` |
 | unconfirmed send after a crash | check the channel, then resolve it in the dashboard |
 
@@ -555,7 +567,7 @@ CI runs on every push and pull request (`.github/workflows/ci.yml`: `fmt`, `clip
 and attaches them to the GitHub release (`.github/workflows/release.yml`).
 
 ```bash
-cargo test                     # 286 tests: units, snapshots, flows, bot, web, webhook, storage, proxy
+cargo test                     # 296 tests: units, snapshots, flows, bot, web, webhook, storage, proxy
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```

@@ -81,7 +81,8 @@ impl Harness {
     }
 
     /// One post with one photo, already sitting in the channel's queue.
-    async fn queue_a_post(&self, label: &str, channel: &Channel) -> (i64, i64) {
+    /// One post with one photo, not queued anywhere.
+    async fn post_only(&self, label: &str) -> i64 {
         let mut post = NormalizedPost::new("pixiv", label);
         post.url = Some(format!("https://www.pixiv.net/artworks/{label}"));
         post.title = Some(format!("Artwork {label}"));
@@ -111,6 +112,12 @@ impl Harness {
             .call(move |conn| nujijushi::db::posts::upsert(conn, &post, &media))
             .await
             .unwrap();
+        post_id
+    }
+
+    /// The same post, already sitting in the channel's queue.
+    async fn queue_a_post(&self, label: &str, channel: &Channel) -> (i64, i64) {
+        let post_id = self.post_only(label).await;
         let channel = channel.clone();
         let outcome = nujijushi::queue::enqueue_checked(&self.state, &channel, post_id, 0)
             .await
@@ -629,4 +636,106 @@ async fn retrying_an_unfinished_import_is_refused() {
         1,
         "no second import of the same target"
     );
+}
+
+/// The grid is about what is still to publish: delivered posts are hidden unless
+/// asked for, and the filter says so.
+#[tokio::test]
+async fn the_grid_hides_sent_posts_until_asked() {
+    let h = harness();
+    let channel = h.add_channel().await;
+    let (sent_post, queue_id) = h.queue_a_post("1", &channel).await;
+    let waiting = h.post_only("2").await;
+    h.state
+        .db
+        .call(move |conn| nujijushi::db::queue::mark_sent(conn, queue_id, "5", chrono::Utc::now()))
+        .await
+        .unwrap();
+
+    let card = |id: i64| format!("href=\"/posts/{id}\"");
+
+    let html = body_text(h.send(h.get("/posts")).await).await;
+    assert!(html.contains(&card(waiting)), "unsent post is listed");
+    assert!(
+        !html.contains(&card(sent_post)),
+        "sent post is hidden by default"
+    );
+    assert!(html.contains("hide sent"), "the filter says what it does");
+
+    let all = body_text(h.send(h.get("/posts?sent=all")).await).await;
+    assert!(all.contains(&card(sent_post)) && all.contains(&card(waiting)));
+
+    let only = body_text(h.send(h.get("/posts?sent=yes")).await).await;
+    assert!(only.contains(&card(sent_post)));
+    assert!(!only.contains(&card(waiting)), "sent-only means sent only");
+}
+
+/// A post that a non-admin submitted says so, with their handle; an admin's own
+/// import stays quiet.
+#[tokio::test]
+async fn a_guest_submission_is_badged_in_the_grid() {
+    let h = harness();
+    let guest_post = h.post_only("1").await;
+    let admin_post = h.post_only("2").await;
+    h.state
+        .db
+        .call(move |conn| {
+            conn.execute(
+                "INSERT INTO users (tg_id, username, first_name, role, created_at)
+                 VALUES (7, 'fan', NULL, 'guest', '2026-01-01T00:00:00Z'),
+                        (8, 'boss', NULL, 'admin', '2026-01-01T00:00:00Z')",
+                [],
+            )?;
+            nujijushi::db::posts::set_submitted_by(conn, guest_post, 7)?;
+            nujijushi::db::posts::set_submitted_by(conn, admin_post, 8)
+        })
+        .await
+        .unwrap();
+
+    let html = body_text(h.send(h.get("/posts")).await).await;
+    assert!(html.contains("via @fan"), "the guest is named: {html}");
+    assert_eq!(
+        html.matches("badge amber").count(),
+        1,
+        "exactly the guest's post is badged: {html}"
+    );
+    assert!(
+        !html.contains("via @boss") && !html.contains("via <"),
+        "an admin (or an absent submitter) needs no badge: {html}"
+    );
+
+    let detail = body_text(h.send(h.get(&format!("/posts/{guest_post}"))).await).await;
+    assert!(detail.contains("@fan"));
+    assert!(detail.contains("not an admin"));
+}
+
+/// A queue that is not moving is explained: no heartbeat means the scheduler is
+/// not running (`serve` never schedules).
+#[tokio::test]
+async fn the_dashboard_says_when_the_scheduler_is_not_running() {
+    let h = harness();
+    let html = body_text(h.send(h.get("/")).await).await;
+    assert!(
+        html.contains("nothing is publishing on a schedule"),
+        "banner missing: {html}"
+    );
+    assert!(html.contains("nujijushi run"), "the hint names the command");
+
+    h.state
+        .db
+        .set_setting(
+            nujijushi::queue::scheduler::TICK_KEY,
+            &chrono::Utc::now().to_rfc3339(),
+        )
+        .unwrap();
+    let html = body_text(h.send(h.get("/")).await).await;
+    assert!(
+        !html.contains("nothing is publishing on a schedule"),
+        "a fresh heartbeat settles the banner: {html}"
+    );
+
+    let status: serde_json::Value =
+        serde_json::from_str(&body_text(h.send(h.get("/api/status")).await).await).unwrap();
+    assert_eq!(status["scheduler"]["stale"], false);
+    assert!(status["scheduler"]["age_secs"].is_number());
 }

@@ -452,6 +452,7 @@ async fn dashboard(
             "jobs": job_views,
             "recent_unknown": unknown,
             "storage": storage_views,
+            "scheduler": scheduler_view(app, now),
         }),
     )?;
     Ok(Html(html))
@@ -478,6 +479,13 @@ async fn posts_page(
             Some("yes") => Some(true),
             Some("no") => Some(false),
             _ => None,
+        },
+        // the grid is about "what is still to publish": sent posts are hidden
+        // unless asked for, and `?sent=all` brings them back
+        sent: match query.sent.as_deref() {
+            Some("yes") => post_db::SentFilter::Sent,
+            Some("all") => post_db::SentFilter::Any,
+            _ => post_db::SentFilter::NotSent,
         },
         author_id: None,
         search: query.search.clone().filter(|s| !s.is_empty()),
@@ -512,6 +520,9 @@ async fn posts_page(
                 "rating": card.rating.as_str(),
                 "state": card.state.as_str(),
                 "artist": card.author_name,
+                "submitted_by": card.submitted_by,
+                "submitter": card.submitter,
+                "submitter_guest": card.submitter_guest,
                 "media_count": card.media_count,
                 "thumb": card.thumb_hash,
                 "nsfw": card.nsfw,
@@ -539,6 +550,7 @@ async fn posts_page(
                 "source": query.source,
                 "tag": query.tag,
                 "nsfw": query.nsfw,
+                "sent": query.sent,
                 "search": query.search,
             },
             "sources": sources,
@@ -648,19 +660,9 @@ async fn post_page(
     let post = app.db.call(move |conn| post_db::get(conn, id)).await?;
     let channels = app.db.call(|conn| channel_db::list(conn)).await?;
     let rules = app.db.call(|conn| tag_db::TagRules::load(conn)).await?;
-    let submitted_by = app
+    let submitter = app
         .db
-        .call(move |conn| {
-            use rusqlite::OptionalExtension;
-            Ok(conn
-                .query_row(
-                    "SELECT submitted_by FROM posts WHERE id = ?1",
-                    [id],
-                    |row| row.get::<_, Option<i64>>(0),
-                )
-                .optional()?
-                .flatten())
-        })
+        .call(move |conn| post_db::submitter(conn, id))
         .await?;
 
     let mut captions = Vec::new();
@@ -733,7 +735,11 @@ async fn post_page(
                 "notes": post.notes,
                 "imported": post.imported_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string(),
             },
-            "submitted_by": submitted_by,
+            "submitter": submitter.map(|(tg_id, label, admin)| json!({
+                "tg_id": tg_id,
+                "label": label,
+                "admin": admin,
+            })),
             "media": media,
             "captions": captions,
             "ratings": Rating::all().iter().map(|r| r.as_str()).collect::<Vec<_>>(),
@@ -1224,6 +1230,25 @@ async fn publish_action(
     };
     Ok(flash_redirect(&back, &note))
 }
+/// Is the scheduler alive? Read by the dashboard banner and `/api/status`, so a
+/// queue that is not moving can be explained instead of guessed at.
+fn scheduler_view(app: &AppState, now: chrono::DateTime<chrono::Utc>) -> Value {
+    let last_tick = app
+        .db
+        .setting(crate::queue::scheduler::TICK_KEY)
+        .ok()
+        .flatten();
+    let age = crate::queue::scheduler::tick_age(last_tick.as_deref(), now);
+    let age_text = age
+        .map(|secs| crate::tg::publish::format_duration(chrono::Duration::seconds(secs)))
+        .unwrap_or_else(|| "never".to_string());
+    json!({
+        "last_tick": last_tick,
+        "age_secs": age,
+        "age": age_text,
+        "stale": age.map(|secs| secs > crate::queue::scheduler::STALE_SECS).unwrap_or(true),
+    })
+}
 
 // ---------------------------------------------------------------- jobs
 
@@ -1387,6 +1412,7 @@ pub async fn status_payload(app: &AppState) -> crate::error::Result<Value> {
         "now": now.to_rfc3339(),
         "jobs": jobs.iter().map(|job| job_view(job, now)).collect::<Vec<_>>(),
         "channels": channel_views,
+        "scheduler": scheduler_view(app, now),
     }))
 }
 

@@ -118,6 +118,25 @@ pub fn within_daily_cap(channel: &Channel, sent_today: i64) -> bool {
     channel.daily_cap <= 0 || sent_today < channel.daily_cap
 }
 
+/// Settings key the `run` loop writes on every pass (RFC3339 timestamp).
+///
+/// The UI reads it to answer the one question a silent queue raises: is nothing
+/// due, or is nothing *running*? `serve` does not schedule, so without this a
+/// channel that never fires looks identical to a channel that is simply waiting.
+pub const TICK_KEY: &str = "scheduler.tick";
+
+/// A scheduler that has not ticked for this long is considered not running.
+///
+/// The loop ticks every `--tick` seconds (15 by default): two minutes leaves room
+/// for a slow pass and still explains a queue that is not moving.
+pub const STALE_SECS: i64 = 120;
+
+/// Age of the stored tick, in seconds. Pure: the caller reads the setting.
+pub fn tick_age(raw: Option<&str>, now: DateTime<Utc>) -> Option<i64> {
+    let last = DateTime::parse_from_rfc3339(raw?.trim()).ok()?;
+    Some((now - last.with_timezone(&Utc)).num_seconds().max(0))
+}
+
 /// Everything a channel needs to pass before a slot may fire.
 pub fn slot_allowed(channel: &Channel, now: DateTime<Utc>, sent_today: i64) -> bool {
     is_due(channel, now) && is_active(channel, now) && within_daily_cap(channel, sent_today)
@@ -280,5 +299,17 @@ mod tests {
         let outside = utc(2025, 5, 1, 3, 0);
         assert!(slot_reason(&ch, outside, 0).contains("outside active hours"));
         assert_eq!(slot_reason(&ch, now, 0), "due");
+    }
+
+    #[test]
+    fn tick_age_reads_the_heartbeat() {
+        let now = utc(2025, 5, 1, 12, 0);
+        assert_eq!(tick_age(Some("2025-05-01T11:58:00+00:00"), now), Some(120));
+        assert_eq!(tick_age(Some(" 2025-05-01T12:00:00Z "), now), Some(0));
+        // a clock that went backwards must not read as "before the beginning"
+        assert_eq!(tick_age(Some("2025-05-01T12:05:00Z"), now), Some(0));
+        assert_eq!(tick_age(None, now), None);
+        assert_eq!(tick_age(Some("not a timestamp"), now), None);
+        // (STALE_SECS is documented next to the constant: 2 minutes)
     }
 }

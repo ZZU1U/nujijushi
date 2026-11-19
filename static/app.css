@@ -85,6 +85,13 @@ td.mini img { width: 46px; height: 46px; object-fit: cover; border-radius: 6px; 
 .badge.red { color: var(--err); border-color: #7f1d1d; }
 .badge.corner { position: absolute; top: .4rem; right: .4rem; background: #2a0f13; }
 .badge.accent { color: var(--accent); border-color: rgba(125, 211, 252, .35); background: rgba(125, 211, 252, .1); }
+/* a submitter who is not an admin: the one thing worth reading at a glance */
+.badge.amber { color: #fbbf24; border-color: #78350f; background: rgba(251, 191, 36, .1); font-weight: 600; }
+/* curation state: "new" needs a look, "approved" is done, "rejected" is final */
+.badge.state-new { color: #fbbf24; border-color: #78350f; font-weight: 600; }
+.badge.state-approved { color: var(--ok); border-color: #14532d; }
+.badge.state-rejected { color: var(--err); border-color: #7f1d1d; background: #1a1113; }
+.badge.state-archived { color: var(--muted); opacity: .8; }
 /* `.badge` sets display, which would beat the UA rule for the hidden attribute */
 .badge[hidden] { display: none; }
 
@@ -121,7 +128,9 @@ label.check input { width: auto; }
 .bulkbar { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; position: sticky; top: 56px; z-index: 5; }
 .bulkbar select { width: auto; }
 
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: .9rem; }
+/* every card in a row (and every row) is the same height: the thumbnail box and
+   the two-line snippet are fixed, the meta block takes up the rest */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: .9rem; grid-auto-rows: 1fr; align-items: stretch; }
 .card.post {
   position: relative; background: var(--panel); border: 1px solid var(--line);
   border-radius: var(--radius); overflow: hidden; margin: 0; padding: 0;
@@ -135,13 +144,16 @@ label.check input { width: auto; }
 .card.post.pushed:hover { opacity: 1; }
 .card.post.pushed:hover .thumb img { filter: grayscale(.5); }
 .card.post .pick { position: absolute; top: .5rem; left: .5rem; width: 18px; height: 18px; z-index: 2; accent-color: var(--accent); }
-.thumb { display: block; aspect-ratio: 4 / 3; background: #0f1318; position: relative; }
-.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb { display: block; aspect-ratio: 4 / 3; background: #0f1318; position: relative; overflow: hidden; }
+/* `contain`, not `cover`: a thumbnail that cuts the artwork in half is useless
+   for deciding what to publish. The box keeps the grid aligned instead. */
+.thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .thumb .noimg { color: var(--muted); font-size: .8rem; display: grid; place-items: center; height: 100%; }
 .thumb .count { position: absolute; bottom: .4rem; left: .4rem; background: rgba(0,0,0,.7); padding: .05rem .4rem; border-radius: 6px; font-size: .75rem; }
-.meta { padding: .55rem .7rem .7rem; }
-.meta .row { display: flex; gap: .35rem; align-items: center; margin-bottom: .2rem; }
-.meta .snippet { font-size: .85rem; margin: .15rem 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.meta { padding: .55rem .7rem .7rem; display: flex; flex-direction: column; flex: 1 1 auto; }
+.meta .row { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; margin-bottom: .2rem; }
+.meta .snippet { font-size: .85rem; margin: .15rem 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; min-height: 2.55rem; }
+.meta > .hint:last-child { margin-top: auto; }
 .pager { display: flex; gap: .5rem; justify-content: center; margin: 1rem 0 2rem; }
 
 .tagcloud { display: flex; flex-wrap: wrap; gap: .35rem; margin: .4rem 0 .8rem; }

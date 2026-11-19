@@ -270,6 +270,12 @@ pub struct PostCard {
     /// honoured, otherwise the rating decides (`Rating::nsfw_sql`). The queue and
     /// the grid both read this, so they cannot disagree.
     pub nsfw: bool,
+    /// Telegram id of the user who submitted this post (bot ingest), if any.
+    pub submitted_by: Option<i64>,
+    /// How to name that user: `@handle`, first name, or the raw id.
+    pub submitter: Option<String>,
+    /// True when that user is not an admin: their submissions are worth a look.
+    pub submitter_guest: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

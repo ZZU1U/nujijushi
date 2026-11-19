@@ -10,7 +10,7 @@ how to work here without breaking things.
 folders, Telegram posts) into a content-addressed archive with SQLite metadata, curates
 it, mirrors it to external storage, and publishes it to Telegram channels on a schedule.
 Three interfaces sit on top of the same services: **CLI**, **axum admin UI**, and a
-**Telegram bot** (long polling or webhook). 286 tests, no network needed to run them.
+**Telegram bot** (long polling or webhook). 296 tests, no network needed to run them.
 
 ## Build, test, lint
 

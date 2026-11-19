@@ -22,7 +22,7 @@
       {% if post.title %}<dt>title</dt><dd>{{ post.title }}</dd>{% endif %}
       {% if post.url %}<dt>source</dt><dd><a href="{{ post.url }}" target="_blank">{{ post.url }}</a></dd>{% endif %}
       <dt>rating</dt><dd>{{ post.rating }} {% if post.nsfw %}<span class="badge red">nsfw</span>{% else %}<span class="badge green">sfw</span>{% endif %} <span class="hint">override: {{ post.nsfw_override }}</span></dd>
-      <dt>imported</dt><dd class="hint">{{ post.imported }}{% if submitted_by %} · via telegram user <code>{{ submitted_by }}</code>{% endif %}</dd>
+      <dt>imported</dt><dd class="hint">{{ post.imported }}{% if submitter %} · via telegram {{ submitter.label }}{% if not submitter.admin %} <span class="badge amber">not an admin</span>{% endif %}{% endif %}</dd>
       {% if post.description %}<dt>description</dt><dd class="prose">{{ post.description }}</dd>{% endif %}
     </dl>
 

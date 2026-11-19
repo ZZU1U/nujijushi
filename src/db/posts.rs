@@ -26,6 +26,18 @@ pub struct NewMedia {
     pub meta_json: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SentFilter {
+    /// Every post, sent or not (the CLI default).
+    #[default]
+    Any,
+    /// Hide posts that already went out on a channel — the web grid's default,
+    /// because a curated archive is mostly "what is still to publish".
+    NotSent,
+    /// Only posts that already went out.
+    Sent,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct PostFilter {
     pub state: Option<PostState>,
@@ -34,6 +46,7 @@ pub struct PostFilter {
     pub nsfw: Option<bool>,
     pub author_id: Option<i64>,
     pub search: Option<String>,
+    pub sent: SentFilter,
     pub limit: i64,
     pub offset: i64,
 }
@@ -267,10 +280,10 @@ pub fn find_by_source_id(conn: &Connection, source: &str, source_id: &str) -> Re
         .optional()?)
 }
 
-/// Post-card projection. A function rather than a const because the two rules a
-/// card depends on live elsewhere and must not be copied: what counts as nsfw
-/// (`Rating::nsfw_sql`) and what counts as delivered
-/// (`db::queue::DELIVERED_STATES`).
+/// Post-card projection. A function rather than a const because the rules a card
+/// depends on live elsewhere and must not be copied: what counts as nsfw
+/// (`Rating::nsfw_sql`), what counts as delivered (`db::queue::DELIVERED_STATES`)
+/// and how a submitter is named (`users::label`).
 fn card_select() -> String {
     format!(
         "
@@ -285,16 +298,61 @@ fn card_select() -> String {
            (SELECT COUNT(*) FROM queue q2 WHERE q2.post_id = p.id
              AND q2.state IN ({delivered})) AS delivered,
            (SELECT GROUP_CONCAT(ch.alias, ',') FROM queue q3
-             JOIN channels ch ON ch.id = q3.channel_id WHERE q3.post_id = p.id) AS channels
-    FROM posts p LEFT JOIN authors a ON a.id = p.author_id",
+             JOIN channels ch ON ch.id = q3.channel_id WHERE q3.post_id = p.id) AS channels,
+           p.submitted_by,
+           {submitter} AS submitter,
+           CASE WHEN {submitter_admin} THEN 1 ELSE 0 END AS submitter_admin
+    FROM posts p LEFT JOIN authors a ON a.id = p.author_id
+         LEFT JOIN users u ON u.tg_id = p.submitted_by",
         author = crate::model::author_label_sql("a"),
         nsfw = Rating::nsfw_sql("p.rating"),
         delivered = crate::db::queue::DELIVERED_STATES,
+        // a user we have no row for still counts as "not an admin": better a
+        // badge too many than a guest post nobody notices
+        submitter = submitter_sql("p"),
+        submitter_admin = "u.role = 'admin'",
     )
+}
+
+/// How a submitter is named: `@handle`, else first name, else the raw id.
+/// One expression, shared by the card projection and the detail page.
+fn submitter_sql(prefix: &str) -> String {
+    format!(
+        "CASE
+                 WHEN u.username IS NOT NULL THEN '@' || u.username
+                 WHEN u.first_name IS NOT NULL THEN u.first_name
+                 ELSE CAST({prefix}.submitted_by AS TEXT) END"
+    )
+}
+
+/// `(tg_id, label, is_admin)` of the Telegram user who submitted this post.
+///
+/// `None` when the post did not come through the bot. The label uses the same
+/// expression as the card grid, so both pages name the user identically.
+pub fn submitter(conn: &Connection, post_id: i64) -> Result<Option<(i64, String, bool)>> {
+    let sql = format!(
+        "SELECT p.submitted_by, {} AS submitter, COALESCE(u.role = 'admin', 0) AS admin
+           FROM posts p LEFT JOIN users u ON u.tg_id = p.submitted_by
+          WHERE p.id = ?1 AND p.submitted_by IS NOT NULL",
+        submitter_sql("p")
+    );
+    Ok(conn
+        .query_row(&sql, [post_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)? != 0,
+            ))
+        })
+        .optional()?)
 }
 
 fn card_from_row(row: &Row<'_>) -> rusqlite::Result<PostCard> {
     let description: Option<String> = row.get("description")?;
+    let submitted_by: Option<i64> = row.get("submitted_by")?;
+    // a post with no submitter is not a guest submission: the `LEFT JOIN` leaves
+    // `u.role` NULL there, which must not read as "someone who is not an admin"
+    let submitter_admin = row.get::<_, i64>("submitter_admin")? != 0;
     Ok(PostCard {
         id: row.get("id")?,
         source: row.get("source")?,
@@ -309,6 +367,9 @@ fn card_from_row(row: &Row<'_>) -> rusqlite::Result<PostCard> {
         delivered: row.get("delivered")?,
         channels: row.get("channels")?,
         nsfw: row.get::<_, i64>("nsfw")? != 0,
+        submitted_by,
+        submitter: row.get("submitter")?,
+        submitter_guest: submitted_by.is_some() && !submitter_admin,
         snippet: description.map(|d| d.lines().next().unwrap_or_default().to_string()),
     })
 }
@@ -318,6 +379,19 @@ fn card_from_row(row: &Row<'_>) -> rusqlite::Result<PostCard> {
 fn filter_sql(filter: &PostFilter) -> (String, Vec<Value>) {
     let mut clauses: Vec<String> = Vec::new();
     let mut values: Vec<Value> = Vec::new();
+
+    // "already sent" is one rule, shared with the queue: DELIVERED_STATES
+    match filter.sent {
+        SentFilter::Any => {}
+        SentFilter::NotSent => clauses.push(format!(
+            "p.id NOT IN (SELECT q.post_id FROM queue q WHERE q.state IN ({}))",
+            crate::db::queue::DELIVERED_STATES
+        )),
+        SentFilter::Sent => clauses.push(format!(
+            "p.id IN (SELECT q.post_id FROM queue q WHERE q.state IN ({}))",
+            crate::db::queue::DELIVERED_STATES
+        )),
+    }
 
     if let Some(state) = filter.state {
         clauses.push("p.state = ?".into());
@@ -585,5 +659,121 @@ mod tests {
             Some(r#"{"media_id":7,"sensitive":true}"#),
             "the item's own extractor metadata is persisted"
         );
+    }
+
+    fn a_post(db: &crate::db::Db, label: &str) -> i64 {
+        db.with(|conn| {
+            let mut post = crate::source::NormalizedPost::new("pixiv", label);
+            post.title = Some(format!("post {label}"));
+            let (id, _) = upsert(conn, &post, &[])?;
+            Ok(id)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn the_sent_filter_hides_what_already_went_out() {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        let delivered = a_post(&db, "1");
+        let waiting = a_post(&db, "2");
+        let channel_id = db
+            .with(|conn| crate::db::channels::insert(conn, &crate::model::Channel::new("t", "@t")))
+            .unwrap();
+        db.with(|conn| {
+            crate::db::queue::enqueue(conn, delivered, channel_id, 0)?;
+            let queue_id: i64 = conn.query_row(
+                "SELECT id FROM queue WHERE post_id = ?1",
+                [delivered],
+                |row| row.get(0),
+            )?;
+            crate::db::queue::mark_sent(conn, queue_id, "1", chrono::Utc::now())
+        })
+        .unwrap();
+
+        let ids = |filter: PostFilter| {
+            db.with(|conn| cards(conn, &filter))
+                .unwrap()
+                .iter()
+                .map(|card| card.id)
+                .collect::<Vec<_>>()
+        };
+        // the default (web) view hides what is already out, not what is queued
+        let hidden = PostFilter {
+            sent: SentFilter::NotSent,
+            ..Default::default()
+        };
+        assert_eq!(ids(hidden.clone()), vec![waiting]);
+        assert_eq!(db.with(|conn| count_cards(conn, &hidden)).unwrap(), 1);
+
+        let only = PostFilter {
+            sent: SentFilter::Sent,
+            ..Default::default()
+        };
+        assert_eq!(ids(only), vec![delivered]);
+        // `Any` is the CLI's view: everything
+        assert_eq!(ids(PostFilter::default()).len(), 2);
+    }
+
+    #[test]
+    fn cards_name_the_submitter_and_flag_guests() {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        let post_id = a_post(&db, "1");
+        db.with(|conn| {
+            conn.execute(
+                "INSERT INTO users (tg_id, username, first_name, role, created_at)
+                 VALUES (42, 'fan', NULL, 'guest', '2026-01-01T00:00:00Z')",
+                [],
+            )?;
+            set_submitted_by(conn, post_id, 42)
+        })
+        .unwrap();
+
+        let card = db
+            .with(|conn| cards(conn, &PostFilter::default()))
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(card.submitted_by, Some(42));
+        assert_eq!(
+            card.submitter.as_deref(),
+            Some("@fan"),
+            "the handle is shown"
+        );
+        assert!(card.submitter_guest, "a guest is flagged");
+
+        // promoting the user clears the flag: same post, different role
+        db.with(|conn| {
+            conn.execute("UPDATE users SET role = 'admin' WHERE tg_id = 42", [])?;
+            Ok(())
+        })
+        .unwrap();
+        let card = db
+            .with(|conn| cards(conn, &PostFilter::default()))
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert!(!card.submitter_guest, "an admin submission is not flagged");
+
+        // the detail page names the user the same way
+        let (tg_id, label, admin) = db
+            .with(|conn| submitter(conn, post_id))
+            .unwrap()
+            .expect("a submitter");
+        assert_eq!((tg_id, label.as_str(), admin), (42, "@fan", true));
+        // a post that did not come through the bot is not a guest submission:
+        // the LEFT JOIN leaves `users.role` NULL, which once read as "guest"
+        let plain = a_post(&db, "2");
+        assert_eq!(db.with(|conn| submitter(conn, plain)).unwrap(), None);
+        let plain_card = db
+            .with(|conn| cards(conn, &PostFilter::default()))
+            .unwrap()
+            .into_iter()
+            .find(|card| card.id == plain)
+            .expect("the plain post");
+        assert!(
+            !plain_card.submitter_guest,
+            "no submitter is not the same as a guest submitter"
+        );
+        assert_eq!(plain_card.submitter, None);
     }
 }

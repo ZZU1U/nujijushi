@@ -111,6 +111,13 @@ scheduler (15 s tick)
 
 `publish_item(state, queue_id, dry_run)` is the same tail for one specific queue row; it
 ignores the schedule but not the policy.
+
+`scheduler_pass` (src/cli.rs) also writes `settings['scheduler.tick']` on every pass.
+`serve` starts the web UI **and** the job worker, but not this loop, so the timestamp is the
+only honest way to tell "nothing is due" from "nothing is running": `queue::scheduler::
+tick_age` turns it into a `scheduler` block (`{last_tick, age_secs, age, stale}`) that
+`/api/status` returns and the dashboard renders as a banner once it is older than
+`STALE_SECS`.
 `publish_channel` is used by the scheduler, `push`, `/publish` and the web actions.
 
 Inside the web UI nothing calls either directly: `POST /publish` writes a `publish_channel`
@@ -154,6 +161,14 @@ each entry so the templates and the JSON cannot drift apart. `static/app.js` pol
 stay server-rendered: with JS off the same numbers are simply static, and nothing needs a
 build step. `/jobs` lists the last 50 jobs with a progress bar and a retry form.
 
+The grid (`db::posts::card_select`) is one projection with three shared rules: nsfw
+(`Rating::nsfw_sql`), delivered (`db::queue::DELIVERED_STATES`) and how a submitter is named
+(`submitter_sql` → `@handle`, first name, else the id). `/posts` defaults to
+`SentFilter::NotSent` — a curated archive is mostly "what is still to publish" — and
+`?sent=all|yes` brings the sent ones back or shows only them; the CLI keeps `Any`. A post a
+non-admin submitted gets an amber `via @handle` badge (`submitter_guest`), which is false for
+a post with no submitter at all.
+
 The webhook endpoint is separate from the UI: `POST /tg/webhook` checks
 `X-Telegram-Bot-Api-Secret-Token` in constant time, builds a `bot::Bot` and hands the body to
 `handle_webhook_body`, answering 200 / 400 (bad update) / 500 (internal, Telegram retries).
@@ -176,6 +191,10 @@ update → my_chat_member (became admin of a channel)
 
 Replies are HTML, escaped, chunked to Telegram's 4096 limit (`bot/reply.rs`).
 Import links become `jobs` rows (`submitted_by` set); the worker DMs the outcome back.
+A **guest** batch also DMs the admins (`bot::admin_recipients`: config admins plus users the
+bot promoted, deduped, minus the submitter) with the handle, the count and the links — and
+the card grid badges that submitter, because a guest can add to the archive but never
+invisibly.
 
 ## Flow 5 — storage mirrors
 

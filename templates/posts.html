@@ -16,6 +16,11 @@
     <option value="yes" {{ 'selected' if filters.nsfw == 'yes' else '' }}>nsfw only</option>
     <option value="no" {{ 'selected' if filters.nsfw == 'no' else '' }}>sfw only</option>
   </select>
+  <select name="sent">
+    <option value="" {{ 'selected' if not filters.sent else '' }}>hide sent</option>
+    <option value="all" {{ 'selected' if filters.sent == 'all' else '' }}>with sent</option>
+    <option value="yes" {{ 'selected' if filters.sent == 'yes' else '' }}>sent only</option>
+  </select>
   <input name="tag" placeholder="tag" value="{{ filters.tag }}">
   <button type="submit">filter</button>
   <span class="hint">{{ total }} post(s)</span>
@@ -57,10 +62,11 @@
       <div class="meta">
         <div class="row">
           <a href="/posts/{{ c.id }}">#{{ c.id }}</a>
-          <span class="badge">{{ c.state }}</span>
+          <span class="badge state-{{ c.state }}">{{ c.state }}</span>
           {% if c.delivered %}<span class="badge green" title="sent to {{ c.channels }}">sent · {{ c.channels }}</span>
           {% elif c.pushed %}<span class="badge" title="queued for {{ c.channels }}">queued · {{ c.channels }}</span>{% endif %}
           <span class="badge">{{ c.rating }}</span>
+          {% if c.submitter_guest %}<span class="badge amber" title="submitted through Telegram by {{ c.submitter }}, who is not an admin">via {{ c.submitter }}</span>{% endif %}
         </div>
         <div class="hint">{{ c.artist }}</div>
         <div class="snippet">{{ c.snippet }}</div>

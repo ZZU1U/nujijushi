@@ -19,6 +19,9 @@ pub struct PostFilter {
     pub tag: Option<String>,
     #[serde(default)]
     pub nsfw: Option<String>,
+    /// `yes` = only posts already out, `all` = include them; absent = hide them.
+    #[serde(default)]
+    pub sent: Option<String>,
     #[serde(default)]
     pub search: Option<String>,
     #[serde(default, deserialize_with = "empty_as_none")]

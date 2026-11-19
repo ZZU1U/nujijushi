@@ -1,6 +1,18 @@
 {% extends "base.html" %}
 {% block title %}dashboard{% endblock %}
 {% block body %}
+{% if scheduler is defined and scheduler.stale %}
+<section class="panel alert">
+  <h2>nothing is publishing on a schedule</h2>
+  <p class="hint">
+    {% if scheduler.last_tick %}The scheduler last ran {{ scheduler.age }} ago.{% else %}The scheduler has never run in this data directory.{% endif %}
+    Scheduler slots are driven by <code>nujijushi run</code>; <code>nujijushi serve</code> only
+    serves this UI. The queue, imports and the publish buttons keep working, but no post goes
+    out on its own until that process runs. If it is running, check it is still alive.
+  </p>
+</section>
+{% endif %}
+
 <section class="stats">
   <div class="stat"><span class="num">{{ stats.posts }}</span><span class="lbl">posts</span></div>
   <div class="stat"><span class="num">{{ stats.approved }}</span><span class="lbl">approved</span></div>

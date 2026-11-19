@@ -127,6 +127,7 @@ mod tests {
                     "sends": [],
                     "jobs": [],
                     "recent_unknown": [],
+                    "scheduler": {"stale": false, "age": "4s", "last_tick": "2026-01-01T00:00:00Z"},
                 }),
             )
             .unwrap();
@@ -229,5 +230,37 @@ mod tests {
         );
         assert!(html.contains("queued · night-shift"), "{html}");
         assert!(html.contains("sent · main"));
+    }
+
+    /// A silent queue must be explainable: the banner only shows when the
+    /// scheduler has not ticked (as in a `serve`-only setup).
+    #[test]
+    fn dashboard_says_when_nothing_is_scheduling() {
+        let renderer = PageRenderer::new().unwrap();
+        let base = json!({
+            "page": "dashboard",
+            "csrf": "tok",
+            "flash": null,
+            "stats": {"posts": 0, "approved": 0, "queued": 0, "sent": 0, "unknown": 0},
+            "channels": [],
+            "sends": [],
+            "jobs": [],
+            "recent_unknown": [],
+        });
+        let html = renderer.render("dashboard.html", &base).unwrap();
+        assert!(!html.contains("nothing is publishing on a schedule"));
+
+        let mut stale = base.clone();
+        stale["scheduler"] = json!({
+            "stale": true, "age_secs": 7200, "age": "2h",
+            "last_tick": "2026-01-01T00:00:00Z",
+        });
+        let html = renderer.render("dashboard.html", &stale).unwrap();
+        assert!(
+            html.contains("nothing is publishing on a schedule"),
+            "banner missing: {html}"
+        );
+        assert!(html.contains("last ran 2h ago"), "age missing: {html}");
+        assert!(html.contains("nujijushi run"), "hint missing: {html}");
     }
 }

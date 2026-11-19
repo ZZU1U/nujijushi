@@ -558,6 +558,7 @@ pub async fn run() -> Result<()> {
         Command::Serve { bind } => {
             let state = open_state(cfg)?;
             reconcile_interrupted_jobs(&state).await?;
+            println!("scheduler  not running in `serve` - `nujijushi run` publishes on schedule");
             crate::web::serve(state, bind).await
         }
         Command::Bot { once } => {
@@ -1412,6 +1413,8 @@ async fn cmd_ls(
             None => None,
         },
         search,
+        // the CLI lists everything: scripted checks want the sent ones too
+        sent: crate::db::posts::SentFilter::Any,
         limit,
         offset: 0,
         author_id: None,
@@ -2158,6 +2161,14 @@ async fn scheduler_pass(state: &AppState) -> Result<()> {
         .call(|conn| crate::db::channels::list(conn))
         .await?;
     let now = Utc::now();
+    // heartbeat for the UI: "nothing due" and "nothing running" look identical
+    // from outside, and that is exactly the question a silent queue raises
+    if let Err(err) = state
+        .db
+        .set_setting(crate::queue::scheduler::TICK_KEY, &now.to_rfc3339())
+    {
+        tracing::warn!("cannot record the scheduler heartbeat: {err}");
+    }
     for channel in channels {
         if !channel.enabled || channel.paused {
             continue;
