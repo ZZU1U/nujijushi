@@ -112,6 +112,23 @@ scheduler (15 s tick)
 `publish_item(state, queue_id, dry_run)` is the same tail for one specific queue row; it
 ignores the schedule but not the policy.
 
+### The projection (estimated times)
+
+`plan_ahead` (src/tg/publish.rs) is the read-only twin of `publish_channel`: the same
+candidate load, the same `nsfw::evaluate` filter, the same seeded `Selection::simulate`
+(`channel.id ^ 0x5eed`), so the order it returns is the order the scheduler would take.
+`scheduler::upcoming_slots` then gives each item a time: interval (`+ half of jitter`, the
+mean of the uniform draw), pushed into the active window, skipping to the next local day
+when `daily_cap` is reached. `project_queue` exposes that as `{queue_id, post_id, slot}`;
+`preview_channel` builds on the same function (it adds the rendered caption), so a preview
+and an ETA cannot disagree.
+
+Four surfaces read it, all formatting through `publish::slot_label` (local `HH:MM` today,
+`Tue HH:MM` within a week, `MM-DD HH:MM` beyond): the queue page's `est.` column, the post
+page's per-channel badge (via `db::queue::for_post`), the preview page, and the CLI
+(`queue ls`, `preview`). A paused or disabled channel projects nothing, which is exactly
+what "nothing goes out" means.
+
 `scheduler_pass` (src/cli.rs) also writes `settings['scheduler.tick']` on every pass.
 `serve` starts the web UI **and** the job worker, but not this loop, so the timestamp is the
 only honest way to tell "nothing is due" from "nothing is running": `queue::scheduler::

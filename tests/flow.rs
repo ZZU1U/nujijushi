@@ -721,3 +721,58 @@ async fn a_slot_reaches_past_a_full_page_of_vetoed_posts() {
     }
     assert_eq!(harness.mock.send_count(), 1);
 }
+
+/// The projection is the plan: order from the selection, times from the
+/// scheduler. A 30-minute channel with no jitter puts three posts exactly 30
+/// minutes apart, starting now — and reading it must not send or mark anything.
+#[tokio::test]
+async fn the_projection_says_when_each_queued_post_would_go_out() {
+    let harness = harness(MockTransport::new());
+    let channel = harness.add_channel(NsfwPolicy::Allow).await;
+    for label in ["1", "2", "3"] {
+        let post_id = harness
+            .add_post(label, 1, false, &["original"], Rating::Sfw)
+            .await;
+        harness.queue(post_id, &channel).await;
+    }
+
+    let plan = nujijushi::tg::publish::project_queue(&harness.state, &channel, 10)
+        .await
+        .unwrap();
+    assert_eq!(plan.len(), 3, "every queued item is projected");
+    let now = chrono::Utc::now();
+    assert!(
+        (plan[0].slot - now).num_minutes().abs() <= 1,
+        "a due channel starts now: {:?}",
+        plan[0].slot
+    );
+    for pair in plan.windows(2) {
+        assert_eq!(
+            (pair[1].slot - pair[0].slot).num_minutes(),
+            30,
+            "one slot every 30 minutes"
+        );
+    }
+    assert_eq!(harness.mock.send_count(), 0, "a projection never sends");
+    let states = harness.queue_state(&channel).await;
+    assert!(
+        states.iter().all(|(state, _)| *state == QueueState::Queued),
+        "and never marks anything"
+    );
+}
+
+/// A paused channel has no ETA at all: nothing would go out.
+#[tokio::test]
+async fn a_paused_channel_projects_nothing() {
+    let harness = harness(MockTransport::new());
+    let mut channel = harness.add_channel(NsfwPolicy::Allow).await;
+    channel.paused = true;
+    let post_id = harness
+        .add_post("1", 1, false, &["original"], Rating::Sfw)
+        .await;
+    harness.queue(post_id, &channel).await;
+    let plan = nujijushi::tg::publish::project_queue(&harness.state, &channel, 10)
+        .await
+        .unwrap();
+    assert!(plan.is_empty());
+}

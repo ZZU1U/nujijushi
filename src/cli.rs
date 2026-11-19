@@ -1951,6 +1951,18 @@ async fn cmd_queue(state: &AppState, cmd: QueueCmd) -> Result<()> {
                         crate::db::queue::entries(conn, channel_id, &states_clone, limit)
                     })
                     .await?;
+                // the plan the scheduler would follow: which item takes which slot
+                let planned: std::collections::HashMap<i64, chrono::DateTime<Utc>> =
+                    if states.contains(&QueueState::Queued) {
+                        crate::tg::publish::project_queue(state, &channel, entries.len().min(200))
+                            .await?
+                            .into_iter()
+                            .map(|projected| (projected.queue_id, projected.slot))
+                            .collect()
+                    } else {
+                        std::collections::HashMap::new()
+                    };
+                let now = Utc::now();
                 println!(
                     "\n{} ({}) - {} item(s)",
                     channel.title,
@@ -1958,8 +1970,11 @@ async fn cmd_queue(state: &AppState, cmd: QueueCmd) -> Result<()> {
                     entries.len()
                 );
                 for entry in &entries {
+                    let eta = planned.get(&entry.item.id).map(|slot| {
+                        format!(" est. {}", crate::tg::publish::slot_label(*slot, now))
+                    });
                     println!(
-                        "  q#{:<5} post#{:<6} {:<10} prio={:<3} {:<20} {}",
+                        "  q#{:<5} post#{:<6} {:<10} prio={:<3} {:<20} {}{}",
                         entry.item.id,
                         entry.item.post_id,
                         entry.item.state.as_str(),
@@ -1977,7 +1992,8 @@ async fn cmd_queue(state: &AppState, cmd: QueueCmd) -> Result<()> {
                             .unwrap_or("-")
                             .chars()
                             .take(40)
-                            .collect::<String>()
+                            .collect::<String>(),
+                        eta.unwrap_or_default()
                     );
                 }
             }
@@ -2041,10 +2057,13 @@ async fn cmd_preview(state: &AppState, channel: String, count: usize) -> Result<
         items.len(),
         channel.interval_minutes
     );
+    let now = Utc::now();
     for (index, item) in items.iter().enumerate() {
         println!(
-            "=== slot {} | q#{} post#{} | {} media, {} message(s) | {}{} ===",
+            "=== slot {} at {} (in {}) | q#{} post#{} | {} media, {} message(s) | {}{} ===",
             index + 1,
+            crate::tg::publish::slot_label(item.eta, now),
+            crate::tg::publish::format_duration(item.eta - now),
             item.queue_id,
             item.post_id,
             item.media,

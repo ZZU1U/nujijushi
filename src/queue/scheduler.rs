@@ -118,6 +118,59 @@ pub fn within_daily_cap(channel: &Channel, sent_today: i64) -> bool {
     channel.daily_cap <= 0 || sent_today < channel.daily_cap
 }
 
+/// When the next `count` slots would fire, assuming nothing interferes.
+///
+/// Interval, active window and daily cap, with the *expected* jitter: it is drawn
+/// uniformly from `0..=jitter_secs`, so half of it is the mean delay. The list is
+/// empty for a paused or disabled channel, and stops early when a slot can never
+/// be placed (e.g. an empty active window).
+pub fn upcoming_slots(
+    channel: &Channel,
+    now: DateTime<Utc>,
+    sent_today: i64,
+    count: usize,
+) -> Vec<DateTime<Utc>> {
+    if count == 0 || !channel.enabled || channel.paused {
+        return Vec::new();
+    }
+    let interval =
+        Duration::seconds(channel.interval_minutes.max(1) * 60 + channel.jitter_secs.max(0) / 2);
+    // a due channel publishes on the next tick; otherwise wait for the stored slot
+    let mut cursor = match channel.next_due_at {
+        Some(due) if due > now => due,
+        _ => now,
+    };
+    let today = local_day_start(channel, now);
+    let mut day = local_day_start(channel, cursor);
+    let mut sent = if day == today { sent_today } else { 0 };
+    let mut out = Vec::new();
+    let mut guard = count.saturating_mul(8).max(8);
+    while out.len() < count && guard > 0 {
+        guard -= 1;
+        let slot = next_active_start(channel, cursor);
+        if !is_active(channel, slot) {
+            break; // the window cannot be entered at all
+        }
+        let slot_day = local_day_start(channel, slot);
+        if slot_day != day {
+            day = slot_day;
+            sent = 0;
+        }
+        if !within_daily_cap(channel, sent) {
+            // the day is spent: jump to the next local midnight and look again
+            let next_midnight = slot_day + Duration::days(1);
+            if next_midnight <= cursor {
+                break;
+            }
+            cursor = next_midnight;
+            continue;
+        }
+        out.push(slot);
+        sent += 1;
+        cursor = slot + interval;
+    }
+    out
+}
 /// Settings key the `run` loop writes on every pass (RFC3339 timestamp).
 ///
 /// The UI reads it to answer the one question a silent queue raises: is nothing
@@ -299,6 +352,87 @@ mod tests {
         let outside = utc(2025, 5, 1, 3, 0);
         assert!(slot_reason(&ch, outside, 0).contains("outside active hours"));
         assert_eq!(slot_reason(&ch, now, 0), "due");
+    }
+
+    fn upcoming(
+        c: &Channel,
+        next_due: DateTime<Utc>,
+        sent_today: i64,
+        count: usize,
+    ) -> Vec<String> {
+        let mut c = c.clone();
+        c.next_due_at = Some(next_due);
+        c.last_sent_at = Some(next_due);
+        upcoming_slots(&c, next_due - Duration::minutes(5), sent_today, count)
+            .into_iter()
+            .map(|slot| slot.format("%m-%d %H:%M").to_string())
+            .collect()
+    }
+
+    #[test]
+    fn slots_follow_the_interval() {
+        let mut c = channel("00:00", "23:59", "UTC");
+        c.interval_minutes = 10;
+        c.jitter_secs = 0;
+        let due = utc(2025, 5, 1, 12, 0);
+        assert_eq!(
+            upcoming(&c, due, 0, 3),
+            vec!["05-01 12:00", "05-01 12:10", "05-01 12:20"],
+            "one slot every ten minutes, starting at the stored due time"
+        );
+        // the mean jitter is added to the interval (10 min + half of 10 min)
+        c.jitter_secs = 600;
+        assert_eq!(upcoming(&c, due, 0, 2), vec!["05-01 12:00", "05-01 12:15"]);
+    }
+
+    #[test]
+    fn slots_wait_for_the_active_window() {
+        let mut c = channel("09:00", "10:00", "UTC");
+        c.interval_minutes = 60;
+        c.jitter_secs = 0;
+        assert_eq!(
+            upcoming(&c, utc(2025, 5, 1, 9, 30), 0, 2),
+            vec!["05-01 09:30", "05-02 09:00"],
+            "the second slot lands after the window, so it waits for tomorrow"
+        );
+    }
+
+    #[test]
+    fn slots_respect_the_daily_cap() {
+        let mut c = channel("00:00", "23:59", "UTC");
+        c.interval_minutes = 60;
+        c.jitter_secs = 0;
+        c.daily_cap = 2;
+        // one already sent today: the second slot is the last of the day
+        assert_eq!(
+            upcoming(&c, utc(2025, 5, 1, 20, 0), 1, 2),
+            vec!["05-01 20:00", "05-02 00:00"]
+        );
+    }
+
+    #[test]
+    fn a_paused_or_disabled_channel_has_no_slots() {
+        let mut c = channel("00:00", "23:59", "UTC");
+        let due = utc(2025, 5, 1, 12, 0);
+        c.paused = true;
+        assert!(upcoming(&c, due, 0, 3).is_empty());
+        c.paused = false;
+        c.enabled = false;
+        assert!(upcoming(&c, due, 0, 3).is_empty());
+        // a due channel publishes on the next tick
+        c.enabled = true;
+        let now = utc(2025, 5, 1, 12, 0);
+        let mut c = channel("00:00", "23:59", "UTC");
+        c.interval_minutes = 10;
+        c.jitter_secs = 0;
+        assert_eq!(
+            upcoming_slots(&c, now, 0, 1)
+                .iter()
+                .map(|slot| slot.format("%H:%M").to_string())
+                .collect::<Vec<_>>(),
+            vec!["12:00"],
+            "no stored next_due means now"
+        );
     }
 
     #[test]

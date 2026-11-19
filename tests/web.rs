@@ -739,3 +739,33 @@ async fn the_dashboard_says_when_the_scheduler_is_not_running() {
     assert_eq!(status["scheduler"]["stale"], false);
     assert!(status["scheduler"]["age_secs"].is_number());
 }
+
+/// The queue and the post page answer "when does this actually go out?" with the
+/// same projection: 30-minute channel, two queued posts → now and in 30 minutes.
+#[tokio::test]
+async fn the_queue_and_post_pages_show_when_a_post_goes_out() {
+    let h = harness();
+    let channel = h.add_channel().await;
+    let (post_id, _) = h.queue_a_post("1", &channel).await;
+    h.queue_a_post("2", &channel).await;
+
+    let html = body_text(
+        h.send(h.get(&format!("/channels/{}/queue", channel.id)))
+            .await,
+    )
+    .await;
+    assert!(
+        html.contains(">est.<") || html.contains("est."),
+        "the column is labelled: {html}"
+    );
+    assert!(
+        html.contains("in 30m"),
+        "the second queued post is 30 minutes out: {html}"
+    );
+
+    let detail = body_text(h.send(h.get(&format!("/posts/{post_id}"))).await).await;
+    assert!(
+        detail.contains("est. "),
+        "the post page says when it would go out: {detail}"
+    );
+}

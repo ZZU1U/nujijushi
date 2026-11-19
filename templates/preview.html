@@ -9,6 +9,7 @@
     <article class="slot">
       <header>
         <span class="badge">slot {{ item.slot }}</span>
+        <span class="hint">{{ item.eta }} · in {{ item.eta_in }}</span>
         <a href="/posts/{{ item.post_id }}">#{{ item.post_id }}</a>
         <span class="hint">{{ item.media }} media · {{ item.messages }} message(s) · {{ item.reason }}</span>
         {% if item.spoiler %}<span class="badge">spoiler</span>{% endif %}

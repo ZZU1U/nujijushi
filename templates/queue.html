@@ -9,7 +9,7 @@
   </p>
   {% if items %}
   <table>
-    <tr><th>#</th><th></th><th>post</th><th>state</th><th>prio</th><th>attempts</th><th>added</th><th></th></tr>
+    <tr><th>#</th><th></th><th>post</th><th>state</th><th>prio</th><th>attempts</th><th>added</th><th title="when it would go out if nobody interferes">est.</th><th></th></tr>
     {% for i in items %}
     <tr class="{{ 'row-unknown' if i.state == 'unknown' else '' }}" data-queue="{{ i.id }}">
       <td>{{ i.id }}</td>
@@ -28,6 +28,7 @@
       <td>{{ i.priority }}</td>
       <td>{{ i.attempts }}</td>
       <td class="hint">{{ i.added }}</td>
+      <td class="hint">{% if i.eta %}{{ i.eta }}<br><span class="hint">in {{ i.eta_in }}</span>{% endif %}</td>
       <td class="actions">
         {% if i.state == 'queued' %}
         <form method="post" action="/publish" class="inline"
@@ -60,6 +61,11 @@
     </tr>
     {% endfor %}
   </table>
+  <p class="hint">
+    <b>est.</b> is when that post would go out if nobody interferes: the order is the
+    scheduler's own selection, the times come from the interval, the active hours and the
+    daily cap{% if eta_hint %} — {{ eta_hint }}{% endif %}.
+  </p>
   {% else %}
   <p class="hint">Empty. Queue posts from <a href="/posts">the posts grid</a>.</p>
   {% endif %}

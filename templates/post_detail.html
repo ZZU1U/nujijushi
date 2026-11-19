@@ -72,6 +72,7 @@
           {% if c.allowed %}<span class="badge green">sendable</span>{% else %}<span class="badge red">vetoed</span>{% endif %}
           {% if c.spoiler %}<span class="badge">spoiler</span>{% endif %}
           <span class="hint">{{ c.length }} chars · {{ c.messages }} message(s)</span>
+          {% if c.eta %}<span class="badge accent" title="when it would go out if nobody interferes">est. {{ c.eta }} · in {{ c.eta_in }}</span>{% endif %}
         </div>
         <pre class="caption">{{ c.caption | safe }}</pre>
         <div class="hint">{{ c.verdict }}</div>

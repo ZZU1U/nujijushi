@@ -549,14 +549,53 @@ pub struct PreviewItem {
     pub media: usize,
     pub messages: usize,
     pub reason: String,
+    /// When this slot would fire if nobody interferes.
+    pub eta: chrono::DateTime<Utc>,
 }
 
-/// Render what the next `count` slots would publish (deterministic per channel).
-pub async fn preview_channel(
+/// One queued item with the slot the scheduler would give it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Projected {
+    pub queue_id: i64,
+    pub post_id: i64,
+    pub slot: chrono::DateTime<Utc>,
+}
+
+/// What would go out, and when, if nobody interferes.
+///
+/// The order is the same seeded `Selection::simulate` that `preview` shows; the
+/// slots come from `scheduler::upcoming_slots` (interval, active window, daily
+/// cap). Posts the channel's policy would veto never take a slot, so they are
+/// absent: an ETA is a plan, not a promise.
+pub async fn project_queue(
     state: &AppState,
     channel: &Channel,
     count: usize,
-) -> Result<Vec<PreviewItem>> {
+) -> Result<Vec<Projected>> {
+    Ok(plan_ahead(state, channel, count)
+        .await?
+        .into_iter()
+        .map(|(item, _post, _decision, slot)| Projected {
+            queue_id: item.id,
+            post_id: item.post_id,
+            slot,
+        })
+        .collect())
+}
+
+/// The queued items that would go out, in order, each with its slot.
+async fn plan_ahead(
+    state: &AppState,
+    channel: &Channel,
+    count: usize,
+) -> Result<
+    Vec<(
+        crate::model::QueueItem,
+        Post,
+        Decision,
+        chrono::DateTime<Utc>,
+    )>,
+> {
     let items = {
         let channel_id = channel.id;
         state
@@ -612,26 +651,56 @@ pub async fn preview_channel(
     let seed = channel.id as u64 ^ 0x5eed;
     let order = selection.simulate(&snapshot, seed, count.min(candidates.len()));
 
+    let now = Utc::now();
+    let sent_today = {
+        let since = scheduler::local_day_start(channel, now);
+        let channel_id = channel.id;
+        state
+            .db
+            .call(move |conn| queue_db::sends_since(conn, channel_id, since))
+            .await?
+    };
+    let slots = scheduler::upcoming_slots(channel, now, sent_today, order.len());
+
     let mut out = Vec::new();
-    for queue_id in order {
-        if let Some((item, post, decision)) = candidates.iter().find(|(i, _, _)| i.id == queue_id) {
-            let plan = build_plan(state, channel, post, item.id, decision.clone())?;
-            out.push(PreviewItem {
-                queue_id: item.id,
-                post_id: post.id,
-                title: post
-                    .title
-                    .clone()
-                    .or_else(|| post.description.clone())
-                    .unwrap_or_else(|| format!("{} / {}", post.source, post.source_id)),
-                caption: plan.caption.text.clone(),
-                nsfw: decision.nsfw,
-                spoiler: decision.spoiler(),
-                media: plan.media_count(),
-                messages: plan.messages.len(),
-                reason: decision.reason.clone(),
-            });
+    for (index, queue_id) in order.iter().enumerate() {
+        // fewer slots than items (cap reached, window closed): stop there
+        let Some(slot) = slots.get(index) else {
+            break;
+        };
+        if let Some((item, post, decision)) = candidates.iter().find(|(i, _, _)| i.id == *queue_id)
+        {
+            out.push((item.clone(), post.clone(), decision.clone(), *slot));
         }
+    }
+    Ok(out)
+}
+
+/// Render what the next `count` slots would publish (deterministic per channel).
+pub async fn preview_channel(
+    state: &AppState,
+    channel: &Channel,
+    count: usize,
+) -> Result<Vec<PreviewItem>> {
+    let mut out = Vec::new();
+    for (item, post, decision, slot) in plan_ahead(state, channel, count).await? {
+        let plan = build_plan(state, channel, &post, item.id, decision.clone())?;
+        out.push(PreviewItem {
+            queue_id: item.id,
+            post_id: post.id,
+            title: post
+                .title
+                .clone()
+                .or_else(|| post.description.clone())
+                .unwrap_or_else(|| format!("{} / {}", post.source, post.source_id)),
+            caption: plan.caption.text.clone(),
+            nsfw: decision.nsfw,
+            spoiler: decision.spoiler(),
+            media: plan.media_count(),
+            messages: plan.messages.len(),
+            reason: decision.reason.clone(),
+            eta: slot,
+        });
     }
     Ok(out)
 }
@@ -659,4 +728,47 @@ pub fn format_duration(delta: Duration) -> String {
         return format!("{}h {:02}m", hours, minutes % 60);
     }
     format!("{}d {}h", days, hours % 24)
+}
+
+/// How an estimated slot reads in a listing, in **local** time: `14:30` for
+/// today, `Tue 14:30` within a week, `03-04 14:30` beyond it.
+///
+/// One formatter, so the queue page, the post page, the preview and the CLI all
+/// put the same instant in front of the user.
+pub fn slot_label(slot: chrono::DateTime<Utc>, now: chrono::DateTime<Utc>) -> String {
+    let local = slot.with_timezone(&chrono::Local);
+    let today = now.with_timezone(&chrono::Local).date_naive();
+    let days = (local.date_naive() - today).num_days();
+    match days {
+        0 => local.format("%H:%M").to_string(),
+        1..=6 => local.format("%a %H:%M").to_string(),
+        _ => local.format("%m-%d %H:%M").to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn slot_labels_are_relative_to_today() {
+        let now = Utc.with_ymd_and_hms(2025, 5, 1, 12, 0, 0).unwrap();
+        let today = now + Duration::hours(2);
+        let tomorrow = now + Duration::days(1);
+        let next_week = now + Duration::days(9);
+
+        // today is just the time, so the column stays narrow
+        assert_eq!(slot_label(today, now).len(), 5, "HH:MM");
+        assert_ne!(slot_label(tomorrow, now).len(), 5, "a day is named");
+        assert_eq!(slot_label(next_week, now).len(), 11, "MM-DD HH:MM");
+        // the label is the *local* time, not the UTC instant
+        assert_eq!(
+            slot_label(today, now),
+            today
+                .with_timezone(&chrono::Local)
+                .format("%H:%M")
+                .to_string()
+        );
+    }
 }

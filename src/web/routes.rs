@@ -352,10 +352,20 @@ async fn dashboard(
     let mut channel_views = Vec::new();
     for channel in &channels {
         let channel_id = channel.id;
-        let queued = app
+        let since = crate::queue::scheduler::local_day_start(channel, now);
+        let (queued, sent_today) = app
             .db
-            .call(move |conn| queue_db::count_state(conn, channel_id, QueueState::Queued))
+            .call(move |conn| {
+                let queued = queue_db::count_state(conn, channel_id, QueueState::Queued)?;
+                let sent = queue_db::sends_since(conn, channel_id, since)?;
+                Ok((queued, sent))
+            })
             .await?;
+        // when the next post would go out, if the scheduler is running
+        let next_at = crate::queue::scheduler::upcoming_slots(channel, now, sent_today, 1)
+            .into_iter()
+            .next()
+            .map(|slot| crate::tg::publish::slot_label(slot, now));
         channel_views.push(json!({
             "id": channel.id,
             "title": channel.title,
@@ -367,7 +377,8 @@ async fn dashboard(
             "enabled": channel.enabled,
             "failures": channel.consecutive_failures,
             "next": crate::tg::publish::next_slot_hint(channel, now),
-            "reason": crate::queue::scheduler::slot_reason(channel, now, 0),
+            "next_at": next_at,
+            "reason": crate::queue::scheduler::slot_reason(channel, now, sent_today),
         }));
     }
 
@@ -665,34 +676,44 @@ async fn post_page(
         .call(move |conn| post_db::submitter(conn, id))
         .await?;
 
+    let post_queues = app
+        .db
+        .call(move |conn| queue_db::for_post(conn, id))
+        .await?;
+    let now = chrono::Utc::now();
     let mut captions = Vec::new();
     for channel in &channels {
         let decision = crate::nsfw::evaluate(&post, channel, &rules);
-        let preview = match crate::tg::publish::build_plan(app, channel, &post, 0, decision.clone())
-        {
-            Ok(plan) => json!({
-                "channel": channel.title,
-                "tg_id": channel.tg_id,
-                "caption": plan.caption.text,
-                "length": plan.caption.length,
-                "truncated": plan.caption.truncated,
-                "messages": plan.messages.len(),
-                "verdict": plan.decision.reason,
-                "allowed": decision.is_allowed(),
-                "spoiler": decision.spoiler(),
-            }),
-            Err(err) => json!({
-                "channel": channel.title,
-                "tg_id": channel.tg_id,
-                "caption": format!("template error: {err}"),
-                "length": 0,
-                "truncated": false,
-                "messages": 0,
-                "verdict": err.to_string(),
-                "allowed": false,
-                "spoiler": false,
-            }),
-        };
+        let mut preview =
+            match crate::tg::publish::build_plan(app, channel, &post, 0, decision.clone()) {
+                Ok(plan) => json!({
+                    "channel": channel.title,
+                    "tg_id": channel.tg_id,
+                    "caption": plan.caption.text,
+                    "length": plan.caption.length,
+                    "truncated": plan.caption.truncated,
+                    "messages": plan.messages.len(),
+                    "verdict": plan.decision.reason,
+                    "allowed": decision.is_allowed(),
+                    "spoiler": decision.spoiler(),
+                }),
+                Err(err) => json!({
+                    "channel": channel.title,
+                    "tg_id": channel.tg_id,
+                    "caption": format!("template error: {err}"),
+                    "length": 0,
+                    "truncated": false,
+                    "messages": 0,
+                    "verdict": err.to_string(),
+                    "allowed": false,
+                    "spoiler": false,
+                }),
+            };
+        // when this post would go out, if it is queued in this channel
+        if let Some(slot) = post_eta(app, &post_queues, channel).await? {
+            preview["eta"] = json!(crate::tg::publish::slot_label(slot, now));
+            preview["eta_in"] = json!(crate::tg::publish::format_duration(slot - now));
+        }
         captions.push(preview);
     }
 
@@ -1055,10 +1076,21 @@ async fn queue_page(
         .await?;
     // nothing to load here any more: `card.nsfw` already carries the override
 
+    // the plan the scheduler would follow: which item takes which slot. One
+    // projection, so the ETA column and the preview page cannot disagree.
+    let now = chrono::Utc::now();
+    let planned: std::collections::HashMap<i64, chrono::DateTime<chrono::Utc>> =
+        crate::tg::publish::project_queue(app, &channel, entries.len().min(200))
+            .await?
+            .into_iter()
+            .map(|projected| (projected.queue_id, projected.slot))
+            .collect();
+
     let items: Vec<Value> = entries
         .iter()
         .map(|entry| {
             let post = entry.item.post_id;
+            let slot = planned.get(&entry.item.id).copied();
             json!({
                 "id": entry.item.id,
                 "post_id": post,
@@ -1073,9 +1105,15 @@ async fn queue_page(
                 "media_count": entry.card.media_count,
                 "nsfw": entry.card.nsfw,
                 "added": entry.item.added_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string(),
+                "eta": slot.map(|slot| crate::tg::publish::slot_label(slot, now)),
+                "eta_in": slot.map(|slot| crate::tg::publish::format_duration(slot - now)),
             })
         })
         .collect();
+
+    let eta_hint = planned
+        .is_empty()
+        .then_some("no ETA: nothing is queued, or the channel is paused/outside its hours");
 
     let html = ws.pages.render(
         "queue.html",
@@ -1085,6 +1123,7 @@ async fn queue_page(
             "flash": Value::Null,
             "channel": {"id": channel.id, "title": channel.title, "tg_id": channel.tg_id},
             "items": items,
+            "eta_hint": eta_hint,
         }),
     )?;
     Ok(Html(html))
@@ -1149,6 +1188,7 @@ async fn preview_page(
     let app = &ws.app;
     let channel = app.db.call(move |conn| channel_db::get(conn, id)).await?;
     let items = crate::tg::publish::preview_channel(app, &channel, 10).await?;
+    let now = chrono::Utc::now();
     let html = ws.pages.render(
         "preview.html",
         &json!({
@@ -1162,10 +1202,12 @@ async fn preview_page(
                 "post_id": item.post_id,
                 "title": item.title,
                 "caption": item.caption,
-                "reason": item.reason,
                 "media": item.media,
                 "messages": item.messages,
                 "spoiler": item.spoiler,
+                "nsfw": item.nsfw,
+                "eta": crate::tg::publish::slot_label(item.eta, now),
+                "eta_in": crate::tg::publish::format_duration(item.eta - now),
                 "nsfw": item.nsfw,
             })).collect::<Vec<_>>(),
         }),
@@ -1193,6 +1235,25 @@ async fn storage_drain(
 }
 
 // ---------------------------------------------------------------- publish
+/// When this post would go out in `channel`, if it is queued there: the same
+/// projection the queue page uses, so both pages show the same instant.
+async fn post_eta(
+    app: &AppState,
+    queues: &[(i64, i64, QueueState)],
+    channel: &Channel,
+) -> crate::error::Result<Option<chrono::DateTime<chrono::Utc>>> {
+    let Some((queue_id, ..)) = queues
+        .iter()
+        .find(|(_, channel_id, state)| *channel_id == channel.id && *state == QueueState::Queued)
+    else {
+        return Ok(None);
+    };
+    Ok(crate::tg::publish::project_queue(app, channel, 200)
+        .await?
+        .into_iter()
+        .find(|projected| projected.queue_id == *queue_id)
+        .map(|projected| projected.slot))
+}
 
 /// "Publish now": either the next queued post of a channel, or one specific
 /// queue item. Deliberately bypasses the schedule (admins only — the UI is

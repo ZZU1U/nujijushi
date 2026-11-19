@@ -65,7 +65,7 @@
       <td data-role="queued">{{ c.queued }}</td>
       <td>{{ c.interval }}m</td>
       <td><span class="badge">{{ c.nsfw_policy }}</span></td>
-      <td class="hint">{{ c.reason }}</td>
+      <td class="hint">{{ c.reason }}{% if c.next_at %} · {{ c.next_at }}{% endif %}</td>
       <td class="actions">
         <a class="button small" href="/channels/{{ c.id }}/queue">queue</a>
         <a class="button small ghost" href="/channels/{{ c.id }}/preview">preview</a>

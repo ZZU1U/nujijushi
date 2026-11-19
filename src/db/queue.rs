@@ -119,6 +119,28 @@ pub fn candidates(conn: &Connection, channel_id: i64) -> Result<Vec<QueueItem>> 
     Ok(items)
 }
 
+/// Queue rows for one post: `(queue_id, channel_id, state)`.
+///
+/// Answers "is this post queued, and where" without loading the whole queue: the
+/// post page only needs its own rows.
+pub fn for_post(conn: &Connection, post_id: i64) -> Result<Vec<(i64, i64, QueueState)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, channel_id, state FROM queue WHERE post_id = ?1 ORDER BY channel_id, id",
+    )?;
+    let rows = stmt.query_map([post_id], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            QueueState::parse(&row.get::<_, String>(2)?),
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
 /// Take the lease for a queue item. False when another worker got there first.
 pub fn acquire(conn: &Connection, id: i64, token: &str) -> Result<bool> {
     let updated = conn.execute(
