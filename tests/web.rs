@@ -966,3 +966,403 @@ async fn the_queue_and_post_pages_show_when_a_post_goes_out() {
         "the post page says when it would go out: {detail}"
     );
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn watched_source_checks_persist_discovery_retries_and_curation() {
+    use nujijushi::db::{posts, watches};
+    use nujijushi::jobs::worker::JobWorker;
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut h = harness();
+    let base = h._dir.path();
+    let script = base.join("fake-gallery-dl");
+    std::fs::write(
+        &script,
+        r#"#!/bin/sh
+set -eu
+fixture_dir=$(dirname "$0")
+scan=false
+staging=
+for arg in "$@"; do
+    if [ "$staging" = 'next' ]; then staging="$arg"; fi
+    if [ "$arg" = '-d' ]; then staging='next'; fi
+    if [ "$arg" = '--dump-json' ]; then scan=true; fi
+    target="$arg"
+done
+if "$scan"; then
+    printf '%s\n' "$@" > "$fixture_dir/listing-args"
+    cat "$fixture_dir/listing.json"
+else
+    id=$(basename "$target")
+    printf '%s\n' "$id" >> "$fixture_dir/downloads"
+    cp "$fixture_dir/source.png" "$staging/image.png"
+    printf '{"id":%s,"category":"pixiv","tags":["source_tag"]}' "$id" > "$staging/image.png.json"
+    if [ -f "$fixture_dir/fail-$id" ]; then exit 1; fi
+fi
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    image::RgbImage::from_pixel(16, 16, image::Rgb([10, 20, 30]))
+        .save(base.join("source.png"))
+        .unwrap();
+    Arc::make_mut(&mut h.state.cfg).gallery_dl = script.to_str().unwrap().into();
+    h.ws = WebState::new(h.state.clone()).unwrap();
+
+    let save = format!(
+        "csrf={}&name=Pixiv+Art&url=https%3A%2F%2Fwww.pixiv.net%2Fen%2Fusers%2F123&initial_batch=2",
+        h.ws.csrf
+    );
+    assert_eq!(
+        h.send(h.post("/watches", &save.replace(&h.ws.csrf, "bad")))
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        h.send(h.post("/watches", &save)).await.status(),
+        StatusCode::SEE_OTHER
+    );
+    let watch_id = h
+        .state
+        .db
+        .with(|conn| Ok(watches::list(conn)?[0].id))
+        .unwrap();
+    let check_url = format!("/watches/{watch_id}/check");
+    let form = format!("csrf={}", h.ws.csrf);
+    let check = |h: &Harness| h.post(&check_url, &form);
+    let body = |ids: &[(u32, u32)]| {
+        let records: Vec<_> = ids.iter().map(|(id, day)| serde_json::json!([
+            3, "https://i.pximg.net/image.png", {"id":id,"category":"pixiv","date":format!("2025-01-{day:02}T00:00:00Z")}
+        ])).collect();
+        serde_json::to_vec(&records).unwrap()
+    };
+    std::fs::write(base.join("listing.json"), body(&[(3, 3), (2, 2), (1, 1)])).unwrap();
+    std::fs::write(base.join("fail-2"), "").unwrap();
+
+    assert_eq!(h.send(check(&h)).await.status(), StatusCode::SEE_OTHER);
+    let second = h.send(check(&h)).await;
+    assert_eq!(Harness::flash(&second), "A check is already active");
+    assert!(!base.join("listing-args").exists());
+    let html = body_text(h.send(h.get("/watches")).await).await;
+    assert!(html.contains("Pixiv Art") && html.contains("data-watch-action"));
+    let status = body_text(h.send(h.get("/api/status")).await).await;
+    assert!(status.contains("\"watch_jobs\"") && status.contains("\"watch_check\""));
+
+    let worker = JobWorker::new(h.state.clone());
+    assert_eq!(worker.drain().await.unwrap(), 1);
+    let args = std::fs::read_to_string(base.join("listing-args")).unwrap();
+    assert!(args.contains("--post-range\n1-2\n"));
+    assert!(
+        std::fs::read_to_string(base.join("downloads"))
+            .unwrap()
+            .contains("2\n3\n")
+    );
+    let post_id = h
+        .state
+        .db
+        .with(|conn| {
+            assert!(posts::find_by_source_id(conn, "pixiv", "1")?.is_none());
+            assert!(posts::find_by_source_id(conn, "pixiv", "2")?.is_none());
+            assert_eq!(watches::pending_count(conn, watch_id)?, 1);
+            let id = posts::find_by_source_id(conn, "pixiv", "3")?.unwrap();
+            posts::set_state(conn, id, PostState::Approved)?;
+            nujijushi::db::tags::add_manual(conn, id, &["curated".into()])?;
+            Ok(id)
+        })
+        .unwrap();
+    let html = body_text(h.send(h.get("/watches")).await).await;
+    assert!(html.contains("1 added · 0 skipped (already archived) · 1 failed · 1 pending"));
+
+    std::fs::remove_file(base.join("fail-2")).unwrap();
+    let already_archived = h.post_only("6").await;
+    h.state
+        .db
+        .with(|conn| posts::set_notes(conn, already_archived, Some("curator note")))
+        .unwrap();
+    std::fs::write(
+        base.join("listing.json"),
+        body(&[(6, 5), (5, 4), (4, 3), (3, 3), (5, 4)]),
+    )
+    .unwrap();
+    let reopened = AppState::open((*h.state.cfg).clone(), h.state.transport.clone()).unwrap();
+    let worker = JobWorker::new(reopened);
+    assert_eq!(h.send(check(&h)).await.status(), StatusCode::SEE_OTHER);
+    assert_eq!(worker.drain().await.unwrap(), 1);
+    let downloads = std::fs::read_to_string(base.join("downloads")).unwrap();
+    assert_eq!(downloads, "2\n3\n4\n5\n2\n");
+    let html = body_text(h.send(h.get("/watches")).await).await;
+    assert!(html.contains("3 added · 1 skipped (already archived) · 0 failed"));
+    assert!(
+        std::fs::read_to_string(base.join("listing-args"))
+            .unwrap()
+            .contains("--date-after\n")
+    );
+    h.state
+        .db
+        .with(|conn| {
+            let post = posts::get(conn, post_id)?;
+            assert_eq!(post.state, PostState::Approved);
+            assert!(post.tags.contains(&"curated".into()));
+            assert_eq!(
+                posts::get(conn, already_archived)?.notes.as_deref(),
+                Some("curator note")
+            );
+            assert_eq!(watches::pending_count(conn, watch_id)?, 0);
+            assert!(nujijushi::db::queue::for_post(conn, post_id)?.is_empty());
+            Ok(())
+        })
+        .unwrap();
+
+    let _response = h.send(check(&h)).await;
+    assert_eq!(worker.drain().await.unwrap(), 1);
+    assert_eq!(
+        std::fs::read_to_string(base.join("downloads")).unwrap(),
+        downloads
+    );
+
+    let checkpoint = h
+        .state
+        .db
+        .with(|conn| Ok(watches::get(conn, watch_id)?.checkpoint))
+        .unwrap();
+    std::fs::write(
+        base.join("listing.json"),
+        br#"[[-1,{"error":"AuthRequired","message":"hidden"}]]"#,
+    )
+    .unwrap();
+    let _response = h.send(check(&h)).await;
+    assert_eq!(worker.drain().await.unwrap(), 1);
+    let html = body_text(h.send(h.get("/watches")).await).await;
+    assert!(html.contains("gallery-dl feed scan failed (AuthRequired)"));
+    assert_eq!(
+        h.state
+            .db
+            .with(|conn| Ok(watches::get(conn, watch_id)?.checkpoint))
+            .unwrap(),
+        checkpoint
+    );
+
+    let remove_url = format!("/watches/{watch_id}/remove");
+    assert_eq!(
+        h.send(h.post(&remove_url, &form)).await.status(),
+        StatusCode::SEE_OTHER
+    );
+    assert!(h.state.db.with(|conn| posts::get(conn, post_id)).is_ok());
+}
+
+fn artwork() -> image::RgbImage {
+    image::RgbImage::from_fn(180, 144, |x, y| {
+        let color = match x / 20 {
+            0 | 4 => 230,
+            2 | 5 | 8 => 45,
+            _ => 130,
+        };
+        image::Rgb([color - (y / 12) as u8, color, color])
+    })
+}
+
+fn encode_image(img: image::RgbImage, format: image::ImageFormat) -> Vec<u8> {
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::from(img)
+        .write_to(&mut bytes, format)
+        .unwrap();
+    bytes.into_inner()
+}
+
+fn archive_test_images(state: &AppState, source: &str, id: &str, files: &[(&[u8], &str)]) -> i64 {
+    let mut post = NormalizedPost::new(source, id);
+    post.title = Some(format!("{source} artwork"));
+    post.url = Some(format!("https://example.test/{source}/{id}"));
+    let mut items = Vec::new();
+    for (bytes, ext) in files {
+        let blob = state.blobs.ingest_bytes(bytes, ext).unwrap();
+        state.blobs.write_thumb(&blob.hash, bytes, 512).unwrap();
+        items.push(NewMedia {
+            blob_hash: blob.hash,
+            ext: blob.ext,
+            mime: None,
+            width: blob.width,
+            height: blob.height,
+            bytes: blob.bytes,
+            is_video: false,
+            poster_hash: None,
+            sensitive: false,
+            meta_json: None,
+        });
+    }
+    state
+        .db
+        .with(|conn| nujijushi::db::posts::upsert(conn, &post, &items))
+        .unwrap()
+        .0
+}
+
+#[tokio::test]
+async fn duplicate_inbox_indexes_and_dismisses_cross_source_media_pairs() {
+    use nujijushi::db::{duplicates, posts, queue};
+    let h = harness();
+    let channel = h.add_channel().await;
+    let pattern = artwork();
+    let original = encode_image(pattern.clone(), image::ImageFormat::Png);
+    let resized =
+        image::imageops::resize(&pattern, 270, 216, image::imageops::FilterType::Triangle);
+    let recompressed = encode_image(resized, image::ImageFormat::Jpeg);
+    let unrelated = encode_image(
+        image::imageops::flip_horizontal(&pattern),
+        image::ImageFormat::Png,
+    );
+    let blank = encode_image(
+        image::RgbImage::from_pixel(30, 200, image::Rgb([50, 90, 120])),
+        image::ImageFormat::Png,
+    );
+    let mut animated = Vec::new();
+    image::codecs::gif::GifEncoder::new(&mut animated)
+        .encode_frames([
+            image::Frame::new(image::DynamicImage::ImageRgb8(pattern).to_rgba8()),
+            image::Frame::new(image::RgbaImage::new(180, 144)),
+        ])
+        .unwrap();
+
+    let left = archive_test_images(
+        &h.state,
+        "pixiv",
+        "100",
+        &[(&blank, "png"), (&original, "png")],
+    );
+    let right = archive_test_images(&h.state, "twitter", "102", &[(&recompressed, "jpg")]);
+    let exact = archive_test_images(&h.state, "danbooru", "103", &[(&original, "png")]);
+    archive_test_images(&h.state, "local", "104", &[(&unrelated, "png")]);
+    archive_test_images(&h.state, "twitter", "105", &[(&animated, "gif")]);
+
+    h.state
+        .db
+        .with(|conn| {
+            posts::set_state(conn, left, PostState::Approved)?;
+            queue::enqueue(conn, left, channel.id, 0)?;
+            Ok(())
+        })
+        .unwrap();
+    let page = body_text(h.send(h.get("/duplicates")).await).await;
+    assert!(page.contains("data-duplicates-indexing"));
+    nujijushi::duplicates::index_batch(&h.state).await.unwrap();
+    let pairs = h.state.db.with(|conn| duplicates::pairs(conn, 0)).unwrap();
+    assert_eq!(pairs.first(), Some(&(left, exact)));
+    assert!(pairs.contains(&(left, right)));
+    assert_eq!(pairs.len(), 3, "{pairs:?}");
+    let html = body_text(h.send(h.get("/duplicates")).await).await;
+    assert!(html.contains("Exact file") && html.contains("Visually similar"));
+    assert!(html.contains("Image 2") && html.contains("approved") && html.contains("queued"));
+    assert!(html.contains("https:&#x2f;&#x2f;example.test&#x2f;twitter&#x2f;102"));
+    let reject = format!("csrf=bad&left={left}&right={right}");
+    assert_eq!(
+        h.send(h.post("/duplicates/dismiss", &reject))
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let confirm = format!("csrf={}&left={right}&right={left}", h.ws.csrf);
+    assert_eq!(
+        h.send(h.post("/duplicates/dismiss", &confirm))
+            .await
+            .status(),
+        StatusCode::SEE_OTHER
+    );
+    let reopened = AppState::open((*h.state.cfg).clone(), h.state.transport.clone()).unwrap();
+    let updated = archive_test_images(
+        &reopened,
+        "twitter",
+        "102",
+        &[(&unrelated, "png"), (&recompressed, "jpg")],
+    );
+    assert_eq!(updated, right);
+    nujijushi::duplicates::index_batch(&reopened).await.unwrap();
+    reopened
+        .db
+        .with(|conn| {
+            assert!(!duplicates::pairs(conn, 0)?.contains(&(left, right)));
+            assert_eq!(posts::get(conn, left)?.state, PostState::Approved);
+            assert_eq!(queue::for_post(conn, left)?[0].2, QueueState::Queued);
+            assert_eq!(
+                duplicates::evidence(conn, right, exact)?[0].left_position,
+                2
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn watched_scan_does_not_delay_a_later_publish_job() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut h = harness();
+    let base = h._dir.path();
+    let script = base.join("blocked-gallery-dl");
+    std::fs::write(
+        &script,
+        r#"#!/bin/sh
+dir=$(dirname "$0")
+: > "$dir/watch-started"
+while [ ! -f "$dir/watch-release" ]; do sleep 0.05; done
+printf '[]\n'
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    Arc::make_mut(&mut h.state.cfg).gallery_dl = script.to_str().unwrap().into();
+    h.state
+        .db
+        .with(|conn| {
+            nujijushi::db::watches::create(
+                conn,
+                "Artist",
+                "https://www.pixiv.net/users/10/artworks",
+                10,
+            )
+        })
+        .unwrap();
+    let (watch_id, _) = nujijushi::jobs::create_watch_check_job(&h.state, 1)
+        .await
+        .unwrap();
+
+    let channel = h.add_channel().await;
+    let (_, queue_id) = h.queue_a_post("95", &channel).await;
+    let worker = nujijushi::jobs::worker::JobWorker::new(h.state.clone());
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        worker
+            .run(async {
+                let _ = stop_rx.await;
+            })
+            .await
+            .unwrap();
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        while !base.join("watch-started").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let id = nujijushi::jobs::create_publish_item_job(&h.state, queue_id)
+            .await
+            .unwrap()
+            .unwrap();
+        while h.job_state(id).await != "done" {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(h.job_state(watch_id).await, "running");
+    assert_eq!(h.mock.send_count(), 1);
+    std::fs::write(base.join("watch-release"), "").unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(4), async {
+        while h.job_state(watch_id).await != "done" {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        }
+    })
+    .await
+    .unwrap();
+    stop_tx.send(()).unwrap();
+    task.await.unwrap();
+}

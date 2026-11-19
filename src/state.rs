@@ -1,5 +1,6 @@
 //! Shared runtime state handed to the CLI, scheduler and web UI.
 
+use std::fs::{File, OpenOptions, TryLockError};
 use std::sync::Arc;
 
 use crate::blob::BlobStore;
@@ -37,5 +38,23 @@ impl AppState {
         self.transport.clone().ok_or_else(|| {
             crate::error::Error::config("telegram transport unavailable (set TG_BOT_TOKEN)")
         })
+    }
+
+    /// Keep lock files in place so worker processes always share the same inode.
+    pub(crate) async fn try_staging_lock(&self, name: &str) -> Result<Option<File>> {
+        let path = self.cfg.staging_dir().join(name);
+        tokio::task::spawn_blocking(move || {
+            let file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(path)?;
+            match file.try_lock() {
+                Ok(()) => Ok(Some(file)),
+                Err(TryLockError::WouldBlock) => Ok(None),
+                Err(TryLockError::Error(err)) => Err(err.into()),
+            }
+        })
+        .await?
     }
 }

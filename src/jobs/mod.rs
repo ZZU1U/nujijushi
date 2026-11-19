@@ -1,14 +1,14 @@
 //! Import orchestration: source -> blob store -> database, plus job bookkeeping.
 
+mod watch;
 pub mod worker;
 
 use std::path::{Path, PathBuf};
 
 use crate::blob::Ingested;
 use crate::db::posts::NewMedia;
-use crate::db::{jobs as job_db, posts as post_db, tags as tag_db};
+use crate::db::{jobs as job_db, posts as post_db};
 use crate::error::{Error, Result};
-use crate::model::PostState;
 use crate::source::{NormalizedPost, gallerydl, telegram};
 use crate::state::AppState;
 
@@ -116,7 +116,7 @@ pub async fn import_posts(
     let mut outcome = ImportOutcome::default();
     let total = posts.len() as i64;
     for (index, post) in posts.iter().enumerate() {
-        match store_post(state, post, submitted_by).await {
+        match store_post(state, post, submitted_by, false).await {
             Ok((post_id, created)) => {
                 outcome.post_ids.push(post_id);
                 outcome.files += post.files.len();
@@ -143,24 +143,25 @@ pub async fn import_posts(
         }
     }
 
-    // mirror to the configured storage sinks; the worker uploads them
-    if state.cfg.storage.on_import
-        && state.cfg.storage.any_enabled()
-        && !outcome.post_ids.is_empty()
-    {
-        match crate::storage::enqueue(state, &outcome.post_ids).await {
+    enqueue_import_mirrors(state, &outcome.post_ids).await;
+    Ok(outcome)
+}
+
+async fn enqueue_import_mirrors(state: &AppState, post_ids: &[i64]) {
+    if state.cfg.storage.on_import && state.cfg.storage.any_enabled() && !post_ids.is_empty() {
+        match crate::storage::enqueue(state, post_ids).await {
             Ok(queued) if queued > 0 => tracing::info!(queued, "queued for external storage"),
             Ok(_) => {}
             Err(err) => tracing::warn!("cannot queue storage mirrors: {err}"),
         }
     }
-    Ok(outcome)
 }
 
 async fn store_post(
     state: &AppState,
     post: &NormalizedPost,
     submitted_by: Option<i64>,
+    insert_only: bool,
 ) -> Result<(i64, bool)> {
     let mut media: Vec<NewMedia> = Vec::new();
     for file in &post.files {
@@ -195,37 +196,10 @@ async fn store_post(
     }
 
     let post = post.clone();
-    let media_for_db = media.clone();
-    let (post_id, created) = state
+    state
         .db
-        .call(move |conn| post_db::upsert(conn, &post, &media_for_db))
-        .await?;
-
-    if let Some(tg_id) = submitted_by {
-        state
-            .db
-            .call(move |conn| post_db::set_submitted_by(conn, post_id, tg_id))
-            .await?;
-    }
-
-    // hard blocks are applied at import time so they never reach a queue
-    let rules = state.db.call(|conn| tag_db::TagRules::load(conn)).await?;
-    let tags = state
-        .db
-        .call(move |conn| tag_db::for_post(conn, post_id))
-        .await?;
-    if let Some(hit) = rules.blocked_hit(&tags).cloned() {
-        let note = format!("auto-rejected: blocked tag {hit}");
-        state
-            .db
-            .call(move |conn| {
-                post_db::set_state(conn, post_id, PostState::Rejected)?;
-                post_db::set_notes(conn, post_id, Some(&note))
-            })
-            .await?;
-    }
-
-    Ok((post_id, created))
+        .call(move |conn| post_db::store_import(conn, &post, &media, submitted_by, insert_only))
+        .await
 }
 
 async fn ingest(state: &AppState, path: &Path) -> Result<(Ingested, Option<PathBuf>)> {
@@ -276,6 +250,7 @@ pub const KIND_IMPORT: &str = "import";
 pub const KIND_PUBLISH_CHANNEL: &str = "publish_channel";
 pub const KIND_PUBLISH_ITEM: &str = "publish_item";
 pub const KIND_STORAGE_DRAIN: &str = "storage_drain";
+pub const KIND_WATCH_CHECK: &str = "watch_check";
 
 /// Create the job row for a target (CLI / web UI).
 pub async fn create_job(state: &AppState, target: &str) -> Result<i64> {
@@ -316,6 +291,13 @@ pub async fn create_drain_job(state: &AppState, limit: usize) -> Result<Option<i
     enqueue_unique(state, KIND_STORAGE_DRAIN, limit.to_string()).await
 }
 
+pub async fn create_watch_check_job(state: &AppState, watch_id: i64) -> Result<(i64, bool)> {
+    state
+        .db
+        .call(move |conn| crate::db::watches::enqueue(conn, watch_id, KIND_WATCH_CHECK))
+        .await
+}
+
 /// Create a job unless the same kind + payload is already pending or running.
 async fn enqueue_unique(
     state: &AppState,
@@ -337,6 +319,10 @@ async fn enqueue_unique(
 #[derive(Debug, Clone)]
 pub enum JobReport {
     Import(ImportOutcome),
+    Watch {
+        message: String,
+        attempted: i64,
+    },
     /// Any other kind: one line for the job row, plus the post it touched.
     Done {
         message: String,
@@ -348,22 +334,44 @@ impl JobReport {
     pub fn message(&self) -> String {
         match self {
             JobReport::Import(outcome) => outcome.summary(),
-            JobReport::Done { message, .. } => message.clone(),
+            JobReport::Done { message, .. } | JobReport::Watch { message, .. } => message.clone(),
         }
     }
 
     pub fn post_ids(&self) -> &[i64] {
         match self {
             JobReport::Import(outcome) => &outcome.post_ids,
-            JobReport::Done { .. } => &[],
+            JobReport::Done { .. } | JobReport::Watch { .. } => &[],
         }
     }
 }
 
 /// Run a job that is already marked `running`, then record how it went.
 pub async fn run_job(state: &AppState, job: &job_db::Job) -> Result<JobReport> {
+    let _watch_lock = if job.kind == KIND_WATCH_CHECK {
+        let watch_id = payload_i64(job)?;
+        let lock = watch::lock(state, watch_id)
+            .await?
+            .ok_or_else(|| Error::other("watch is locked by another worker"))?;
+        let job_id = job.id;
+        let still_running = state
+            .db
+            .call(move |conn| {
+                Ok(job_db::get(conn, job_id)?.is_some_and(|job| job.state == "running"))
+            })
+            .await?;
+        if !still_running {
+            return Err(Error::other(
+                "watched check was interrupted before it started",
+            ));
+        }
+        Some(lock)
+    } else {
+        None
+    };
     let label = match job.kind.as_str() {
         KIND_IMPORT => "importing",
+        KIND_WATCH_CHECK => "scanning source",
         KIND_PUBLISH_CHANNEL | KIND_PUBLISH_ITEM => "publishing",
         KIND_STORAGE_DRAIN => "uploading mirrors",
         other => return Err(Error::invalid(format!("unknown job kind: {other}"))),
@@ -386,6 +394,7 @@ pub async fn run_job(state: &AppState, job: &job_db::Job) -> Result<JobReport> {
                     outcome.post_ids.first().copied(),
                 ),
                 JobReport::Done { post_id, .. } => (1, *post_id),
+                JobReport::Watch { attempted, .. } => (*attempted, None),
             };
             state
                 .db
@@ -428,6 +437,7 @@ async fn run_kind(state: &AppState, job: &job_db::Job) -> Result<JobReport> {
                 import_target_tracked(state, &target, job.submitted_by, Some(job.id)).await?;
             Ok(JobReport::Import(outcome))
         }
+        KIND_WATCH_CHECK => watch::check(state, payload_i64(job)?, job.id).await,
         KIND_PUBLISH_CHANNEL => {
             let channel_id = payload_i64(job)?;
             let channel = state
@@ -525,7 +535,9 @@ pub async fn import_and_record(state: &AppState, target: &str) -> Result<ImportO
         .ok_or_else(|| crate::error::Error::NotFound(format!("job {job_id}")))?;
     match run_job(state, &job).await? {
         JobReport::Import(outcome) => Ok(outcome),
-        JobReport::Done { .. } => Err(Error::other("expected an import job")),
+        JobReport::Done { .. } | JobReport::Watch { .. } => {
+            Err(Error::other("expected an import job"))
+        }
     }
 }
 

@@ -345,3 +345,17 @@ tr[data-state="done"] .progress > span { background-image: none; background-colo
   .toast { animation: none; }
   .toast.out { transition: none; }
 }
+
+.duplicate-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .75rem;
+}
+.duplicate-columns > * { min-width: 0; overflow-wrap: anywhere; }
+.duplicate-columns figure { margin: 0 0 .75rem; }
+.duplicate-columns img {
+  display: block;
+  width: 100%;
+  height: clamp(8rem, 32vw, 22rem);
+  object-fit: contain;
+}

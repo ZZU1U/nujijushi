@@ -52,7 +52,7 @@ impl IntoResponse for WebError {
     }
 }
 
-type WebResult<T> = std::result::Result<T, WebError>;
+pub(super) type WebResult<T> = std::result::Result<T, WebError>;
 
 pub fn router(ws: Arc<WebState>) -> Router {
     let protected = Router::new()
@@ -60,6 +60,14 @@ pub fn router(ws: Arc<WebState>) -> Router {
         .route("/posts", get(posts_page).post(posts_bulk))
         .route("/posts/{id}", get(post_page).post(post_update))
         .route("/posts/{id}/tags", post(post_tag_action))
+        .route(
+            "/watches",
+            get(super::curation::watches_page).post(super::curation::create_watch),
+        )
+        .route("/watches/{id}/check", post(super::curation::check_watch))
+        .route("/watches/{id}/remove", post(super::curation::remove_watch))
+        .route("/duplicates", get(super::curation::duplicates_page))
+        .route("/duplicates/dismiss", post(super::curation::dismiss))
         .route("/channels", get(channels_page).post(channel_create))
         .route(
             "/channels/{id}/edit",
@@ -94,7 +102,7 @@ pub fn router(ws: Arc<WebState>) -> Router {
         .with_state(ws)
 }
 
-fn flash_redirect(path: &str, message: &str) -> Response {
+pub(super) fn flash_redirect(path: &str, message: &str) -> Response {
     let encoded: String = message
         .chars()
         .map(|c| match c {
@@ -136,7 +144,7 @@ fn decode_flash(raw: &Option<String>) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-fn check_csrf(ws: &WebState, provided: &str) -> WebResult<()> {
+pub(super) fn check_csrf(ws: &WebState, provided: &str) -> WebResult<()> {
     if auth::constant_time_eq(provided, &ws.csrf) {
         Ok(())
     } else {
@@ -1384,6 +1392,8 @@ pub fn job_view(job: &job_db::Job, now: chrono::DateTime<chrono::Utc>) -> Value 
         "id": job.id,
         "kind": job.kind,
         "kind_label": kind_label(&job.kind),
+        "watch_id": (job.kind == crate::jobs::KIND_WATCH_CHECK)
+            .then(|| job.payload.as_deref()?.parse::<i64>().ok()).flatten(),
         "payload": job.payload,
         "state": job.state,
         "progress": job.progress,
@@ -1409,6 +1419,7 @@ fn kind_label(kind: &str) -> &str {
         crate::jobs::KIND_PUBLISH_CHANNEL => "publish next",
         crate::jobs::KIND_PUBLISH_ITEM => "publish item",
         crate::jobs::KIND_STORAGE_DRAIN => "storage upload",
+        crate::jobs::KIND_WATCH_CHECK => "watched source check",
         other => other,
     }
 }
@@ -1492,6 +1503,17 @@ async fn api_status(State(ws): State<Arc<WebState>>) -> WebResult<Response> {
 pub async fn status_payload(app: &AppState) -> crate::error::Result<Value> {
     let now = chrono::Utc::now();
     let jobs = app.db.call(|conn| job_db::list(conn, 25)).await?;
+    let (watch_jobs, duplicate_indexing) = app
+        .db
+        .call(|conn| {
+            let watch_jobs = crate::db::watches::list(conn)?
+                .into_iter()
+                .filter_map(|watch| watch.last_job_id)
+                .map(|id| job_db::get(conn, id))
+                .collect::<crate::error::Result<Vec<_>>>()?;
+            Ok((watch_jobs, crate::db::duplicates::has_pending(conn)?))
+        })
+        .await?;
     let channels = app.db.call(|conn| channel_db::list(conn)).await?;
 
     let mut channel_views = Vec::with_capacity(channels.len());
@@ -1531,6 +1553,8 @@ pub async fn status_payload(app: &AppState) -> crate::error::Result<Value> {
     Ok(json!({
         "now": now.to_rfc3339(),
         "jobs": jobs.iter().map(|job| job_view(job, now)).collect::<Vec<_>>(),
+        "watch_jobs": watch_jobs.iter().flatten().map(|job| job_view(job, now)).collect::<Vec<_>>(),
+        "duplicate_indexing": duplicate_indexing,
         "channels": channel_views,
         "scheduler": scheduler_view(app, now),
     }))

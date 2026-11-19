@@ -136,6 +136,21 @@ Both ask for confirmation and bypass the schedule, active hours, and daily cap. 
 
 The request queues a background job. Open **jobs** to see progress or retry a failed import. Imports default to two concurrent jobs, configurable with `[import] max_concurrent`. See the [web UI flow](../codebase.md#flow-3--the-web-ui) for job lifecycle and API details.
 
+### Watched sources and duplicate artwork
+
+Use **Watched sources** to save a Pixiv artist page, an X or Bluesky artist media feed,
+or a newest-first Danbooru or Gelbooru tag search. **Check now** starts a background
+check. The first check uses the configured post limit for that watch. Later checks
+look for newly published artwork and retry pending downloads. Artist and search access
+uses the same gallery-dl configuration and credentials as regular imports. Review new
+posts and queue the ones you want to publish.
+
+The **Duplicates** inbox compares still images from different sources. It shows exact
+files and likely resize or recompression matches, with the matched image positions.
+**Dismiss pair** hides a suggestion even after a re-import. The background worker
+indexes existing and new artwork in small batches, and the inbox shows when indexing
+is in progress.
+
 ## Telegram limits nujijushi respects
 
 * ≤ 10 items per media group; larger posts are split into several albums.

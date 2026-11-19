@@ -5,6 +5,7 @@ pub mod bot;
 pub mod cli;
 pub mod config;
 pub mod db;
+pub mod duplicates;
 pub mod error;
 pub mod http;
 pub mod jobs;

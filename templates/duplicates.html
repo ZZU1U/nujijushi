@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}duplicate artwork{% endblock %}
+{% macro details(post) %}
+<div>
+  <h3><a href="/posts/{{ post.id }}">#{{ post.id }}{% if post.title %} · {{ post.title }}{% endif %}</a></h3>
+  <p>{{ post.artist }} · {% if post.url %}<a href="{{ post.url }}" target="_blank" rel="noopener noreferrer">{{ post.source }}</a>{% else %}{{ post.source }}{% endif %}</p>
+  <p><span class="badge">{{ post.state }}</span>
+    {% for queue in post.queues %}<a class="badge" href="/channels/{{ queue.channel_id }}/queue">{{ queue.alias }} · {{ queue.state }}</a>{% else %}<span class="hint">No queue or delivery history</span>{% endfor %}
+  </p>
+</div>
+{% endmacro %}
+{% macro thumbnail(item, post_id) %}
+<figure>
+  {% if item.thumb %}
+    <a href="/posts/{{ post_id }}"><img src="/thumb/{{ item.hash }}" alt="Matched image {{ item.position }}" loading="lazy"></a>
+  {% else %}
+    <a href="/posts/{{ post_id }}">Open post #{{ post_id }}</a>
+  {% endif %}
+  <figcaption class="hint">Image {{ item.position }}</figcaption>
+</figure>
+{% endmacro %}
+{% block body %}
+<section class="panel">
+  <h1>Duplicate artwork</h1>
+  {% if indexing %}<p class="hint" data-duplicates-indexing>Indexing artwork. More matches will appear as indexing finishes.</p>{% endif %}
+  {% if not pairs %}<p class="hint">No duplicate pairs on this page.</p>{% endif %}
+  {% for pair in pairs %}
+  <article class="panel inset">
+    <div class="duplicate-columns">{{ details(pair.left) }}{{ details(pair.right) }}</div>
+    {% for match in pair.matches %}
+    <p class="hint">{{ 'Exact file' if match.exact else 'Visually similar' }}</p>
+    <div class="duplicate-columns">
+      {{ thumbnail(match.left, pair.left.id) }}
+      {{ thumbnail(match.right, pair.right.id) }}
+    </div>
+    {% endfor %}
+    <form method="post" action="/duplicates/dismiss">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="left" value="{{ pair.left.id }}">
+      <input type="hidden" name="right" value="{{ pair.right.id }}">
+      <button class="ghost" type="submit">Dismiss pair</button>
+    </form>
+  </article>
+  {% endfor %}
+  <nav class="pager">
+    {% if previous %}<a href="/duplicates?page={{ previous }}">Previous</a>{% endif %}
+    {% if next %}<a href="/duplicates?page={{ next }}">Next</a>{% endif %}
+  </nav>
+</section>
+{% endblock %}

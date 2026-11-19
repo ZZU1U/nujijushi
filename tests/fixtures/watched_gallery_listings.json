@@ -1,0 +1,19 @@
+{
+  "pixiv": [
+    [2, {"category":"pixiv","subcategory":"artworks","id":123,"date":"2025-09-02 05:11:03"}],
+    [3, "https://i.pximg.net/a_p0.jpg", {"category":"pixiv","id":123,"date":"2025-09-02 05:11:03","num":0}],
+    [3, "https://i.pximg.net/a_p1.jpg", {"category":"pixiv","id":123,"date":"2025-09-02 05:11:03","num":1}]
+  ],
+  "twitter": [
+    [3, "https://pbs.twimg.com/media/a.jpg", {"category":"twitter","tweet_id":1935131998317236224,"date":"2025-06-18 02:26:00","user":{"name":"artist"}}]
+  ],
+  "bluesky": [
+    [3, "https://example.test/getBlob", {"category":"bluesky","post_id":"3lu22ub5jqk2k","date":"2025-07-15 16:42:00","uri":"at://did:plc:artwork/app.bsky.feed.post/3lu22ub5jqk2k","author":{"did":"did:plc:artwork","handle":"artist.bsky.social"}}]
+  ],
+  "danbooru": [
+    [3, "https://cdn.donmai.us/original/a.jpg", {"category":"danbooru","id":3400,"date":"2025-08-20 10:12:01","tag_string":"watercolor"}]
+  ],
+  "gelbooru": [
+    [3, "https://img3.gelbooru.com/images/a.jpg", {"category":"gelbooru","id":"654","created_at":"Sat Sep 13 14:22:17 +0000 2025","tags":"watercolor"}]
+  ]
+}

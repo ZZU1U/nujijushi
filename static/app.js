@@ -179,6 +179,9 @@
     setText(row.querySelector('[data-role="counts"]'), job.progress + '/' + job.total);
     setText(row.querySelector('[data-role="message"]'), job.message);
     setText(row.querySelector('[data-role="age"]'), job.age);
+    row.querySelectorAll('[data-watch-action]').forEach((button) => {
+      button.disabled = isLive(job.state);
+    });
 
     // a state change flashes the row once, so a poll result is visible in place
     if (before && before !== job.state) {
@@ -199,6 +202,8 @@
   function applyStatus(status) {
     const jobs = Array.isArray(status && status.jobs) ? status.jobs : [];
     const byId = new Map(jobs.map((job) => [String(job.id), job]));
+    const watchJobs = Array.isArray(status && status.watch_jobs) ? status.watch_jobs : [];
+    watchJobs.forEach((job) => byId.set(String(job.id), job));
     let live = false;
 
     all('[data-job]').forEach((row) => {
@@ -232,12 +237,15 @@
       if (queued) live = true;
     });
 
+    const indexing = document.querySelector('[data-duplicates-indexing]');
+    if (indexing && status.duplicate_indexing) live = true;
+    if (indexing && !status.duplicate_indexing) setText(indexing, 'Indexing complete. Reload for all matches.');
     return live;
   }
 
   function liveStatus() {
     if (typeof window.fetch !== 'function') return;
-    if (!document.querySelector('[data-job], [data-channel], [data-queue]')) return;
+    if (!document.querySelector('[data-job], [data-channel], [data-queue], [data-duplicates-indexing]')) return;
 
     let timer = null;
     let quietPolls = 0;

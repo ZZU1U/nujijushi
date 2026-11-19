@@ -123,6 +123,33 @@ pub fn upsert(
     super::transaction(conn, |conn| upsert_post(conn, np, media))
 }
 
+/// Apply archive changes and import-time curation in the same commit. Watched
+/// imports leave an existing post untouched, even across separate processes.
+pub fn store_import(
+    conn: &mut Connection,
+    post: &NormalizedPost,
+    media: &[NewMedia],
+    submitted_by: Option<i64>,
+    insert_only: bool,
+) -> Result<(i64, bool)> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    if insert_only && let Some(id) = find_by_source_id(&tx, &post.source, &post.source_id)? {
+        return Ok((id, false));
+    }
+    let (id, created) = upsert_post(&tx, post, media)?;
+    if let Some(user) = submitted_by {
+        set_submitted_by(&tx, id, user)?;
+    }
+    let rules = tags::TagRules::load(&tx)?;
+    let post_tags = tags::for_post(&tx, id)?;
+    if let Some(hit) = rules.blocked_hit(&post_tags) {
+        set_state(&tx, id, PostState::Rejected)?;
+        set_notes(&tx, id, Some(&format!("auto-rejected: blocked tag {hit}")))?;
+    }
+    tx.commit()?;
+    Ok((id, created))
+}
+
 fn upsert_post(conn: &Connection, np: &NormalizedPost, media: &[NewMedia]) -> Result<(i64, bool)> {
     let now = Utc::now();
     let author_id = match &np.author {

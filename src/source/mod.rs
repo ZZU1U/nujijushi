@@ -5,6 +5,7 @@ pub mod localdir;
 pub mod normalize;
 pub mod pair;
 pub mod telegram;
+pub mod watch;
 
 use std::path::PathBuf;
 

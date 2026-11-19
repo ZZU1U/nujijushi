@@ -13,6 +13,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0006_media_meta.sql"),
     include_str!("../../migrations/0007_tag_provenance.sql"),
     include_str!("../../migrations/0008_queue_alerts.sql"),
+    include_str!("../../migrations/0009_watched_sources.sql"),
+    include_str!("../../migrations/0010_duplicate_artwork.sql"),
 ];
 
 pub fn schema_version(conn: &Connection) -> Result<i64> {
@@ -61,6 +63,9 @@ mod tests {
             "authors",
             "blobs",
             "channels",
+            "duplicate_dismissals",
+            "duplicate_matches",
+            "image_fingerprints",
             "jobs",
             "media",
             "post_tag_removals",
@@ -72,6 +77,8 @@ mod tests {
             "tag_aliases",
             "tag_rules",
             "tags",
+            "watched_items",
+            "watched_sources",
         ] {
             assert!(
                 tables.iter().any(|t| t == expected),

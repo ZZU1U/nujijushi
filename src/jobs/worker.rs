@@ -1,101 +1,137 @@
-//! Background import worker used by `nujijushi run` and the web UI.
+//! Background work used by `nujijushi run` and the web UI.
 
-use std::sync::Arc;
+use std::time::Duration;
 
-use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use crate::db::jobs as job_db;
 use crate::error::Result;
 use crate::state::AppState;
 
-/// Publish/upload jobs are quick and the user is watching them, so they get
-/// their own claim instead of a slot of the (slow) import pool: with two long
-/// gallery-dl runs, a queued "publish now" would otherwise wait for both.
 const QUICK_KINDS: &[&str] = &[
     crate::jobs::KIND_PUBLISH_CHANNEL,
     crate::jobs::KIND_PUBLISH_ITEM,
     crate::jobs::KIND_STORAGE_DRAIN,
 ];
+const IMPORT_KINDS: &[&str] = &[crate::jobs::KIND_IMPORT, crate::jobs::KIND_WATCH_CHECK];
 const QUICK_JOBS: i64 = 4;
+const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 pub struct JobWorker {
     state: AppState,
-    limits: Arc<Semaphore>,
 }
 
 impl JobWorker {
     pub fn new(state: AppState) -> Self {
-        let permits = state.cfg.max_concurrent_imports;
-        Self {
-            state,
-            limits: Arc::new(Semaphore::new(permits)),
-        }
+        Self { state }
     }
 
-    /// Claim and run every pending job, keeping imports within the limit.
-    pub async fn drain(&self) -> Result<usize> {
-        let free = self.limits.available_permits() as i64;
-        let jobs = self
-            .state
+    async fn claim(&self, kinds: &'static [&'static str], limit: i64) -> Result<Vec<job_db::Job>> {
+        self.state
             .db
-            .call(move |conn| {
-                let mut claimed = job_db::claim_pending_of(conn, QUICK_KINDS, QUICK_JOBS)?;
-                claimed.extend(job_db::claim_pending_of(
-                    conn,
-                    &[crate::jobs::KIND_IMPORT],
-                    free,
-                )?);
-                Ok(claimed)
-            })
-            .await?;
-        if jobs.is_empty() {
-            // nothing to run, but storage mirrors may still be waiting
-            if let Err(err) = crate::storage::drain(&self.state, 5).await {
-                tracing::warn!("storage drain failed: {err}");
-            }
-            return Ok(0);
-        }
+            .call(move |conn| job_db::claim_pending_of(conn, kinds, limit))
+            .await
+    }
 
-        let mut set: JoinSet<()> = JoinSet::new();
-        for job in &jobs {
+    async fn run_claimed(&self, jobs: Vec<job_db::Job>) -> usize {
+        let count = jobs.len();
+        let mut set = JoinSet::new();
+        for job in jobs {
             let state = self.state.clone();
-            let job = job.clone();
             set.spawn(async move {
                 if let Err(err) = crate::jobs::run_job(&state, &job).await {
                     tracing::warn!(job = job.id, "job failed: {err}");
                 }
             });
         }
-        while set.join_next().await.is_some() {}
-        if let Err(err) = crate::storage::drain(&self.state, 10).await {
-            tracing::warn!("storage drain failed: {err}");
+        while let Some(result) = set.join_next().await {
+            if let Err(err) = result {
+                tracing::warn!("job task stopped: {err}");
+            }
         }
-        Ok(jobs.len())
+        count
     }
 
-    /// Poll loop; exits when the shutdown future resolves.
+    fn import_limit(&self) -> i64 {
+        self.state.cfg.max_concurrent_imports as i64
+    }
+
+    async fn drain_mirrors(&self, limit: i64) {
+        if let Err(err) = crate::storage::drain(&self.state, limit).await {
+            tracing::warn!("storage drain failed: {err}");
+        }
+    }
+
+    /// Run one pass of the worker, useful to callers that own the polling loop.
+    pub async fn drain(&self) -> Result<usize> {
+        let quick = self.claim(QUICK_KINDS, QUICK_JOBS).await?;
+        let imports = self.claim(IMPORT_KINDS, self.import_limit()).await?;
+        let (quick, imports) = tokio::join!(self.run_claimed(quick), self.run_claimed(imports));
+        let count = quick + imports;
+        self.drain_mirrors(if count == 0 { 5 } else { 10 }).await;
+        crate::duplicates::index_batch(&self.state).await?;
+        Ok(count)
+    }
+
+    async fn poll_jobs(&self, kinds: &'static [&'static str], limit: i64, mirrors: bool) {
+        loop {
+            match self.claim(kinds, limit).await {
+                Ok(jobs) => {
+                    let count = self.run_claimed(jobs).await;
+                    if mirrors {
+                        self.drain_mirrors(if count == 0 { 5 } else { 10 }).await;
+                    }
+                }
+                Err(err) => tracing::error!("job worker: {err}"),
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+    }
+
+    async fn poll_duplicates(&self) {
+        loop {
+            if let Err(err) = crate::duplicates::index_batch(&self.state).await {
+                tracing::warn!("duplicate indexing failed: {err}");
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+    }
+
+    /// Poll each lane independently so slow source checks and CPU indexing
+    /// cannot delay claiming a quick publish job.
     pub async fn run<F>(&self, shutdown: F) -> Result<()>
     where
         F: std::future::Future<Output = ()> + Send,
     {
-        tokio::pin!(shutdown);
-        loop {
-            tokio::select! {
-                _ = &mut shutdown => break,
-                result = self.drain() => {
-                    if let Err(err) = result {
-                        tracing::error!("job worker: {err}");
-                    }
-                }
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        tokio::select! {
+            _ = shutdown => {},
+            _ = self.poll_jobs(QUICK_KINDS, QUICK_JOBS, false) => {},
+            _ = self.poll_jobs(IMPORT_KINDS, self.import_limit(), true) => {},
+            _ = self.poll_duplicates() => {},
         }
         Ok(())
     }
 }
 
-/// Fail jobs that a previous process left `pending`/`running`.
+/// Mark abandoned jobs interrupted. Pending watch checks can still run.
+/// A running watch in another process holds its lock until it records the result.
 pub async fn reconcile(state: &AppState) -> Result<usize> {
-    state.db.call(|conn| job_db::reconcile(conn)).await
+    let mut fixed = state
+        .db
+        .call(|conn| job_db::reconcile_except(conn, crate::jobs::KIND_WATCH_CHECK))
+        .await?;
+    let running = state
+        .db
+        .call(|conn| job_db::running_of(conn, crate::jobs::KIND_WATCH_CHECK))
+        .await?;
+    for job in running {
+        let watch_id = super::payload_i64(&job)?;
+        if let Some(_lock) = super::watch::lock(state, watch_id).await? {
+            fixed += state
+                .db
+                .call(move |conn| job_db::interrupt_running(conn, job.id))
+                .await?;
+        }
+    }
+    Ok(fixed)
 }

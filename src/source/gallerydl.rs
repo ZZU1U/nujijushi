@@ -91,9 +91,16 @@ pub fn download_args(
         staging.display().to_string(),
         "--write-metadata".into(),
         "--no-mtime".into(),
+    ];
+    args.extend(network_args(cookies, proxy));
+    args.push(target.to_string());
+    args
+}
+
+pub(super) fn network_args(cookies: Option<&Path>, proxy: Option<&str>) -> Vec<String> {
+    let mut args = vec![
         "--retries".into(),
         "3".into(),
-        // gallery-dl has no --timeout flag; it is a config key
         "-o".into(),
         "timeout=30.0".into(),
     ];
@@ -105,7 +112,6 @@ pub fn download_args(
         args.push("--proxy".into());
         args.push(proxy.to_string());
     }
-    args.push(target.to_string());
     args
 }
 
@@ -168,6 +174,20 @@ impl Source for GalleryDlSource {
     }
 
     async fn fetch(&self, target: &str) -> Result<Vec<NormalizedPost>> {
+        self.fetch_with_policy(target, false).await
+    }
+}
+
+impl GalleryDlSource {
+    pub async fn fetch_complete(&self, target: &str) -> Result<Vec<NormalizedPost>> {
+        self.fetch_with_policy(target, true).await
+    }
+
+    async fn fetch_with_policy(
+        &self,
+        target: &str,
+        require_complete: bool,
+    ) -> Result<Vec<NormalizedPost>> {
         if !self.supports(target) {
             return Err(Error::invalid(format!("not a URL: {target}")));
         }
@@ -178,16 +198,33 @@ impl Source for GalleryDlSource {
             .join(format!("gdl-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&staging)?;
 
-        let args = download_args(
+        let mut args = download_args(
             &staging,
             target,
             self.cookie_file(target).as_deref(),
             self.cfg.proxy_url.as_deref(),
         );
+        if require_complete {
+            args.insert(0, "--no-input".into());
+            // A user-configured gallery-dl archive must not mark files as handled before the app imports them.
+            args.splice(0..0, ["-o".into(), "extractor.archive=null".into()]);
+        }
 
         tracing::info!(program = %self.cfg.gallery_dl, "running import");
         let output =
             run_with_timeout(&self.cfg.gallery_dl, &args, self.cfg.import_timeout_secs).await;
+
+        if require_complete {
+            let failure = match &output {
+                Ok(out) if out.status.success() => None,
+                Ok(out) => Some(format!("gallery-dl download exited with {}", out.status)),
+                Err(err) => Some(err.to_string()),
+            };
+            if let Some(failure) = failure {
+                let _ = std::fs::remove_dir_all(&staging);
+                return Err(Error::other(failure));
+            }
+        }
 
         let files = pair::collect(&staging)?;
         let posts = groups_to_posts(pair::group(files), target);
@@ -196,7 +233,11 @@ impl Source for GalleryDlSource {
             Ok(out) => {
                 if posts.is_empty() {
                     let _ = std::fs::remove_dir_all(&staging);
-                    let tail = stderr_tail(&out, 6);
+                    let tail = if require_complete {
+                        String::new()
+                    } else {
+                        stderr_tail(&out, 6)
+                    };
                     return Err(Error::other(format!(
                         "gallery-dl produced no media for {target}{}{}",
                         if out.status.success() {
