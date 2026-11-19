@@ -106,10 +106,10 @@ impl<'a> Bot<'a> {
                 self.show_post(message, command.arg(0)).await
             }
             "import" => {
-                let targets: Vec<String> = command
-                    .args
-                    .iter()
-                    .map(|arg| crate::source::normalize_target(arg))
+                let targets: Vec<String> = crate::source::split_pasted_links(command.rest())
+                    .into_iter()
+                    .flat_map(str::split_whitespace)
+                    .map(crate::source::normalize_target)
                     .collect();
                 self.import_link(message, user, role, targets).await
             }

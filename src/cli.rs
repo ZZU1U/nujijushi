@@ -1387,8 +1387,12 @@ async fn cmd_import(
         None => None,
     };
 
+    let targets: Vec<_> = targets
+        .iter()
+        .flat_map(|target| crate::source::split_pasted_links(target))
+        .collect();
     let mut failures = 0;
-    for target in &targets {
+    for target in targets.iter().copied() {
         println!("importing {target}");
         match crate::jobs::import_and_record(state, target).await {
             Ok(outcome) => {

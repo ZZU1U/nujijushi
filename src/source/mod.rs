@@ -164,15 +164,71 @@ pub fn looks_importable(target: &str) -> bool {
     telegram::is_telegram_link(target) || gallerydl::looks_like_url(target)
 }
 
-/// Give a pasted link the scheme it is missing (`t.me/x/1` -> `https://t.me/x/1`)
-/// and drop punctuation a chat client glued to it.
-pub fn normalize_target(target: &str) -> String {
-    let trimmed = target.trim().trim_matches(|c: char| {
+fn trim_link(target: &str) -> &str {
+    target.trim().trim_matches(|c: char| {
         matches!(
             c,
             '<' | '(' | '[' | '"' | '\'' | ',' | ';' | ')' | ']' | '>' | '.'
         )
-    });
+    })
+}
+
+fn strip_encoded_newline(text: &str) -> Option<&str> {
+    ["%0d%0a", "%0a"].into_iter().find_map(|separator| {
+        let (prefix, rest) = text.split_at_checked(separator.len())?;
+        prefix.eq_ignore_ascii_case(separator).then_some(rest)
+    })
+}
+
+fn starts_with_link(text: &str) -> bool {
+    // A link's scheme or bare Telegram prefix occurs before any percent escapes.
+    looks_importable(trim_link(text.split('%').next().unwrap_or_default()))
+}
+
+/// Recognize encoded breaks in a pasted link list while preserving URL fields
+/// such as `?q=first%0Asecond` and literal percent escapes in local paths.
+pub fn split_pasted_links(text: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut search_from = 0;
+    for (index, _) in text.match_indices('%') {
+        if index < search_from {
+            continue;
+        }
+        let Some(rest) = strip_encoded_newline(&text[index..]) else {
+            continue;
+        };
+        let mut next = rest.trim_start();
+        while let Some(rest) = strip_encoded_newline(next) {
+            next = rest.trim_start();
+        }
+        search_from = text.len() - next.len();
+        if !next.is_empty() && !starts_with_link(next) {
+            continue;
+        }
+        let previous = text[start..index].trim();
+        let previous_link = previous.split_whitespace().next_back();
+        if previous_link.is_some_and(|link| !starts_with_link(link)) {
+            continue;
+        }
+        if next.is_empty() && previous_link.is_none_or(|link| link.contains(['?', '#'])) {
+            continue;
+        }
+        if !previous.is_empty() {
+            parts.push(previous);
+        }
+        start = search_from;
+    }
+    if start < text.len() || start == 0 {
+        parts.push(&text[start..]);
+    }
+    parts
+}
+
+/// Give a pasted link the scheme it is missing (`t.me/x/1` -> `https://t.me/x/1`)
+/// and drop punctuation a chat client glued to it.
+pub fn normalize_target(target: &str) -> String {
+    let trimmed = trim_link(target);
     let lowered = trimmed.to_ascii_lowercase();
     if lowered.starts_with("t.me/") || lowered.starts_with("telegram.me/") {
         format!("https://{trimmed}")
@@ -184,6 +240,31 @@ pub fn normalize_target(target: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn splits_encoded_newlines_between_links_but_keeps_url_values_and_paths() {
+        let urls =
+            "%0Ahttps://x.com/a/status/1%0d%0A%0a t.me/art/2%0Ahttps://example.test/search?q=a%0Ab";
+        assert_eq!(
+            split_pasted_links(urls),
+            [
+                "https://x.com/a/status/1",
+                "t.me/art/2",
+                "https://example.test/search?q=a%0Ab",
+            ]
+        );
+        assert_eq!(
+            split_pasted_links("https://t.me/art/2%0a"),
+            ["https://t.me/art/2"]
+        );
+        for untouched in [
+            "https://example.test/search?q=a%0A",
+            "/tmp/art%0A archive",
+            "https://example.test/art%20archive",
+        ] {
+            assert_eq!(split_pasted_links(untouched), [untouched]);
+        }
+    }
 
     #[test]
     fn one_vocabulary_for_importable_targets() {

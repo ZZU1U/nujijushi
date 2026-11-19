@@ -215,6 +215,27 @@ async fn body_text(response: axum::response::Response) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
 
+#[tokio::test]
+async fn importing_pasted_encoded_newlines_queues_each_link() {
+    let h = harness();
+    let first = "https://www.pixiv.net/artworks/123";
+    let second = "https://example.test/search?q=a%0Ab";
+    let pasted = format!("{first}%0A{second}");
+    let form = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("csrf", &h.ws.csrf)
+        .append_pair("targets", &pasted)
+        .finish();
+    let response = h.send(h.post("/import", &form)).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let jobs = h.jobs().await;
+    let targets: Vec<_> = jobs
+        .iter()
+        .rev()
+        .map(|job| job.payload.as_deref().unwrap())
+        .collect();
+    assert_eq!(targets, [first, second]);
+}
+
 /// One job row of a rendered page, so a test can assert about *that* job.
 fn job_row(html: &str, id: i64) -> &str {
     let start = html

@@ -100,7 +100,10 @@ pub fn parse(text: &str, bot_username: Option<&str>) -> Parsed {
 /// link belongs to the source layer, not to this interface.
 pub fn import_targets(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for token in text.split_whitespace() {
+    for token in crate::source::split_pasted_links(text)
+        .into_iter()
+        .flat_map(str::split_whitespace)
+    {
         let target = crate::source::normalize_target(token);
         if !crate::source::looks_importable(&target) {
             continue;

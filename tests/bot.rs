@@ -786,7 +786,7 @@ async fn a_message_with_several_links_queues_every_one() {
         .send(private_message(
             ADMIN,
             1,
-            "https://x.com/a/status/1\nhttps://x.com/a/status/2\nt.me/night_art/9\ntelegram.me/night_art/7",
+            "https://x.com/a/status/1%0Ahttps://x.com/a/status/2\nt.me/night_art/9\ntelegram.me/night_art/7",
         ))
         .await;
 
@@ -840,7 +840,7 @@ import_quota_per_day = 1
         .send(private_message(
             GUEST,
             1,
-            "https://x.com/a/status/1\nhttps://x.com/a/status/2",
+            "/import https://x.com/a/status/1%0ahttps://x.com/a/status/2",
         ))
         .await;
 

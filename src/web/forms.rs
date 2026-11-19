@@ -157,7 +157,7 @@ impl ChannelForm {
 pub struct ImportForm {
     #[serde(default)]
     pub csrf: String,
-    /// One target per line (URL or path)
+    /// One target per line (URL or path), also accepts pasted encoded line breaks.
     pub targets: String,
     #[serde(default, deserialize_with = "empty_as_none")]
     pub channel: Option<i64>,
@@ -169,6 +169,8 @@ impl ImportForm {
     pub fn target_list(&self) -> Vec<String> {
         self.targets
             .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .flat_map(crate::source::split_pasted_links)
             .map(|line| line.trim().to_string())
             .filter(|line| !line.is_empty() && !line.starts_with('#'))
             .collect()
@@ -211,11 +213,14 @@ mod tests {
     fn splits_import_targets() {
         let form = ImportForm {
             csrf: String::new(),
-            targets: "https://x/1\n\n # comment\nhttps://x/2  \n".into(),
+            targets: "https://x/1\n\n # comment\nhttps://x/2%0Ahttps://x/3  \n".into(),
             channel: None,
             priority: None,
         };
-        assert_eq!(form.target_list(), vec!["https://x/1", "https://x/2"]);
+        assert_eq!(
+            form.target_list(),
+            vec!["https://x/1", "https://x/2", "https://x/3"]
+        );
     }
 
     #[test]
