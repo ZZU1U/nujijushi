@@ -170,6 +170,25 @@ mod tests {
     }
 }
 
+/// Everyone who should hear about guest activity: config admins plus users the
+/// bot promoted, without duplicates and without the submitter.
+pub async fn admin_recipients(state: &AppState, except: Option<i64>) -> Result<Vec<i64>> {
+    let mut ids: Vec<i64> = state.cfg.access.admins.clone();
+    for user in state
+        .db
+        .call(|conn| crate::db::users::list(conn, 1000))
+        .await?
+    {
+        if user.role == "admin" {
+            ids.push(user.tg_id);
+        }
+    }
+    ids.retain(|id| Some(*id) != except && *id > 0);
+    ids.sort_unstable();
+    ids.dedup();
+    Ok(ids)
+}
+
 /// The URL Telegram should POST to, derived from `[bot] webhook_url`.
 pub fn webhook_target(cfg: &crate::config::Config) -> Result<String> {
     let base = cfg.webhook_url.as_deref().ok_or_else(|| {

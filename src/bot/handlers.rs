@@ -388,6 +388,11 @@ impl<'a> Bot<'a> {
                 targets.len()
             ));
         }
+        // guests are not silent: their links land in the archive without anyone
+        // seeing them, so the admins get a line per batch (never the submitter)
+        if role != Role::Admin {
+            notify_admins_of_submission(self.state, user, &queued).await;
+        }
         self.reply(message, &body).await
     }
 
@@ -1067,6 +1072,53 @@ fn help_text(role: Role) -> String {
     }
     push("/whoami · /status · /help");
     lines.join("\n")
+}
+
+/// Tell the admins that a guest submitted links.
+///
+/// The importer records `submitted_by`, so the web grid can badge it, but a
+/// Telegram DM is what actually gets noticed. Failures are logged, never fatal:
+/// the import must not hinge on a notification.
+async fn notify_admins_of_submission(
+    state: &crate::state::AppState,
+    user: &BotUser,
+    targets: &[String],
+) {
+    let Some(transport) = state.transport.as_deref() else {
+        return;
+    };
+    let admins = match crate::bot::admin_recipients(state, Some(user.id)).await {
+        Ok(ids) => ids,
+        Err(err) => {
+            tracing::warn!("cannot list the admins to notify: {err}");
+            return;
+        }
+    };
+    if admins.is_empty() {
+        return;
+    }
+    let who = match (&user.username, &user.first_name) {
+        (Some(username), _) => format!("@{username}"),
+        (None, Some(name)) => name.clone(),
+        _ => user.id.to_string(),
+    };
+    let links = targets
+        .iter()
+        .map(|target| format!("• <code>{}</code>", reply::esc(target)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let html = format!(
+        "📥 <b>{}</b> (<code>{}</code>) is not an admin and submitted {} link(s):\n{}",
+        reply::esc(&who),
+        user.id,
+        targets.len(),
+        links
+    );
+    for admin in admins {
+        if let Err(err) = reply::send(transport, &admin.to_string(), &html).await {
+            tracing::warn!(admin, "cannot notify an admin about a submission: {err}");
+        }
+    }
 }
 
 #[cfg(test)]

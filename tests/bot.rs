@@ -854,3 +854,73 @@ import_quota_per_day = 1
     let text = harness.last_text();
     assert!(text.contains("Daily import limit reached"), "got: {text}");
 }
+
+/// A guest's links land in the archive unseen, so the admins get one DM per
+/// batch — with the handle, the count and the links.
+#[tokio::test]
+async fn a_guest_submission_is_reported_to_the_admins() {
+    let harness = harness(MockTransport::new(), OPEN_CONFIG);
+    harness
+        .send(private_message(
+            GUEST,
+            40,
+            "https://www.pixiv.net/artworks/123",
+        ))
+        .await;
+
+    let texts = harness.mock.texts();
+    let admin_dms: Vec<&(String, String)> = texts
+        .iter()
+        .filter(|(chat, _)| chat == &ADMIN.to_string())
+        .collect();
+    assert_eq!(admin_dms.len(), 1, "one DM per batch: {texts:?}");
+    let body = &admin_dms[0].1;
+    assert!(body.contains("@user99"), "who submitted: {body}");
+    assert!(body.contains("pixiv.net/artworks/123"), "what: {body}");
+    assert!(body.contains("not"), "it must ask for a look: {body}");
+}
+
+/// Admins import too; they do not need to be told about themselves.
+#[tokio::test]
+async fn an_admin_submission_does_not_notify_anyone() {
+    let harness = harness(MockTransport::new(), OPEN_CONFIG);
+    harness
+        .send(private_message(
+            ADMIN,
+            41,
+            "https://www.pixiv.net/artworks/456",
+        ))
+        .await;
+
+    let texts = harness.mock.texts();
+    assert!(
+        texts.iter().all(|(_, body)| !body.contains("submitted")),
+        "no admin DM for an admin's own import: {texts:?}"
+    );
+}
+
+/// Once the user is promoted, an import through the same chat stops pinging the
+/// admins (the flag follows the *current* role, not the history).
+#[tokio::test]
+async fn a_promoted_user_no_longer_triggers_the_admin_dm() {
+    let harness = harness(MockTransport::new(), OPEN_CONFIG);
+    harness
+        .state
+        .db
+        .call(|conn| nujijushi::db::users::set_role(conn, GUEST, "admin"))
+        .await
+        .unwrap();
+    harness
+        .send(private_message(
+            GUEST,
+            42,
+            "https://www.pixiv.net/artworks/789",
+        ))
+        .await;
+
+    let texts = harness.mock.texts();
+    assert!(
+        texts.iter().all(|(_, body)| !body.contains("submitted")),
+        "a promoted user is an admin now: {texts:?}"
+    );
+}
