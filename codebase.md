@@ -204,7 +204,7 @@ The webhook endpoint is separate from the UI: `POST /tg/webhook` checks
 
 ## Flow 4 — the Telegram bot
 
-`Bot::run` registers the command menu, then either polls `getUpdates` (offset persisted in
+`Bot::run` refreshes private command menus, then either polls `getUpdates` (offset persisted in
 `settings['bot.offset']`, a leftover webhook is deleted first) or registers the webhook and
 lets the HTTP endpoint feed it. Both paths converge on `Bot::handle`:
 
@@ -212,8 +212,9 @@ lets the HTTP endpoint feed it. Both paths converge on `Bot::handle`:
 update → Message?
   ignore bots and non-private chats
   access::resolve(user)      config admins → DB role → config guests → public → refuse
+  refresh this chat's command menu from the same rules as /help and dispatch
   forwarded post with media → source::telegram::from_forwarded → jobs::import_posts
-  else commands::parse → dispatch → handlers (each re-checks its Perm + quota) → reply
+  else commands::parse → dispatch checks permission → handler checks any quota → reply
 update → my_chat_member (became admin of a channel)
   channels::upsert_discovered (alias slugged, enabled = false) + DM every config admin
 ```

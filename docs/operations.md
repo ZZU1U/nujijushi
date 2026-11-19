@@ -50,6 +50,8 @@ An enabled, unpaused channel gets an empty-queue alert when it has no queued pos
 
 ### Bot commands
 
+Telegram's command picker and `/help` show the commands enabled for your role. Start a private chat with the bot to get your menu.
+
 | command | guests | admins | notes |
 |---|---|---|---|
 | *send a link* / *forward a post* | `allow_import` | ✓ | the normal path, no command needed; several links in one message all import (up to 20) |

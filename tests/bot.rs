@@ -107,6 +107,15 @@ impl Harness {
         self.mock.last_text().unwrap_or_default()
     }
 
+    fn command_names(&self, id: i64) -> Vec<&'static str> {
+        self.mock
+            .command_menu(Some(id))
+            .unwrap()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect()
+    }
+
     async fn job(&self) -> Option<nujijushi::db::jobs::Job> {
         let jobs = self
             .state
@@ -676,6 +685,7 @@ async fn group_chats_and_bots_are_ignored() {
     }
     harness.send(bot_message).await;
     assert!(harness.mock.texts().is_empty());
+    assert!(harness.mock.command_menu(Some(GUEST)).is_none());
 }
 
 #[tokio::test]
@@ -750,6 +760,74 @@ public = false
 "#;
 
 #[tokio::test]
+async fn guest_help_and_picker_list_only_enabled_commands() {
+    let locked = format!("{LOCKED_CONFIG}\nguests = [{GUEST}]");
+    let curation_only = format!("{locked}\nallow_import = false\nallow_curate = true");
+    let cases: [(&str, &[&str]); 3] = [
+        (&locked, &["start", "help", "import", "whoami", "status"]),
+        (
+            &curation_only,
+            &[
+                "start", "help", "approve", "reject", "nsfw", "rate", "tag", "whoami", "status",
+            ],
+        ),
+        (
+            OPEN_CONFIG,
+            &[
+                "start", "help", "import", "ls", "show", "push", "queue", "channels", "approve",
+                "reject", "nsfw", "rate", "tag", "whoami", "status",
+            ],
+        ),
+    ];
+    for (config, expected) in cases {
+        let harness = harness(MockTransport::new(), config);
+        harness.send(private_message(GUEST, 1, "/start")).await;
+        assert_eq!(harness.command_names(GUEST), expected);
+        let welcome = harness.last_text();
+        assert_eq!(
+            welcome.contains("Send me a link"),
+            expected.contains(&"import")
+        );
+        assert_eq!(listed_commands(&welcome), expected);
+        harness.send(private_message(GUEST, 2, "/help")).await;
+        assert_eq!(listed_commands(&harness.last_text()), expected);
+    }
+}
+
+fn listed_commands(text: &str) -> Vec<&str> {
+    text.lines()
+        .filter_map(|line| line.strip_prefix("<code>/"))
+        .filter_map(|line| line.split([' ', '<']).next())
+        .collect()
+}
+
+#[tokio::test]
+async fn role_changes_refresh_the_picker_before_the_target_returns() {
+    let harness = harness(MockTransport::new(), OPEN_CONFIG);
+    harness.send(private_message(GUEST, 1, "/start")).await;
+    let guest_commands = harness.command_names(GUEST);
+    assert!(!guest_commands.contains(&"publish"));
+    assert!(!guest_commands.contains(&"grant"));
+
+    harness
+        .send(private_message(ADMIN, 1, &format!("/grant {GUEST} admin")))
+        .await;
+    assert_eq!(harness.command_names(GUEST), harness.command_names(ADMIN));
+    assert!(harness.command_names(GUEST).contains(&"publish"));
+    assert!(harness.command_names(GUEST).contains(&"grant"));
+
+    harness
+        .send(private_message(ADMIN, 2, &format!("/grant {GUEST} guest")))
+        .await;
+    assert_eq!(harness.command_names(GUEST), guest_commands);
+
+    harness
+        .send(private_message(ADMIN, 3, &format!("/ban {GUEST}")))
+        .await;
+    assert!(harness.command_names(GUEST).is_empty());
+}
+
+#[tokio::test]
 async fn publishing_needs_allow_publish_even_for_the_admin() {
     let harness = harness(MockTransport::new(), LOCKED_CONFIG);
     harness
@@ -759,6 +837,27 @@ async fn publishing_needs_allow_publish_even_for_the_admin() {
     assert!(text.contains("switched off"), "got: {text}");
     assert!(text.contains("allow_publish"), "names the switch: {text}");
     assert_eq!(harness.mock.send_count(), 0);
+
+    let old_menu = vec![("publish", "publish one post now")];
+    harness
+        .mock
+        .set_commands(None, old_menu.clone())
+        .await
+        .unwrap();
+    harness
+        .mock
+        .set_commands(Some(ADMIN), old_menu)
+        .await
+        .unwrap();
+    let bot = Bot::new(&harness.state).await.unwrap();
+    bot.run(true).await.unwrap();
+    assert_eq!(harness.mock.command_menu(None), Some(Vec::new()));
+    let menu = harness.command_names(ADMIN);
+    assert!(menu.contains(&"grant"));
+    assert!(!menu.contains(&"publish"));
+
+    harness.send(private_message(ADMIN, 2, "/help")).await;
+    assert_eq!(listed_commands(&harness.last_text()), menu);
 }
 
 #[tokio::test]

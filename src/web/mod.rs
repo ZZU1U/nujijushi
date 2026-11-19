@@ -67,6 +67,8 @@ pub async fn serve(state: AppState, bind: Option<String>) -> Result<()> {
         .map_err(|e| Error::other(format!("cannot bind {socket}: {e}")))?;
     println!("admin UI   http://{socket}/");
     if ws.webhook_secret.is_some() {
+        let app = ws.app.clone();
+        tokio::spawn(async move { crate::bot::menus::initialize(&app).await });
         match crate::bot::webhook_target(&ws.app.cfg) {
             Ok(url) => println!("webhook    {url}  (Telegram posts updates here)"),
             Err(err) => println!("webhook    misconfigured: {err}"),

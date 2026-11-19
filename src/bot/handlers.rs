@@ -1,8 +1,8 @@
 //! Command handlers. Everything the bot can do is one method here.
 
 use crate::bot::Bot;
-use crate::bot::access::{Perm, QuotaKind, Role};
-use crate::bot::commands::{self, Parsed};
+use crate::bot::access::{Access, Perm, QuotaKind, Role};
+use crate::bot::commands::{self, Parsed, Requirement};
 use crate::bot::reply;
 use crate::db::{channels as channel_db, posts as post_db, queue as queue_db, users as user_db};
 use crate::error::Result;
@@ -37,6 +37,7 @@ impl<'a> Bot<'a> {
         }
 
         let role = self.access.resolve(self.state, &from).await?;
+        super::menus::sync_user(self.state, message.chat_id, role).await;
         if role == Role::Banned {
             return self.reply(&message, &not_allowed(&from)).await;
         }
@@ -56,13 +57,16 @@ impl<'a> Bot<'a> {
             Parsed::Text(text) => {
                 let targets = commands::import_targets(&text);
                 if targets.is_empty() {
-                    self.reply(
-                        &message,
-                        "Send me a link to archive, or /help for the command list.",
-                    )
-                    .await
-                } else {
+                    let text = if self.access.allows(role, Perm::Import) {
+                        "Send me a link to archive, or /help for the command list."
+                    } else {
+                        "Use /help for the command list."
+                    };
+                    self.reply(&message, text).await
+                } else if self.allow(&message, role, Perm::Import).await? {
                     self.import_link(&message, &from, role, targets).await
+                } else {
+                    Ok(())
                 }
             }
         }
@@ -76,35 +80,40 @@ impl<'a> Bot<'a> {
         command: commands::Command,
     ) -> Result<()> {
         let name = command.name.as_str();
+        let Some(spec) = commands::MENU.iter().find(|spec| spec.name == name) else {
+            return self
+                .reply(
+                    message,
+                    &format!(
+                        "Unknown command <code>/{}</code>. Try /help.",
+                        reply::esc(name)
+                    ),
+                )
+                .await;
+        };
+        if !spec.available_to(&self.access, role) {
+            return match spec.requirement {
+                Requirement::Permission(perm) => self.deny(message, role, perm).await,
+                Requirement::Admin => {
+                    self.reply(message, "That command is for the bot admin.")
+                        .await
+                }
+                Requirement::AllowedUser => self.reply(message, &not_allowed(user)).await,
+            };
+        }
+
         match name {
-            "start" => self.reply(message, &start_text(user, role)).await,
-            "help" => self.reply(message, &help_text(role)).await,
+            "start" => {
+                self.reply(message, &start_text(&self.access, user, role))
+                    .await
+            }
+            "help" => self.reply(message, &help_text(&self.access, role)).await,
             "whoami" => self.reply(message, &whoami_text(user, role)).await,
             "status" => self.status(message).await,
-            "channels" => {
-                if !self.allow(message, role, Perm::Browse).await? {
-                    return Ok(());
-                }
-                self.channels(message).await
-            }
-            "queue" => {
-                if !self.allow(message, role, Perm::Browse).await? {
-                    return Ok(());
-                }
-                self.queue(message, command.arg(0)).await
-            }
-            "ls" => {
-                if !self.allow(message, role, Perm::Browse).await? {
-                    return Ok(());
-                }
-                self.list_posts(message, role, command.arg(0)).await
-            }
-            "show" => {
-                if !self.allow(message, role, Perm::Browse).await? {
-                    return Ok(());
-                }
-                self.show_post(message, command.arg(0)).await
-            }
+            "channels" => self.channels(message).await,
+            "queue" => self.queue(message, command.arg(0)).await,
+            "ls" => self.list_posts(message, role, command.arg(0)).await,
+            "show" => self.show_post(message, command.arg(0)).await,
             "import" => {
                 let targets: Vec<String> = crate::source::split_pasted_links(command.rest())
                     .into_iter()
@@ -114,22 +123,11 @@ impl<'a> Bot<'a> {
                 self.import_link(message, user, role, targets).await
             }
             "push" => {
-                if !self.allow(message, role, Perm::Queue).await? {
-                    return Ok(());
-                }
                 self.push(message, user, role, command.arg(0), command.arg(1))
                     .await
             }
-            "publish" => {
-                if !self.allow(message, role, Perm::Publish).await? {
-                    return Ok(());
-                }
-                self.publish(message, command.arg(0)).await
-            }
+            "publish" => self.publish(message, command.arg(0)).await,
             "approve" | "reject" => {
-                if !self.allow(message, role, Perm::Curate).await? {
-                    return Ok(());
-                }
                 let state = if name == "approve" {
                     PostState::Approved
                 } else {
@@ -137,56 +135,30 @@ impl<'a> Bot<'a> {
                 };
                 self.set_state(message, &command.args, state).await
             }
-            "nsfw" => {
-                if !self.allow(message, role, Perm::Curate).await? {
-                    return Ok(());
-                }
-                self.set_nsfw(message, command.arg(0), command.arg(1)).await
-            }
+            "nsfw" => self.set_nsfw(message, command.arg(0), command.arg(1)).await,
             "rate" => {
-                if !self.allow(message, role, Perm::Curate).await? {
-                    return Ok(());
-                }
                 self.set_rating(message, command.arg(0), command.arg(1))
                     .await
             }
             "tag" => {
-                if !self.allow(message, role, Perm::Curate).await? {
-                    return Ok(());
-                }
-                self.set_tags(message, command.arg(0), &command.args[1..])
-                    .await
+                self.set_tags(
+                    message,
+                    command.arg(0),
+                    command.args.get(1..).unwrap_or_default(),
+                )
+                .await
             }
             "pause" | "resume" => {
-                if !self.require_admin(message, role).await? {
-                    return Ok(());
-                }
                 self.toggle_pause(message, command.arg(0), name == "pause")
                     .await
             }
             "enable" | "disable" => {
-                if !self.require_admin(message, role).await? {
-                    return Ok(());
-                }
                 self.toggle_enabled(message, command.arg(0), name == "enable")
                     .await
             }
-            "discover" => {
-                if !self.require_admin(message, role).await? {
-                    return Ok(());
-                }
-                self.discover(message).await
-            }
-            "users" => {
-                if !self.require_admin(message, role).await? {
-                    return Ok(());
-                }
-                self.users(message).await
-            }
+            "discover" => self.discover(message).await,
+            "users" => self.users(message).await,
             "grant" | "ban" => {
-                if !self.require_admin(message, role).await? {
-                    return Ok(());
-                }
                 let target = command.arg(0);
                 let role_arg = if name == "ban" {
                     Some("banned")
@@ -195,16 +167,9 @@ impl<'a> Bot<'a> {
                 };
                 self.grant(message, target, role_arg).await
             }
-            other => {
-                self.reply(
-                    message,
-                    &format!(
-                        "Unknown command <code>/{}</code>. Try /help.",
-                        reply::esc(other)
-                    ),
-                )
-                .await
-            }
+            _ => Err(crate::error::Error::other(format!(
+                "missing handler for /{name}"
+            ))),
         }
     }
 
@@ -251,15 +216,6 @@ impl<'a> Bot<'a> {
             return Ok(true);
         }
         self.deny(message, role, perm).await?;
-        Ok(false)
-    }
-
-    async fn require_admin(&self, message: &BotMessage, role: Role) -> Result<bool> {
-        if role.is_admin() {
-            return Ok(true);
-        }
-        self.reply(message, "That command is for the bot admin.")
-            .await?;
         Ok(false)
     }
 
@@ -328,9 +284,6 @@ impl<'a> Bot<'a> {
         role: Role,
         targets: Vec<String>,
     ) -> Result<()> {
-        if !self.allow(message, role, Perm::Import).await? {
-            return Ok(());
-        }
         // a message may carry a whole batch; cap it so nobody queues 500 jobs
         const MAX_TARGETS: usize = 20;
 
@@ -987,6 +940,7 @@ impl<'a> Bot<'a> {
             .db
             .call(move |conn| user_db::set_role(conn, tg_id, &role_owned))
             .await?;
+        super::menus::sync_stored_user(self.state, tg_id).await;
         self.reply(message, &format!("<code>{tg_id}</code> → {role}"))
             .await
     }
@@ -1045,35 +999,34 @@ fn whoami_text(user: &BotUser, role: Role) -> String {
     )
 }
 
-fn start_text(user: &BotUser, role: Role) -> String {
+fn start_text(access: &Access, user: &BotUser, role: Role) -> String {
+    let import_intro = if access.allows(role, Perm::Import) {
+        "Send me a link or forward a post from a channel to archive it.\n"
+    } else {
+        ""
+    };
     format!(
-        "<b>nujijushi</b>\nSend me a link (Pixiv, Twitter/X, …) or forward a post from a channel and I will archive it.\n\
-         Your id: <code>{}</code> · role {}\n\n{}",
+        "<b>nujijushi</b>\n{import_intro}Your id: <code>{}</code> · role {}\n\n{}",
         user.id,
         role.as_str(),
-        help_text(role)
+        help_text(access, role)
     )
 }
 
-fn help_text(role: Role) -> String {
-    let mut lines = vec![String::from("<b>commands</b>")];
-    let mut push = |text: &str| lines.push(text.to_string());
-    push("/import &lt;link&gt;… — archive links (or just send them, several at once)");
-    // listed for everyone: the bot answers "not allowed" when a guest may not use one
-    push("/ls [n] — recent posts");
-    push("/show &lt;id&gt; — one post");
-    push("/push &lt;alias&gt; [id] — queue a post (never publishes)");
-    push("/queue &lt;alias&gt; — what is lined up");
-    push("/channels — aliases, queue depth, next slot");
-    if role.is_admin() {
-        push("/publish &lt;alias&gt; — publish one now");
-        push("/approve|/reject &lt;id…&gt; · /nsfw · /rate · /tag");
-        push("/pause|/resume &lt;alias&gt; · /enable|/disable &lt;alias&gt;");
-        push("/discover — channels the bot was added to");
-        push("/users · /grant &lt;id&gt; admin|guest|banned · /ban &lt;id&gt;");
+fn help_text(access: &Access, role: Role) -> String {
+    use std::fmt::Write as _;
+
+    let mut text = String::from("<b>commands</b>");
+    for command in commands::available(access, role) {
+        let _ = write!(
+            text,
+            "\n<code>/{}{}</code> — {}",
+            command.name,
+            reply::esc(command.args),
+            reply::esc(command.description)
+        );
     }
-    push("/whoami · /status · /help");
-    lines.join("\n")
+    text
 }
 
 /// Tell the admins that a guest submitted links.
@@ -1132,17 +1085,6 @@ mod tests {
         let args: Vec<String> = ["1", "#2,", "3"].iter().map(|s| s.to_string()).collect();
         assert_eq!(parse_ids(&args), vec![1, 2, 3]);
         assert!(parse_ids(&[]).is_empty());
-    }
-
-    #[test]
-    fn help_mentions_admin_commands_only_for_admins() {
-        let guest = help_text(Role::Guest);
-        assert!(guest.contains("/import"));
-        assert!(!guest.contains("/publish"));
-        assert!(!guest.contains("/grant"));
-        let admin = help_text(Role::Admin);
-        assert!(admin.contains("/publish"));
-        assert!(admin.contains("/discover"));
     }
 
     #[test]

@@ -190,7 +190,7 @@ async fn webhook_mode_registers_the_endpoint_once() {
     assert_eq!(secret.as_deref(), Some(harness.secret().as_str()));
     let info = harness.mock.webhook_info().await.unwrap();
     assert_eq!(info.url, "https://bot.example.com/tg/webhook");
-    assert!(harness.mock.commands_registered(), "menu is registered too");
+    assert_eq!(harness.mock.command_menu(None), Some(Vec::new()));
 }
 
 #[tokio::test]

@@ -8,7 +8,7 @@ use async_trait::async_trait;
 
 use super::botapi::{BotUpdate, ChatInfo, CopiedMessage, UpdateKind, WebhookInfo};
 use super::transport::{
-    AdminStatus, OutgoingMedia, SendOptions, SentBatch, TgError, TgResult, Transport,
+    AdminStatus, BotCommands, OutgoingMedia, SendOptions, SentBatch, TgError, TgResult, Transport,
 };
 
 const TINY_PNG: &[u8] = &[
@@ -46,7 +46,7 @@ struct MockState {
     downloads: Vec<(String, PathBuf)>,
     deleted: Vec<(String, i32)>,
     webhook: WebhookInfo,
-    commands_set: bool,
+    command_menus: HashMap<Option<i64>, BotCommands>,
     webhook_secret: Option<String>,
     webhook_calls: u32,
     webhook_deletes: u32,
@@ -76,7 +76,7 @@ impl MockTransport {
                 downloads: Vec::new(),
                 deleted: Vec::new(),
                 webhook: WebhookInfo::default(),
-                commands_set: false,
+                command_menus: HashMap::new(),
                 webhook_secret: None,
                 webhook_calls: 0,
                 webhook_deletes: 0,
@@ -185,8 +185,13 @@ impl MockTransport {
         self.inner.lock().unwrap().downloads.clone()
     }
 
-    pub fn commands_registered(&self) -> bool {
-        self.inner.lock().unwrap().commands_set
+    pub fn command_menu(&self, chat_id: Option<i64>) -> Option<BotCommands> {
+        self.inner
+            .lock()
+            .unwrap()
+            .command_menus
+            .get(&chat_id)
+            .cloned()
     }
 
     /// How many times `set_webhook` was called, and with which secret.
@@ -345,8 +350,12 @@ impl Transport for MockTransport {
         Ok(())
     }
 
-    async fn set_commands(&self) -> TgResult<()> {
-        self.inner.lock().unwrap().commands_set = true;
+    async fn set_commands(&self, chat_id: Option<i64>, commands: BotCommands) -> TgResult<()> {
+        self.inner
+            .lock()
+            .unwrap()
+            .command_menus
+            .insert(chat_id, commands);
         Ok(())
     }
 

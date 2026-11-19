@@ -1,5 +1,8 @@
 //! Bot API transport (teloxide). All network-specific quirks live here.
 
+use std::collections::HashMap;
+use std::time::Duration;
+
 use async_trait::async_trait;
 use teloxide::net::Download;
 use teloxide::prelude::*;
@@ -15,7 +18,8 @@ use super::botapi::{
     UpdateKind as BotUpdateKind, WebhookInfo,
 };
 use super::transport::{
-    AdminStatus, MediaKind, OutgoingMedia, SendOptions, SentBatch, TgError, TgResult, Transport,
+    AdminStatus, BotCommands, MediaKind, OutgoingMedia, SendOptions, SentBatch, TgError, TgResult,
+    Transport,
 };
 use crate::error::Error;
 
@@ -30,6 +34,7 @@ const BOT_UPDATES: [AllowedUpdate; 5] = [
 pub struct BotTransport {
     bot: Bot,
     identity: tokio::sync::OnceCell<(String, UserId)>,
+    command_menus: tokio::sync::Mutex<HashMap<Option<i64>, BotCommands>>,
 }
 
 impl BotTransport {
@@ -43,6 +48,7 @@ impl BotTransport {
         Ok(Self {
             bot: Bot::with_client(token, client),
             identity: tokio::sync::OnceCell::new(),
+            command_menus: tokio::sync::Mutex::default(),
         })
     }
 
@@ -440,15 +446,27 @@ impl Transport for BotTransport {
         Ok(())
     }
 
-    async fn set_commands(&self) -> TgResult<()> {
-        let commands: Vec<BotCommand> = crate::bot::commands::MENU
+    async fn set_commands(&self, chat_id: Option<i64>, commands: BotCommands) -> TgResult<()> {
+        let mut menus = self.command_menus.lock().await;
+        if menus.get(&chat_id) == Some(&commands) {
+            return Ok(());
+        }
+        let payload: Vec<BotCommand> = commands
             .iter()
             .map(|(command, description)| BotCommand::new(*command, *description))
             .collect();
-        self.bot
-            .set_my_commands(commands)
+        let scope = match chat_id {
+            Some(id) => tt::BotCommandScope::Chat {
+                chat_id: ChatId(id).into(),
+            },
+            None => tt::BotCommandScope::Default,
+        };
+        let request = self.bot.set_my_commands(payload).scope(scope);
+        tokio::time::timeout(Duration::from_secs(5), request)
             .await
+            .map_err(|_| TgError::Transient("command menu update timed out".into()))?
             .map_err(map_error)?;
+        menus.insert(chat_id, commands);
         Ok(())
     }
 
@@ -537,6 +555,18 @@ mod tests {
             let body: Value = serde_json::from_slice(&body).unwrap();
             let channel = json!({"id": -1001234567890i64, "type": "channel", "title": "Art", "username": "art_channel"});
             let result = match method.to_ascii_lowercase().as_str() {
+                "setmycommands" => {
+                    if body["scope"]["type"] == "default" {
+                        assert_eq!(body["commands"], json!([]));
+                    } else {
+                        assert_eq!(body["scope"], json!({"type": "chat", "chat_id": 99}));
+                        assert_eq!(
+                            body["commands"],
+                            json!([{"command": "import", "description": "archive a link"}])
+                        );
+                    }
+                    json!(true)
+                }
                 "getchat" => {
                     assert_eq!(body["chat_id"], "@art_channel");
                     let mut full = channel;
@@ -588,6 +618,12 @@ mod tests {
         let chat = transport.get_chat("@art_channel").await.unwrap();
         assert!(chat.is_channel);
         assert_eq!(chat.id, -1001234567890);
+
+        transport.set_commands(None, Vec::new()).await.unwrap();
+        transport
+            .set_commands(Some(99), vec![("import", "archive a link")])
+            .await
+            .unwrap();
 
         let updates = transport.get_updates(0, 1).await.unwrap();
         let BotUpdateKind::MemberChange(change) = &updates[0].kind else {

@@ -1701,6 +1701,8 @@ async fn users_action(
         .db
         .call(move |conn| crate::db::users::set_role(conn, tg_id, &role_for_db))
         .await?;
+    let app = ws.app.clone();
+    tokio::spawn(async move { crate::bot::menus::sync_stored_user(&app, tg_id).await });
     Ok(flash_redirect("/users", &format!("{tg_id} -> {role}")))
 }
 

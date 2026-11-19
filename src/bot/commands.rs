@@ -1,32 +1,128 @@
 //! Command parsing and the help text shown in Telegram.
 
-/// Command menu registered with `setMyCommands`.
-pub const MENU: &[(&str, &str)] = &[
-    ("start", "what this bot does"),
-    ("help", "commands you can use"),
-    ("import", "import a link (or just send it)"),
-    ("ls", "recent posts"),
-    ("show", "one post by id"),
-    ("push", "queue a post into a channel"),
-    ("queue", "what is lined up"),
-    ("channels", "channels and their aliases"),
-    ("publish", "publish one now (admin)"),
-    ("approve", "approve posts"),
-    ("reject", "reject posts"),
-    ("nsfw", "override the nsfw flag"),
-    ("rate", "set the rating"),
-    ("tag", "add manual tags"),
-    ("pause", "stop publishing to a channel"),
-    ("resume", "resume a channel"),
-    ("enable", "start publishing to a discovered channel"),
-    ("disable", "stop publishing to a channel"),
-    ("discover", "channels the bot was added to"),
-    ("users", "known users"),
-    ("grant", "set a user role"),
-    ("ban", "deny a user"),
-    ("whoami", "your telegram id"),
-    ("status", "archive and queue health"),
+use crate::bot::access::{Access, Perm, Role};
+
+#[derive(Clone, Copy)]
+pub(super) enum Requirement {
+    AllowedUser,
+    Permission(Perm),
+    Admin,
+}
+
+pub(super) struct CommandSpec {
+    pub name: &'static str,
+    pub args: &'static str,
+    pub description: &'static str,
+    pub requirement: Requirement,
+}
+
+impl CommandSpec {
+    const fn new(
+        name: &'static str,
+        args: &'static str,
+        description: &'static str,
+        requirement: Requirement,
+    ) -> Self {
+        Self {
+            name,
+            args,
+            description,
+            requirement,
+        }
+    }
+
+    pub(super) fn available_to(&self, access: &Access, role: Role) -> bool {
+        match self.requirement {
+            Requirement::AllowedUser => role != Role::Banned,
+            Requirement::Permission(perm) => access.allows(role, perm),
+            Requirement::Admin => role.is_admin(),
+        }
+    }
+}
+
+use self::Requirement::{Admin, AllowedUser, Permission};
+
+pub(super) const MENU: &[CommandSpec] = &[
+    CommandSpec::new("start", "", "introduce the bot", AllowedUser),
+    CommandSpec::new("help", "", "show commands you can use", AllowedUser),
+    CommandSpec::new(
+        "import",
+        " <link>…",
+        "archive links (or just send them)",
+        Permission(Perm::Import),
+    ),
+    CommandSpec::new("ls", " [n]", "list recent posts", Permission(Perm::Browse)),
+    CommandSpec::new("show", " <id>", "show one post", Permission(Perm::Browse)),
+    CommandSpec::new(
+        "push",
+        " <alias> [id]",
+        "queue a post",
+        Permission(Perm::Queue),
+    ),
+    CommandSpec::new(
+        "queue",
+        " <alias>",
+        "show what is lined up",
+        Permission(Perm::Browse),
+    ),
+    CommandSpec::new(
+        "channels",
+        "",
+        "list channel aliases and queue depth",
+        Permission(Perm::Browse),
+    ),
+    CommandSpec::new(
+        "publish",
+        " <alias>",
+        "publish one post now",
+        Permission(Perm::Publish),
+    ),
+    CommandSpec::new(
+        "approve",
+        " <id>…",
+        "approve posts",
+        Permission(Perm::Curate),
+    ),
+    CommandSpec::new("reject", " <id>…", "reject posts", Permission(Perm::Curate)),
+    CommandSpec::new(
+        "nsfw",
+        " <id> <auto|yes|no>",
+        "override the NSFW flag",
+        Permission(Perm::Curate),
+    ),
+    CommandSpec::new(
+        "rate",
+        " <id> <sfw|questionable|explicit>",
+        "set the rating",
+        Permission(Perm::Curate),
+    ),
+    CommandSpec::new(
+        "tag",
+        " <id> <tags>",
+        "add manual tags",
+        Permission(Perm::Curate),
+    ),
+    CommandSpec::new("pause", " <alias>", "pause a channel", Admin),
+    CommandSpec::new("resume", " <alias>", "resume a channel", Admin),
+    CommandSpec::new("enable", " <alias>", "enable a channel", Admin),
+    CommandSpec::new("disable", " <alias>", "disable a channel", Admin),
+    CommandSpec::new("discover", "", "list channels the bot was added to", Admin),
+    CommandSpec::new("users", "", "list known users", Admin),
+    CommandSpec::new(
+        "grant",
+        " <id> <admin|guest|banned>",
+        "set a user role",
+        Admin,
+    ),
+    CommandSpec::new("ban", " <id>", "ban a user", Admin),
+    CommandSpec::new("whoami", "", "show your Telegram ID", AllowedUser),
+    CommandSpec::new("status", "", "show archive and queue health", AllowedUser),
 ];
+
+pub(super) fn available(access: &Access, role: Role) -> impl Iterator<Item = &'static CommandSpec> {
+    MENU.iter()
+        .filter(move |command| command.available_to(access, role))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Command {
@@ -198,7 +294,12 @@ mod tests {
 
     #[test]
     fn menu_entries_are_telegram_safe() {
-        for (command, description) in MENU {
+        for CommandSpec {
+            name: command,
+            description,
+            ..
+        } in MENU
+        {
             assert!(
                 command.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
                 "{command} is not a legal command name"

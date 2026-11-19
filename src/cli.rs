@@ -2590,6 +2590,7 @@ async fn cmd_users(state: &AppState, cmd: UsersCmd) -> Result<()> {
                 .db
                 .call(move |conn| crate::db::users::set_role(conn, tg_id, &role_owned))
                 .await?;
+            crate::bot::menus::sync_stored_user(state, tg_id).await;
             println!("{tg_id} -> {role}");
             Ok(())
         }
@@ -2603,6 +2604,7 @@ async fn cmd_users(state: &AppState, cmd: UsersCmd) -> Result<()> {
                 .db
                 .call(move |conn| crate::db::users::set_role(conn, tg_id, "banned"))
                 .await?;
+            crate::bot::menus::sync_stored_user(state, tg_id).await;
             println!("{tg_id} banned");
             Ok(())
         }

@@ -9,6 +9,8 @@ use super::botapi::{BotUpdate, ChatInfo, CopiedMessage, WebhookInfo};
 /// Result of a transport call (kept separate from the crate error type).
 pub type TgResult<T> = std::result::Result<T, TgError>;
 
+pub type BotCommands = Vec<(&'static str, &'static str)>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaKind {
     Photo,
@@ -173,8 +175,8 @@ pub trait Transport: Send + Sync {
 
     async fn delete_message(&self, chat: &str, message_id: i32) -> TgResult<()>;
 
-    /// Publish the command menu shown in Telegram clients.
-    async fn set_commands(&self) -> TgResult<()>;
+    /// Set the command menu for one private chat, or the default when no chat is given.
+    async fn set_commands(&self, chat_id: Option<i64>, commands: BotCommands) -> TgResult<()>;
 
     /// A webhook blocks long polling; `doctor` reports it.
     async fn webhook_info(&self) -> TgResult<WebhookInfo>;

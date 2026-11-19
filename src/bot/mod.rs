@@ -3,6 +3,7 @@
 pub mod access;
 pub mod commands;
 pub mod handlers;
+pub(crate) mod menus;
 pub mod queue_alerts;
 pub mod reply;
 
@@ -42,9 +43,7 @@ impl<'a> Bot<'a> {
 
     /// Start the interface in the configured mode.
     pub async fn run(&self, once: bool) -> Result<()> {
-        if let Err(err) = self.transport.set_commands().await {
-            tracing::warn!("cannot register the command menu: {err}");
-        }
+        menus::initialize(self.state).await;
         match self.state.cfg.bot_mode {
             crate::config::BotMode::Polling => self.run_polling(once).await,
             crate::config::BotMode::Webhook => self.run_webhook(once).await,
