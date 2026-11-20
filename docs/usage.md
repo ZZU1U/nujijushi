@@ -144,7 +144,7 @@ Select any still images of the same height and choose **Merge side by side** to 
 
 Use `nujijushi export --share --out <new-directory>` to copy outgoing images and their `post.json` files. The regular backup retains all original images and the visibility settings.
 
-Open **Compress image** on a gallery item or **Merge output options** when stitching panels. **Use exact JPEG quality** keeps the pixel dimensions and uses the quality you enter. **Fit to Telegram** uses that quality as a maximum, then lowers it or reduces the dimensions to fit the photo limits. It may add white borders to very wide or tall images. JPEG fills transparency with white. **Undo compression** restores the original image or merged PNG.
+Open **Compress image** on a gallery item or **Merge output options** when stitching panels. **Use exact JPEG quality** keeps the pixel dimensions and uses the quality you enter. **Fit to Telegram** starts with a quality ceiling of 85 and can lower it or reduce the dimensions to fit the photo limits. It may add white borders to very wide or tall images. JPEG fills transparency with white. **Undo compression** restores the original image or merged PNG.
 
 `GET /metrics` answers in the Prometheus text format (posts by state and nsfw, channels by
 enabled, queue depth per channel/state, import jobs, storage mirrors). It sits outside the

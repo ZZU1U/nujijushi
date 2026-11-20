@@ -426,3 +426,7 @@ tr[data-state="done"] .progress > span { background-image: none; background-colo
 @media (max-width: 420px) {
   .post-review-fields { grid-template-columns: 1fr; gap: 0; }
 }
+
+[data-compression-options]:not(:has(select option[value="quality"]:checked)) [data-jpeg-quality] {
+  display: none;
+}

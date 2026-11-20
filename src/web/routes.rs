@@ -116,6 +116,7 @@ pub fn router(ws: Arc<WebState>) -> Router {
         .route("/login", get(login_page).post(login_submit))
         .route("/dashboard", get(dashboard))
         .route("/jobs/{id}/status", get(super::admin::job))
+        .route("/channels/{id}/queue/status", get(super::queue_status::get))
         .layer(middleware::from_fn(super::admin::api_response));
 
     Router::new()
@@ -1170,7 +1171,7 @@ async fn channels_page(
             "csrf": ws.csrf,
             "flash": decode_flash(&query.flash),
             "channels": views,
-            "tz_hint": "Europe/Berlin, UTC, America/New_York ...",
+            "timezones": timezones(),
             "templates": app.renderer.template_names(),
         }),
     )?;
@@ -1204,7 +1205,7 @@ fn channel_from_form(mut channel: Channel, form: &ChannelForm) -> Result<Channel
         crate::queue::scheduler::parse_hhmm(to)?;
         channel.active_to = to.to_string();
     }
-    if let Some(tz) = form.tz.as_deref().filter(|s| !s.is_empty()) {
+    if let Some(tz) = form.tz.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         tz.parse::<chrono_tz::Tz>()
             .map_err(|_| Error::invalid(format!("unknown timezone: {tz}")))?;
         channel.tz = tz.to_string();
@@ -1251,6 +1252,49 @@ fn channel_from_form(mut channel: Channel, form: &ChannelForm) -> Result<Channel
     Ok(channel)
 }
 
+fn timezones() -> &'static [&'static str] {
+    static ZONES: std::sync::LazyLock<Vec<&str>> = std::sync::LazyLock::new(|| {
+        let mut zones: Vec<_> = chrono_tz::TZ_VARIANTS
+            .iter()
+            .map(|zone| zone.name())
+            .collect();
+        zones.sort_unstable();
+        zones
+    });
+    &ZONES
+}
+
+async fn verify_destination(app: &AppState, target: &str) -> crate::error::Result<()> {
+    let transport = app.transport.as_ref().ok_or_else(|| {
+        Error::invalid("Configure a Telegram bot token and restart nujijushi, then try again.")
+    })?;
+    tokio::time::timeout(std::time::Duration::from_secs(6), async {
+        let chat = transport.get_chat(target).await.map_err(|error| {
+            if error.is_retryable() {
+                Error::invalid("Telegram could not check this channel. Try again in a moment.")
+            } else {
+                Error::invalid("Telegram could not find this channel. Check its @username or numeric ID and make sure the bot has access.")
+            }
+        })?;
+        if !chat.is_channel {
+            return Err(Error::invalid("This destination is not a Telegram channel. Enter the username or ID of a broadcast channel."));
+        }
+        let status = transport.check_chat(&chat.id.to_string()).await.map_err(|error| {
+            if error.is_retryable() {
+                Error::invalid("Telegram could not check the bot’s permissions. Try again in a moment.")
+            } else {
+                Error::invalid("Add the bot as a channel administrator with permission to post messages, then try again.")
+            }
+        })?;
+        if !status.is_admin || !status.can_post {
+            return Err(Error::invalid("Give the bot administrator access with permission to post messages, then try again."));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| Error::invalid("Telegram did not respond in time. Check the connection and try again."))?
+}
+
 async fn channel_create(
     State(ws): State<Arc<WebState>>,
     Form(form): Form<ChannelForm>,
@@ -1260,7 +1304,8 @@ async fn channel_create(
     if let Some(template) = &channel.template {
         ws.app.renderer.validate_template(template)?;
     }
-    let to_insert = channel.clone();
+    verify_destination(&ws.app, &channel.tg_id).await?;
+    let to_insert = channel;
     let id = ws
         .app
         .db
@@ -1268,7 +1313,7 @@ async fn channel_create(
         .await?;
     Ok(flash_redirect(
         &format!("/channels/{id}/edit"),
-        &format!("channel #{} created", id),
+        &format!("Channel #{id} verified and created"),
     ))
 }
 
@@ -1315,6 +1360,7 @@ async fn channel_edit_page(
                 "paused": channel.paused,
                 "failures": channel.consecutive_failures,
             },
+            "timezones": timezones(),
             "policies": NsfwPolicy::all().iter().map(|p| p.as_str()).collect::<Vec<_>>(),
             "tag_styles": TagStyle::all().iter().map(|p| p.as_str()).collect::<Vec<_>>(),
             "attributions": Attribution::all().iter().map(|p| p.as_str()).collect::<Vec<_>>(),
@@ -1343,7 +1389,10 @@ async fn channel_update(
     if let Some(template) = &channel.template {
         app.renderer.validate_template(template)?;
     }
-    let to_update = channel.clone();
+    if existing.tg_id != channel.tg_id {
+        verify_destination(app, &channel.tg_id).await?;
+    }
+    let to_update = channel;
     app.db
         .call(move |conn| channel_db::update(conn, &to_update))
         .await?;
@@ -1404,29 +1453,20 @@ async fn queue_page(
     Path(id): Path<i64>,
 ) -> WebResult<Html<String>> {
     let app = &ws.app;
-    let channel = app.db.call(move |conn| channel_db::get(conn, id)).await?;
-    let channel_id = channel.id;
-    let (entries, unresolved) = app
+    use super::queue_status::{PAGE_LIMIT, VISIBLE_STATES, snapshot};
+    let (channel, activity, entries, unresolved) = app
         .db
         .call(move |conn| {
-            let entries = queue_db::entries(
-                conn,
-                channel_id,
-                &[
-                    QueueState::Queued,
-                    QueueState::Held,
-                    QueueState::Unknown,
-                    QueueState::Failed,
-                    QueueState::Skipped,
-                    QueueState::Sending,
-                ],
-                200,
-            )?;
-            let unresolved: HashMap<_, _> = queue_db::unconfirmed(conn, Some(channel_id))?
+            let tx = conn.transaction()?;
+            let channel = channel_db::get(&tx, id)?;
+            let activity = snapshot(&tx, &channel)?;
+            let entries = queue_db::entries(&tx, id, VISIBLE_STATES, PAGE_LIMIT)?;
+            let unresolved: HashMap<_, _> = queue_db::unconfirmed(&tx, Some(id))?
                 .into_iter()
                 .map(|item| (item.id, item))
                 .collect();
-            Ok((entries, unresolved))
+            tx.commit()?;
+            Ok((channel, activity, entries, unresolved))
         })
         .await?;
     // nothing to load here any more: `card.nsfw` already carries the override
@@ -1480,6 +1520,7 @@ async fn queue_page(
             "flash": Value::Null,
             "channel": {"id": channel.id, "title": channel.title, "tg_id": channel.tg_id,
                 "enabled": channel.enabled, "paused": channel.paused},
+            "activity": activity,
             "items": items,
             "eta_hint": eta_hint,
         }),

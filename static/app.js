@@ -357,6 +357,17 @@
     schedule();
   }
 
+  document.querySelectorAll('[data-compression-options]').forEach((group) => {
+    const mode = group.querySelector('select[name="output"]');
+    const quality = group.querySelector('input[name="quality"]');
+    function update() {
+      quality.disabled = mode.value !== 'quality';
+      quality.required = !quality.disabled;
+    }
+    mode.addEventListener('change', update);
+    update();
+  });
+
   guardDoubleSubmit();
   filterBusyState();
   bulkPostSelection();

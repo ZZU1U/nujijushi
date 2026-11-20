@@ -2593,18 +2593,26 @@ async fn fit_photo_is_reversible_and_merge_output_can_use_the_same_settings() {
         StatusCode::BAD_REQUEST
     );
     let form = format!("csrf={}&{form}", h.ws.csrf);
+    let exact = form.replace("output=fit", "output=quality");
     assert_eq!(
-        h.send(h.post(&action_url, &format!("{form}&quality=101")))
+        h.send(h.post(&action_url, &format!("{exact}&quality=101")))
             .await
             .status(),
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
-        h.send(h.post(&action_url, &format!("{form}&quality=85")))
+        h.send(h.post(&action_url, &format!("{form}&quality=101")))
             .await
             .status(),
         StatusCode::SEE_OTHER
     );
+    let job = h
+        .state
+        .db
+        .with(|conn| media_merges::latest_job(conn, post_id))
+        .unwrap()
+        .unwrap();
+    assert!(job.payload.unwrap().ends_with(":85:true"));
     let worker = JobWorker::new(h.state.clone());
     assert_eq!(worker.drain().await.unwrap(), 1);
     let compressed = get(&h.state);
@@ -2700,6 +2708,15 @@ async fn setup_explains_credentials_and_accepts_web_only_publishing() {
 
     let html = body_text(h.send(h.get("/channels")).await).await;
     assert!(html.contains("name=\"enabled\"> enable scheduled publishing now"));
+    (*h.mock)
+        .clone()
+        .with_chat(nujijushi::tg::botapi::ChatInfo {
+            id: -1001234567890,
+            title: Some("Test channel".into()),
+            username: Some("test_channel".into()),
+            is_channel: true,
+            is_private: false,
+        });
     let response = h
         .send(h.post(
             "/channels",
@@ -3183,4 +3200,197 @@ async fn gapped_merge_visibility_and_outgoing_copies_use_the_same_gallery() {
             .len(),
         4
     );
+}
+
+#[tokio::test]
+async fn web_channels_require_a_verified_broadcast_destination_and_posting_rights() {
+    use nujijushi::db::channels;
+    use nujijushi::tg::{botapi::ChatInfo, transport::AdminStatus};
+
+    let mut h = harness();
+    let public = ChatInfo {
+        id: -1001234567810,
+        title: Some("Public".into()),
+        username: Some("mock_public".into()),
+        is_channel: true,
+        is_private: false,
+    };
+    let private = ChatInfo {
+        id: -1001234567820,
+        title: Some("Private channel".into()),
+        username: None,
+        ..public.clone()
+    };
+    let group = ChatInfo {
+        id: -1001234567830,
+        username: Some("mock_group".into()),
+        is_channel: false,
+        ..public.clone()
+    };
+    (*h.mock)
+        .clone()
+        .with_chat(public)
+        .with_chat(private)
+        .with_chat(group);
+    let form = |csrf: &str, alias: &str, target: &str| {
+        url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("csrf", csrf)
+            .append_pair("title", alias)
+            .append_pair("alias", alias)
+            .append_pair("tg_id", target)
+            .append_pair("tz", "Pacific/Chatham")
+            .finish()
+    };
+    let created = |alias, target| form(&h.ws.csrf, alias, target);
+    for (alias, target) in [("public", "@mock_public"), ("private", "-1001234567820")] {
+        let response = h
+            .send(h.post("/api/v1/channels", &created(alias, target)))
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(body_text(response).await.contains("verified and created"));
+    }
+    let list = || h.state.db.with(|conn| channels::list(conn)).unwrap();
+    assert_eq!(list().len(), 2);
+    assert!(list().iter().all(|channel| channel.tz == "Pacific/Chatham"));
+
+    for (target, reason) in [
+        ("@missing", "could not find this channel"),
+        ("@mock_group", "broadcast channel"),
+    ] {
+        let response = h
+            .send(h.post("/api/v1/channels", &created("bad", target)))
+            .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(body_text(response).await.contains(reason));
+    }
+
+    (*h.mock).clone().with_admin(AdminStatus {
+        title: None,
+        kind: "administrator".into(),
+        is_admin: true,
+        can_post: false,
+    });
+    let response = h
+        .send(h.post("/api/v1/channels", &created("denied", "@mock_public")))
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        body_text(response)
+            .await
+            .contains("permission to post messages")
+    );
+    assert_eq!(list().len(), 2);
+    let public_channel = list()
+        .into_iter()
+        .find(|channel| channel.tg_id == "@mock_public")
+        .unwrap();
+    let edit = format!("/api/v1/channels/{}/edit", public_channel.id);
+    let rejected = h
+        .send(h.post(&edit, &created("modified", "-1001234567820")))
+        .await;
+    assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        h.state
+            .db
+            .with(|conn| channels::get(conn, public_channel.id))
+            .unwrap(),
+        public_channel
+    );
+
+    let saved = h
+        .send(h.post(&edit, &created("renamed", "@mock_public")))
+        .await;
+    assert_eq!(saved.status(), StatusCode::OK);
+
+    let timeout_transport = Arc::new(
+        (*h.mock)
+            .clone()
+            .with_chat_delay(std::time::Duration::from_secs(60)),
+    );
+    h.state.transport = Some(timeout_transport);
+    h.ws = WebState::new(h.state.clone()).unwrap();
+    let response = h
+        .send(h.post(
+            "/api/v1/channels",
+            &form(&h.ws.csrf, "slow", "@mock_public"),
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        body_text(response)
+            .await
+            .contains("did not respond in time")
+    );
+    assert_eq!(
+        h.state.db.with(|conn| channels::list(conn)).unwrap().len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn queue_status_tracks_worker_and_scheduled_deliveries_for_its_channel() {
+    use nujijushi::db::{jobs, queue};
+    use nujijushi::jobs::worker::JobWorker;
+
+    let h = harness();
+    let channel = h.add_channel().await;
+    let (post_id, queue_id) = h.queue_a_post("live", &channel).await;
+    let status_path = format!("/api/v1/channels/{}/queue/status", channel.id);
+    let status = || async {
+        let response = h.send(h.get(&status_path)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        serde_json::from_str::<serde_json::Value>(&body_text(response).await).unwrap()
+    };
+    let first = status().await;
+    assert_eq!(first["revision"], status().await["revision"]);
+    let publish_url = format!("/channels/{}/queue", channel.id);
+    let form = format!("csrf={}&queue_id={queue_id}&back={publish_url}", h.ws.csrf);
+    let response = h.send(h.post("/api/v1/publish", &form)).await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let pending = status().await;
+    assert_ne!(first["revision"], pending["revision"]);
+    assert_eq!(pending["jobs"][0]["state"], "pending");
+    assert_eq!(pending["jobs"][0]["queue_id"], queue_id);
+    let job_id = pending["jobs"][0]["id"].as_i64().unwrap();
+    h.state
+        .db
+        .with(|conn| jobs::set_state(conn, job_id, "running", None))
+        .unwrap();
+    assert_eq!(status().await["jobs"][0]["state"], "running");
+    h.state
+        .db
+        .with(|conn| jobs::set_state(conn, job_id, "pending", None))
+        .unwrap();
+    assert_eq!(JobWorker::new(h.state.clone()).drain().await.unwrap(), 1);
+    let sent = status().await;
+    assert_eq!(sent["jobs"][0]["state"], "done");
+    assert_eq!(sent["latest_attempt"]["state"], "Sent");
+    assert_eq!(sent["latest_attempt"]["post_id"], post_id);
+
+    let (next_post, next_queue) = h.queue_a_post("scheduled", &channel).await;
+    let fresh = h
+        .state
+        .db
+        .with(|conn| {
+            nujijushi::db::channels::set_next_due(conn, channel.id, None)?;
+            nujijushi::db::channels::get(conn, channel.id)
+        })
+        .unwrap();
+    let outcome = nujijushi::tg::publish::publish_channel(&h.state, &fresh, false, true)
+        .await
+        .unwrap();
+    assert!(matches!(
+        outcome,
+        nujijushi::tg::publish::PublishOutcome::Published { .. }
+    ));
+    let updated = status().await;
+    assert_eq!(updated["latest_attempt"]["post_id"], next_post);
+    assert_eq!(updated["jobs"].as_array().unwrap().len(), 1);
+    assert_ne!(updated["revision"], sent["revision"]);
+    let distinct = h
+        .state
+        .db
+        .with(|conn| queue::get(conn, next_queue))
+        .unwrap();
+    assert_eq!(distinct.state, QueueState::Sent);
 }

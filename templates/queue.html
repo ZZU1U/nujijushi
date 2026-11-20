@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}queue · {{ channel.title }}{% endblock %}
 {% block body %}
-<section class="panel">
+<section class="panel" data-queue-revision="{{ activity.revision }}">
   <h2>queue · {{ channel.title }} <span class="hint">{{ channel.tg_id }}</span></h2>
   <p class="hint">
     <a href="/channels/{{ channel.id }}/edit">settings</a> ·
@@ -15,8 +15,27 @@
   {% else %}
   <p class="hint">Scheduling is off. <a href="/channels/{{ channel.id }}/preview">Review the preview to start</a>.</p>
   {% endif %}
+  {% if activity.latest_attempt %}
+  {% set attempt = activity.latest_attempt %}
+  <p class="queue-attempt">
+    Latest send attempt{% if attempt.post_id %} for <a href="/posts/{{ attempt.post_id }}">post #{{ attempt.post_id }}</a>{% endif %}
+    <span class="badge {{ 'green' if attempt.state == 'Sent' else 'red' }}">{{ attempt.state }}</span>
+    {% if attempt.error %}<span class="hint">{{ attempt.error }}</span>{% endif %}
+  </p>
+  {% endif %}
+  {% if activity.jobs %}
+  <ul id="queue-publish-jobs" class="queue-jobs">
+    {% for job in activity.jobs %}
+    <li data-publish-job="{{ job.id }}">
+      <span>{{ 'Queue item #' ~ job.queue_id if job.queue_id else 'Publish next' }}</span>
+      <span class="badge {{ 'red' if job.state == 'failed' else '' }}" data-live-state="{{ job.state }}">{{ job.label }}</span>
+      {% if job.message %}<span class="hint">{{ job.message }}</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
   {% if items %}
-  <table>
+  <table id="channel-queue-items">
     <tr><th>#</th><th></th><th>post</th><th>state</th><th>prio</th><th>attempts</th><th>added</th><th title="when it would go out if nobody interferes">est.</th><th></th></tr>
     {% for i in items %}
     <tr class="{{ 'row-unknown' if i.state == 'unknown' else '' }}" data-queue="{{ i.id }}">
@@ -32,7 +51,7 @@
         <div class="hint">{{ i.artist }} — {{ i.snippet }}</div>
         {% if i.error %}<div class="hint err">{{ i.error }}</div>{% endif %}
       </td>
-      <td><span class="badge {{ 'red' if i.state == 'unknown' or i.state == 'failed' else '' }}">{{ i.state_label }}</span></td>
+      <td><span class="badge {{ 'red' if i.state == 'unknown' or i.state == 'failed' else '' }}" data-live-state="{{ i.state }}">{{ i.state_label }}</span></td>
       <td>{{ i.priority }}</td>
       <td>{{ i.attempts }}</td>
       <td class="hint">{{ i.added }}</td>
@@ -47,7 +66,7 @@
           <button class="small" type="submit" title="publish this item now, ignoring the schedule">publish</button>
         </form>
         {% endif %}
-        <form method="post" action="/queue/action" class="inline">
+        <form id="queue-action-{{ i.id }}" method="post" action="/queue/action" class="inline">
           <input type="hidden" name="csrf" value="{{ csrf }}">
           <input type="hidden" name="id" value="{{ i.id }}">
           <input type="hidden" name="channel" value="{{ channel.id }}">
@@ -55,7 +74,7 @@
             <p class="hint">Check the Telegram channel before confirming delivery or sending again.</p>
             {% for message in i.delivery.messages %}<a href="{{ message }}" target="_blank" rel="noopener">Telegram message {{ loop.index }}</a>{% endfor %}
             {% if i.delivery.public_channel %}<a href="{{ i.delivery.public_channel }}" target="_blank" rel="noopener">Open Telegram channel</a>{% endif %}
-            <input type="number" name="message_id" min="1" aria-label="Telegram message ID (optional)" placeholder="Message ID">
+            <input id="telegram-message-{{ i.id }}" type="number" name="message_id" min="1" aria-label="Telegram message ID (optional)" placeholder="Message ID">
             <button name="action" value="delivered" class="small">Confirm delivered</button>
             <button name="action" value="not_delivered" class="small ghost" data-confirm="Check Telegram first. This queues the entire post for another send.">Requeue entire post</button>
           {% elif i.state == 'held' %}

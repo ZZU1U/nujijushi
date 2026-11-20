@@ -19,3 +19,19 @@ body.login-body .admin-shell { display: grid; justify-items: center; }
   .responsive-table td, main code { overflow-wrap: anywhere; }
   main .panel, .cols > * { min-width: 0; }
 }
+
+.queue-jobs { list-style: none; padding: 0; margin: .75rem 0; }
+.queue-jobs li { display: flex; flex-wrap: wrap; align-items: baseline; gap: .35rem .55rem; padding: .3rem 0; }
+.queue-connection { text-align: center; color: var(--muted); padding: .3rem .75rem; font-size: .85rem; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .admin-shell main { animation: view-in 130ms ease-out; }
+  .navigation-progress { transform-origin: left; animation: navigation-in 140ms ease-out; }
+  .admin-notice, [data-live-state] { animation: feedback-in 140ms ease-out; }
+  .admin-shell :is(button, .button) { transition: opacity 110ms ease-out, transform 90ms ease-out; }
+  .admin-shell :is(button, .button):active { transform: scale(.98); }
+}
+
+@keyframes view-in { from { opacity: .86; } }
+@keyframes navigation-in { from { transform: scaleX(.25); } }
+@keyframes feedback-in { from { opacity: .68; } }

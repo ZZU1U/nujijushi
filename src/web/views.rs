@@ -6,6 +6,10 @@ use serde_json::Value;
 use crate::error::{Error, Result};
 
 const TEMPLATES: &[(&str, &str)] = &[
+    (
+        "timezone_zones.html",
+        include_str!("../../templates/timezone_zones.html"),
+    ),
     ("base.html", include_str!("../../templates/base.html")),
     ("login.html", include_str!("../../templates/login.html")),
     (

@@ -37,7 +37,7 @@
     Create the channel in Telegram, add your bot as an administrator with "post messages",
     then paste its <code>@username</code> or numeric id (<code>-100…</code>).
   </p>
-  <form method="post" action="/channels" class="grid-form">
+  <form method="post" action="/channels" class="grid-form" data-verify-destination="">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <label>alias<input name="alias" required placeholder="night-shift" pattern="[A-Za-z0-9_\-]+"></label>
     <label>title<input name="title" required placeholder="Late night art"></label>
@@ -45,7 +45,7 @@
     <label>interval (minutes)<input name="interval_minutes" type="number" min="1" value="180"></label>
     <label>active from<input name="active_from" value="09:00"></label>
     <label>active to<input name="active_to" value="23:00"></label>
-    <label>timezone<input name="tz" value="Europe/Berlin" placeholder="{{ tz_hint }}"></label>
+    <label>timezone<input name="tz" list="tz-zones" value="Europe/Berlin" placeholder="Europe/Berlin" autocomplete="off" spellcheck="false"></label>
     <label>nsfw policy
       <select name="nsfw_policy">
         <option value="spoil" selected>spoil (blur + #nsfw)</option>
@@ -62,5 +62,6 @@
     <label class="check"><input type="checkbox" name="include_source_tag" checked> add source hashtag</label>
     <div class="form-actions"><button type="submit">create channel</button></div>
   </form>
+  {% include "timezone_zones.html" %}
 </section>
 {% endblock %}

@@ -1,6 +1,16 @@
 {% extends "base.html" %}
-{% macro compression_quality() %}
-  <label>JPEG quality <input name="quality" type="number" value="85" min="1" max="100" required></label>
+{% macro compression_options(merge) %}
+  <div data-compression-options>
+    <label>{{ 'Output' if merge else 'Mode' }}
+      <select name="output">
+        {% if merge %}<option value="lossless">Lossless PNG</option>{% endif %}
+        <option value="fit">Fit to Telegram</option>
+        <option value="quality">Use exact JPEG quality</option>
+      </select>
+    </label>
+    <label data-jpeg-quality>JPEG quality <input name="quality" type="number" value="85" min="1" max="100"></label>
+    <p class="hint">Fit to Telegram adjusts quality or size automatically and may add borders. JPEG fills transparency with white.</p>
+  </div>
 {% endmacro %}
 {% block title %}post #{{ post.id }}{% endblock %}
 {% block body %}
@@ -87,14 +97,7 @@
                 <input type="hidden" name="csrf" value="{{ csrf }}">
                 <input type="hidden" name="gallery_version" value="{{ gallery_version }}">
                 <input type="hidden" name="media_id" value="{{ m.id }}">
-                <label>Mode
-                  <select name="output">
-                    <option value="fit">Fit to Telegram</option>
-                    <option value="quality">Use exact JPEG quality</option>
-                  </select>
-                </label>
-                {{ compression_quality() }}
-                <p class="hint">Fit uses this quality as a maximum and can resize or add borders. JPEG fills transparency with white.</p>
+                {{ compression_options(false) }}
                 <button type="submit" name="action" value="compress" class="small">Compress</button>
               </form>
             </details>
@@ -124,15 +127,7 @@
           <span class="hint">Select any still images of the same height. They merge in gallery order.</span>
           <details class="post-inline-options">
             <summary>Merge output options</summary>
-            <label>Output
-              <select name="output">
-                <option value="lossless">Lossless PNG</option>
-                <option value="fit">Fit to Telegram</option>
-                <option value="quality">Use exact JPEG quality</option>
-              </select>
-            </label>
-            {{ compression_quality() }}
-            <p class="hint">Fit uses this quality as a maximum and can resize or add borders. JPEG fills transparency with white.</p>
+            {{ compression_options(true) }}
           </details>
         </form>
         {% endif %}

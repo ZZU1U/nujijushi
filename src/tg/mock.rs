@@ -40,6 +40,7 @@ struct MockState {
     text_failure: Option<TgError>,
     updates: VecDeque<BotUpdate>,
     chats: HashMap<i64, ChatInfo>,
+    chat_delay: std::time::Duration,
     copies: HashMap<(String, i32), CopiedMessage>,
     copy_errors: HashMap<(String, i32), TgError>,
     files: HashMap<String, Vec<u8>>,
@@ -70,6 +71,7 @@ impl MockTransport {
                 text_failure: None,
                 updates: VecDeque::new(),
                 chats: HashMap::new(),
+                chat_delay: std::time::Duration::ZERO,
                 copies: HashMap::new(),
                 copy_errors: HashMap::new(),
                 files: HashMap::new(),
@@ -118,6 +120,11 @@ impl MockTransport {
     /// Register a chat so `get_chat` can resolve it.
     pub fn with_chat(self, chat: ChatInfo) -> Self {
         self.inner.lock().unwrap().chats.insert(chat.id, chat);
+        self
+    }
+
+    pub fn with_chat_delay(self, delay: std::time::Duration) -> Self {
+        self.inner.lock().unwrap().chat_delay = delay;
         self
     }
 
@@ -290,6 +297,10 @@ impl Transport for MockTransport {
     }
 
     async fn get_chat(&self, chat: &str) -> TgResult<ChatInfo> {
+        let delay = self.inner.lock().unwrap().chat_delay;
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
         let state = self.inner.lock().unwrap();
         let needle = chat.trim();
         if let Ok(id) = needle.parse::<i64>()

@@ -1,12 +1,12 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type MouseEvent } from 'react'
 import { createRoot } from 'react-dom/client'
-import { viewNodes } from './view'
+import { viewNodes, type Job } from './view'
 import '../../static/app.css'
 import './admin.css'
 
 interface View { html: string }
 interface Mutation { location: string; message?: string; job_id?: number }
-interface Job { id: number; kind: string; state: string; message?: string; progress: number; total: number }
+interface QueueStatus { revision: string }
 
 class RequestError extends Error {
   constructor(public status: number, message: string) { super(message) }
@@ -27,6 +27,7 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 const active = (state: string) => state === 'pending' || state === 'running'
 const friendly = (error: unknown) => error instanceof Error ? error.message : 'Request failed'
 const postPath = /^\/posts\/\d+$/
+const queuePath = /^\/channels\/\d+\/queue$/
 const route = /^(?:\/$|\/(?:login|posts(?:\/\d+(?:\/delete)?)?|channels(?:\/\d+\/(?:edit|queue|preview))?|jobs|import|users|watches|duplicates)$)/
 
 function feedback(form: HTMLFormElement, message: string, error = false) {
@@ -35,24 +36,6 @@ function feedback(form: HTMLFormElement, message: string, error = false) {
   target.textContent = message
   target.hidden = message === ''
   target.classList.toggle('action-error', error)
-}
-
-function paintJob(job: Job) {
-  document.querySelectorAll<HTMLElement>('[data-job="' + job.id + '"]').forEach((row) => {
-    row.dataset.state = job.state
-    const text = (role: string, value: string) => {
-      const target = row.querySelector('[data-role="' + role + '"]')
-      if (target) target.textContent = value
-    }
-    text('state', job.state)
-    text('message', job.message || '')
-    text('counts', job.total ? job.progress + '/' + job.total : '')
-    const progress = row.querySelector<HTMLElement>('.progress > span')
-    if (progress && job.total) progress.style.width = (job.progress / job.total * 100) + '%'
-    const badge = row.querySelector('[data-role="state"]')
-    badge?.classList.toggle('red', job.state === 'failed')
-    badge?.classList.toggle('green', job.state === 'done')
-  })
 }
 
 function updateSelection() {
@@ -74,6 +57,8 @@ function Admin() {
   const [loading, setLoading] = useState(true)
   const [pageError, setPageError] = useState('')
   const [notice, setNotice] = useState('')
+  const [jobs, setJobs] = useState(new Map<number, Job>())
+  const [queueDisconnected, setQueueDisconnected] = useState(false)
   const cache = useRef(new Map<string, { document: Document; received: number }>())
   const scrollPositions = useRef(new Map<string, number>())
   const scrollNext = useRef<number | null>(null)
@@ -83,7 +68,7 @@ function Admin() {
   const busyForms = useRef(new Set<HTMLFormElement>())
   const polling = useRef(new Set<number>())
 
-  async function load(path: string, allowCache = false) {
+  async function load(path: string, allowCache = false, background = false): Promise<boolean> {
     request.current?.abort()
     const controller = new AbortController()
     request.current = controller
@@ -93,10 +78,12 @@ function Admin() {
       renderedPath.current = path
       setPageError('')
       setLoading(false)
-      return
+      return true
     }
-    setLoading(true)
-    setPageError('')
+    if (!background) {
+      setLoading(true)
+      setPageError('')
+    }
     try {
       const result = await api<View>(path, { signal: controller.signal })
       const next = new DOMParser().parseFromString(result.html, 'text/html')
@@ -105,7 +92,7 @@ function Admin() {
           next.getElementById(element.id)?.setAttribute('open', '')
         })
       }
-      if (controller.signal.aborted) return
+      if (controller.signal.aborted) return false
       const screen = new URL(path, location.origin)
       const grid = next.querySelector<HTMLElement>('[data-grid-page]')
       if (grid?.dataset.gridPage && screen.searchParams.has('page')
@@ -115,21 +102,25 @@ function Admin() {
         path = screen.pathname + screen.search
       }
       cache.current.set(path, { document: next, received: Date.now() })
+      if (queuePath.test(screen.pathname) && renderedPath.current.split('?')[0] === screen.pathname) {
+        scrollNext.current = scrollY
+      }
       renderedPath.current = path
       setDocumentView(next)
+      return true
     } catch (error) {
-      if (controller.signal.aborted) return
+      if (controller.signal.aborted) return false
       if (error instanceof RequestError && error.status === 401 && !path.startsWith('/login')) {
         const login = '/login?next=' + encodeURIComponent(path + location.hash)
         history.replaceState(null, '', login)
         cache.current.clear()
         setDocumentView(undefined)
-        await load(login)
-        return
+        return load(login)
       }
-      setPageError(friendly(error))
+      if (!background) setPageError(friendly(error))
+      return false
     } finally {
-      if (!controller.signal.aborted) setLoading(false)
+      if (!background && !controller.signal.aborted) setLoading(false)
     }
   }
 
@@ -150,7 +141,11 @@ function Admin() {
     try {
       for (;;) {
         const job = await api<Job>('/jobs/' + id + '/status')
-        paintJob(job)
+        setJobs((previous) => {
+          const next = new Map(previous)
+          next.set(job.id, job)
+          return next
+        })
         if (!active(job.state)) {
           const message = job.message || (job.state === 'failed' ? 'The job failed' : 'Finished')
           if (form?.isConnected) feedback(form, message, job.state === 'failed')
@@ -213,6 +208,55 @@ function Admin() {
     })
   }, [documentView])
 
+  const viewedQueue = renderedPath.current.split('?')[0]
+  useEffect(() => {
+    setQueueDisconnected(false)
+    if (!queuePath.test(viewedQueue)) return
+    let timer: number | undefined
+    let stopped = false
+    let inFlight = false
+    const controller = new AbortController()
+
+    async function poll() {
+      if (inFlight || stopped || document.hidden || location.pathname !== viewedQueue) return
+      inFlight = true
+      try {
+        const status = await api<QueueStatus>(viewedQueue + '/status', { signal: controller.signal })
+        if (stopped || document.hidden || location.pathname !== viewedQueue) return
+        const existing = document.querySelector<HTMLElement>('[data-queue-revision]')
+        if (existing && existing.dataset.queueRevision !== status.revision && busyForms.current.size === 0) {
+          setQueueDisconnected(!(await load(current(), false, true)))
+        } else {
+          setQueueDisconnected(false)
+        }
+      } catch (error) {
+        if (stopped || location.pathname !== viewedQueue) return
+        if (error instanceof RequestError && error.status === 401) {
+          void load(current())
+        } else {
+          setQueueDisconnected(true)
+        }
+      } finally {
+        inFlight = false
+        if (!stopped && !document.hidden) timer = window.setTimeout(poll, 2000)
+      }
+    }
+
+    function checkVisibility() {
+      window.clearTimeout(timer)
+      if (!document.hidden) void poll()
+    }
+
+    void poll()
+    document.addEventListener('visibilitychange', checkVisibility)
+    return () => {
+      stopped = true
+      controller.abort()
+      window.clearTimeout(timer)
+      document.removeEventListener('visibilitychange', checkVisibility)
+    }
+  }, [viewedQueue])
+
   function click(event: MouseEvent) {
     if (!(event.target instanceof Element)) return
     const select = event.target.closest('[data-select-posts], [data-clear-posts]')
@@ -251,7 +295,8 @@ function Admin() {
     const opened = current()
     busyForms.current.add(form)
     form.setAttribute('aria-busy', 'true')
-    feedback(form, 'Working…')
+    const verifying = form.hasAttribute('data-verify-destination') && data.get('tg_id')?.trim() !== form.dataset.verifyDestination
+    feedback(form, verifying ? 'Checking Telegram…' : 'Working…')
     try {
       const result = await api<Mutation>(url.pathname + url.search, { method: 'POST', body: data })
       if (current() !== opened) return
@@ -287,9 +332,10 @@ function Admin() {
   return <div className="admin-shell" onClick={click} onSubmit={submit} onChange={updateSelection}>
     {loading && <div className="navigation-progress" role="status" aria-label="Loading page" />}
     {notice && <div className="admin-notice" role="status">{notice}<button className="small ghost" onClick={() => setNotice('')}>Dismiss</button></div>}
+    {queueDisconnected && <div className="queue-connection" role="status">Live queue updates disconnected. Retrying…</div>}
     {pageError && <div className="admin-notice action-error" role="alert">{pageError}<button className="small ghost" onClick={() => void load(current())}>Retry</button></div>}
     {documentView ? <Fragment key={renderedPath.current.startsWith('/posts?') ? renderedPath.current : renderedPath.current.split('?')[0]}>
-      {viewNodes(documentView.body)}
+      {viewNodes(documentView.body, { jobs })}
     </Fragment> : loading && <main>Loading nujijushi…</main>}
   </div>
 }

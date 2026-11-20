@@ -111,16 +111,17 @@ pub(super) async fn action(
 }
 
 fn compression_settings(form: &FormMap, mode: &str) -> WebResult<Compression> {
-    let fit = match mode {
-        "fit" => true,
-        "quality" => false,
-        _ => return Err(Error::invalid("Unknown image compression mode").into()),
-    };
-    let quality = forms::field(form, "quality")
-        .unwrap_or("85")
-        .parse()
-        .map_err(|_| Error::invalid("JPEG quality must be from 1 to 100"))?;
-    Ok(Compression::new(quality, fit)?)
+    match mode {
+        "fit" => Ok(Compression::new(85, true)?),
+        "quality" => {
+            let quality = forms::field(form, "quality")
+                .unwrap_or("85")
+                .parse()
+                .map_err(|_| Error::invalid("JPEG quality must be from 1 to 100"))?;
+            Ok(Compression::new(quality, false)?)
+        }
+        _ => Err(Error::invalid("Unknown image compression mode").into()),
+    }
 }
 
 fn media_id(form: &FormMap) -> WebResult<i64> {

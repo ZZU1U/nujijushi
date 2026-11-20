@@ -143,6 +143,28 @@ pub fn find_active(conn: &Connection, kind: &str, payload: &str) -> Result<Optio
         .optional()?)
 }
 
+/// Active publishing work and five recent results for one channel.
+pub fn channel_publish_activity(conn: &Connection, channel_id: i64) -> Result<Vec<Job>> {
+    let mut stmt = conn.prepare(&format!(
+        "WITH channel_jobs AS (
+             SELECT {COLUMNS} FROM jobs
+             WHERE (kind = 'publish_channel' AND payload = CAST(?1 AS TEXT))
+                OR (kind = 'publish_item' AND EXISTS (
+                    SELECT 1 FROM queue q WHERE q.id = CAST(jobs.payload AS INTEGER)
+                    AND q.channel_id = ?1 AND jobs.created_at >= q.added_at
+                ))
+         )
+         SELECT * FROM channel_jobs WHERE state IN ('pending', 'running')
+         UNION ALL
+         SELECT * FROM (SELECT * FROM channel_jobs
+             WHERE state NOT IN ('pending', 'running') ORDER BY id DESC LIMIT 5)
+         ORDER BY id DESC"
+    ))?;
+    Ok(stmt
+        .query_map([channel_id], from_row)?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
 /// How many jobs of this kind are waiting for a worker slot (`pending`).
 pub fn count_pending(conn: &Connection, kind: &str) -> Result<i64> {
     Ok(conn.query_row(

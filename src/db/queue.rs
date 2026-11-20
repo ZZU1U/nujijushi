@@ -542,6 +542,41 @@ pub fn log_send(conn: &Connection, record: SendRecord<'_>) -> Result<()> {
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+pub struct DeliveryAttempt {
+    pub id: i64,
+    pub post_id: Option<i64>,
+    pub state: &'static str,
+    pub error: Option<String>,
+}
+
+pub fn latest_attempt(conn: &Connection, channel_id: i64) -> Result<Option<DeliveryAttempt>> {
+    Ok(conn
+        .query_row(
+            "SELECT s.id, s.post_id, s.ok, s.error, q.state FROM sends s
+         LEFT JOIN queue q ON q.id = s.queue_id AND q.channel_id = s.channel_id
+         WHERE s.channel_id = ?1 ORDER BY s.id DESC LIMIT 1",
+            [channel_id],
+            |row| {
+                let queue_state: Option<String> = row.get(4)?;
+                let state = if get_bool(row, "ok")? {
+                    "Sent"
+                } else if queue_state.as_deref() == Some("unknown") {
+                    "Delivery unconfirmed"
+                } else {
+                    "Failed"
+                };
+                Ok(DeliveryAttempt {
+                    id: row.get(0)?,
+                    post_id: row.get(1)?,
+                    state,
+                    error: row.get(3)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
 pub fn recent_sends(conn: &Connection, limit: i64) -> Result<Vec<crate::model::SendLog>> {
     let mut stmt = conn.prepare(
         "SELECT id, channel_id, post_id, sent_at, ok, tg_message_ids, caption, error

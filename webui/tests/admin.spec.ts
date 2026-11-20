@@ -3,6 +3,7 @@ import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
+import { DatabaseSync } from 'node:sqlite'
 import { join, resolve } from 'node:path'
 import { crc32, deflateSync } from 'node:zlib'
 
@@ -11,6 +12,7 @@ const binary = resolve(process.env.NUJIJUSHI_TEST_BIN || '../target/debug/nujiju
 let directory: string
 let server: ChildProcess
 let base: string
+let cli: (...args: string[]) => Buffer
 
 function png(height: number, color: number) {
   const width = 16
@@ -54,7 +56,7 @@ test.beforeAll(async () => {
   const env = { ...process.env, NUJIJUSHI_HOME: join(directory, 'archive'),
     NUJIJUSHI_UI_TOKEN: token, TG_BOT_TOKEN: '', NUJIJUSHI_BOT_MODE: 'polling',
     NUJIJUSHI_BOT: '0', NUJIJUSHI_ADMINS: '', NUJIJUSHI_PROXY: '' }
-  const cli = (...args: string[]) => execFileSync(binary, args, { env, stdio: ['ignore', 'pipe', 'pipe'] })
+  cli = (...args: string[]) => execFileSync(binary, args, { env, stdio: ['ignore', 'pipe', 'pipe'] })
   cli('init')
   cli('channel', 'add', 'art', '@local_test_channel', '--no-verify')
   const valid = await gallery('Merge panels', [12, 12, 12, 12])
@@ -156,4 +158,151 @@ for (const width of [390, 1440]) test('every admin screen fits a ' + width + 'px
     await expect(page.locator('.admin-shell main :is(h1, h2, form)').first(), { message: path }).toBeAttached()
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth), { message: path }).toBe(width)
   }
+})
+
+test('JPEG quality only appears in exact mode and remembers the draft', async ({ page }) => {
+  await signIn(page, '/posts/2')
+  await page.getByText('Media tools', { exact: true }).click()
+  const compress = page.locator('details').filter({ has: page.locator(':scope > summary', { hasText: /^Compress image$/ }) }).first()
+  await compress.locator('summary').click()
+  const mode = compress.getByLabel('Mode')
+  const quality = compress.getByLabel('JPEG quality', { exact: true })
+  await expect(mode).toHaveValue('fit')
+  await expect(quality).toBeHidden()
+  await mode.selectOption('quality')
+  await expect(quality).toBeVisible()
+  await quality.fill('67')
+  await mode.selectOption('fit')
+  await expect(quality).toBeHidden()
+  await expect(quality).toBeDisabled()
+  await mode.selectOption('quality')
+  await expect(quality).toHaveValue('67')
+
+  await page.getByText('Merge output options', { exact: true }).click()
+  const merge = page.locator('#merge-gallery')
+  await expect(merge.getByLabel('Output')).toHaveValue('lossless')
+  await expect(merge.getByLabel('JPEG quality', { exact: true })).toBeHidden()
+  await merge.getByLabel('Output').selectOption('fit')
+  await expect(merge.getByLabel('JPEG quality', { exact: true })).toBeHidden()
+  await merge.getByLabel('Output').selectOption('quality')
+  await expect(merge.getByLabel('JPEG quality', { exact: true })).toBeVisible()
+})
+
+test('both channel forms suggest scheduler timezones and creation preserves failed input', async ({ page }) => {
+  const documents = countDocuments(page)
+  await signIn(page, '/channels')
+  function timezone() { return page.locator('input[name="tz"]') }
+  async function suggestions() {
+    return timezone().evaluate((element: HTMLInputElement) => Array.from(element.list?.options || [], (option) => option.value))
+  }
+  await expect(timezone()).toHaveValue('Europe/Berlin')
+  const initial = await suggestions()
+  expect(initial).toContain('Pacific/Chatham')
+  expect(initial).toContain('Europe/Moscow')
+
+  const form = page.locator('#add-channel form')
+  await form.getByLabel('alias').fill('new-art')
+  await form.getByLabel('title').fill('New Art')
+  await form.locator('input[name="tg_id"]').fill('@mock_channel')
+  await timezone().fill('Pacific/Chatham')
+  let finish: () => void = () => {}
+  const verification = new Promise<void>((resolve) => { finish = resolve })
+  await page.route('**/api/v1/channels', async (route) => {
+    if (route.request().method() === 'POST') await verification
+    await route.continue()
+  })
+  await form.getByRole('button', { name: 'create channel' }).click()
+  try {
+    await expect(form.getByText('Checking Telegram…')).toBeVisible()
+  } finally {
+    finish()
+  }
+  await expect(form.locator('.action-error')).toContainText('Configure a Telegram bot token')
+  await expect(timezone()).toHaveValue('Pacific/Chatham')
+  await expect(form.getByLabel('title')).toHaveValue('New Art')
+  await page.getByRole('link', { name: 'art', exact: true }).click()
+  await expect(page).toHaveURL(base + '/channels/1/edit')
+  await expect.poll(suggestions).toEqual(initial)
+  expect(documents()).toBe(1)
+})
+
+test('a completed import displays its summary exactly once', async ({ page }) => {
+  const documents = countDocuments(page)
+  await signIn(page, '/import')
+  await page.locator('textarea[name="targets"]').fill(join(directory, 'Different heights'))
+  const response = page.waitForResponse((reply) => reply.url().endsWith('/api/v1/import') && reply.request().method() === 'POST')
+  await page.getByRole('button', { name: 'start import' }).click()
+  const queued = await (await response).json() as { job_id: number }
+  const row = page.locator('[data-job="' + queued.job_id + '"]')
+  await expect(row.getByRole('link', { name: 'Open post' })).toBeVisible({ timeout: 10_000 })
+  await expect(row.locator('[data-role="message"]')).toHaveText('updated post · 2 files')
+  expect(documents()).toBe(1)
+})
+
+test('queue reflects publishes from both tabs and scheduler delivery without reloading', async ({ page, context }) => {
+  for (const post of [20, 21, 22, 23]) cli('queue', 'add', String(post), '--channel', 'art')
+  const documents = countDocuments(page)
+  await signIn(page, '/channels/1/queue')
+  const queueRow = (tab: Page, post: number) => tab.locator('[data-queue]').filter({ has: tab.getByRole('link', { name: '#' + post, exact: true }) })
+  const own = queueRow(page, 20)
+  const ownId = await own.getAttribute('data-queue')
+  page.once('dialog', (dialog) => void dialog.accept())
+  await own.getByRole('button', { name: 'publish', exact: true }).click()
+  const publishJob = (id: string | null) => page.locator('[data-publish-job]').filter({ hasText: 'Queue item #' + id })
+  await expect(publishJob(ownId)).toContainText('Failed', { timeout: 12_000 })
+
+  const other = await context.newPage()
+  await other.goto(base + '/channels/1/queue')
+  const elsewhere = queueRow(other, 21)
+  const otherId = await elsewhere.getAttribute('data-queue')
+  const publish = elsewhere.locator('form[action="/publish"]')
+  await page.bringToFront()
+  const accepted = await publish.evaluate(async (form: HTMLFormElement) => {
+    const body = new URLSearchParams()
+    new FormData(form).forEach((value, name) => body.set(name, String(value)))
+    const response = await fetch('/api/v1/publish', { method: 'POST', body })
+    return response.status
+  })
+  expect(accepted).toBe(202)
+  await expect(publishJob(otherId)).toContainText('Failed', { timeout: 12_000 })
+  await other.close()
+
+  const running = queueRow(page, 22)
+  const uncertain = queueRow(page, 23)
+  const runningId = Number(await running.getAttribute('data-queue'))
+  const unknownId = Number(await uncertain.getAttribute('data-queue'))
+  const db = new DatabaseSync(join(directory, 'archive', 'nujijushi.sqlite3'))
+  try {
+    db.exec('PRAGMA busy_timeout = 5000')
+    // Write the intermediate states a worker in a separate process would commit.
+    db.prepare("UPDATE queue SET state = 'sending' WHERE id = ?").run(runningId)
+    db.prepare("UPDATE queue SET state = 'unknown' WHERE id = ?").run(unknownId)
+    await expect(running.getByText('Sending', { exact: true })).toBeVisible()
+    await expect(uncertain.getByText('Delivery unconfirmed', { exact: true })).toBeVisible()
+    const messageId = uncertain.getByLabel('Telegram message ID (optional)')
+    await messageId.fill('4321')
+    await messageId.scrollIntoViewIfNeeded()
+    db.exec('BEGIN')
+    db.prepare("UPDATE queue SET state = 'sent', sent_at = ? WHERE id = ?").run(new Date().toISOString(), runningId)
+    db.prepare('INSERT INTO sends (channel_id, queue_id, post_id, sent_at, ok) VALUES (1, ?, 22, ?, 1)')
+      .run(runningId, new Date().toISOString())
+    db.exec('COMMIT')
+    await expect(running).toHaveCount(0)
+    await expect(page.locator('.queue-attempt')).toContainText('Sent')
+    await expect(messageId).toHaveValue('4321')
+  } finally {
+    db.close()
+  }
+  expect(documents()).toBe(1)
+})
+
+test('navigation motion follows the reduced-motion preference', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await signIn(page, '/channels')
+  await expect(page.locator('#add-channel')).toBeVisible()
+  await expect(page.locator('main')).toHaveCSS('animation-name', 'none')
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
+  await page.getByRole('link', { name: 'import', exact: true }).click()
+  await expect(page).toHaveURL(base + '/import')
+  await expect(page.locator('main')).toHaveCSS('animation-name', 'view-in')
 })
