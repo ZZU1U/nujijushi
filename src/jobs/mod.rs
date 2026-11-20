@@ -422,12 +422,16 @@ pub async fn create_merge_media_job(
     version: String,
     compression: Option<crate::media::compress::Compression>,
 ) -> Result<Option<i64>> {
-    state
+    let job = state
         .db
         .call(move |conn| {
             crate::db::media_merges::enqueue(conn, post_id, &selected, &version, compression)
         })
-        .await
+        .await?;
+    if job.is_some() {
+        state.media_jobs.notify_one();
+    }
+    Ok(job)
 }
 
 pub async fn create_compress_media_job(
@@ -437,14 +441,18 @@ pub async fn create_compress_media_job(
     version: String,
     settings: crate::media::compress::Compression,
 ) -> Result<Option<i64>> {
-    state
+    let job = state
         .db
         .call(move |conn| {
             crate::db::media_merges::enqueue_compression(
                 conn, post_id, media_id, &version, settings,
             )
         })
-        .await
+        .await?;
+    if job.is_some() {
+        state.media_jobs.notify_one();
+    }
+    Ok(job)
 }
 
 /// Create a job unless the same kind + payload is already pending or running.

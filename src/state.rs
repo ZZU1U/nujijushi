@@ -17,6 +17,7 @@ pub struct AppState {
     pub blobs: Arc<BlobStore>,
     pub renderer: Arc<Renderer>,
     pub transport: Option<Arc<dyn Transport>>,
+    pub(crate) media_jobs: Arc<tokio::sync::Notify>,
 }
 
 impl AppState {
@@ -31,6 +32,7 @@ impl AppState {
             blobs,
             renderer,
             transport,
+            media_jobs: Arc::new(tokio::sync::Notify::new()),
         })
     }
 

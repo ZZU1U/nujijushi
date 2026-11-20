@@ -265,6 +265,7 @@ mod webhook_tests {
             ),
             renderer: std::sync::Arc::new(crate::render::Renderer::new().unwrap()),
             transport: None,
+            media_jobs: Default::default(),
         };
         assert_eq!(webhook_secret(&state).unwrap(), "from-config");
 

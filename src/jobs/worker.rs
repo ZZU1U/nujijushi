@@ -13,9 +13,8 @@ const QUICK_KINDS: &[&str] = &[
     crate::jobs::KIND_PUBLISH_ITEM,
     crate::jobs::KIND_STORAGE_DRAIN,
 ];
-const IMPORT_KINDS: &[&str] = &[
-    crate::jobs::KIND_IMPORT,
-    crate::jobs::KIND_WATCH_CHECK,
+const IMPORT_KINDS: &[&str] = &[crate::jobs::KIND_IMPORT, crate::jobs::KIND_WATCH_CHECK];
+const MEDIA_KINDS: &[&str] = &[
     crate::jobs::KIND_MERGE_MEDIA,
     crate::jobs::KIND_COMPRESS_MEDIA,
 ];
@@ -72,12 +71,14 @@ impl JobWorker {
     pub async fn drain(&self) -> Result<usize> {
         let quick = self.claim(QUICK_KINDS, QUICK_JOBS).await?;
         let imports = self.claim(IMPORT_KINDS, self.import_limit()).await?;
-        let (quick, imports, suggestions) = tokio::join!(
+        let media = self.claim(MEDIA_KINDS, 1).await?;
+        let (quick, imports, media, suggestions) = tokio::join!(
             self.run_claimed(quick),
             self.run_claimed(imports),
+            self.run_claimed(media),
             self.drain_suggestions(),
         );
-        let count = quick + imports + suggestions?;
+        let count = quick + imports + media + suggestions?;
         self.drain_mirrors(if count == 0 { 5 } else { 10 }).await;
         crate::duplicates::index_batch(&self.state).await?;
         Ok(count)
@@ -130,6 +131,23 @@ impl JobWorker {
         }
     }
 
+    async fn poll_media(&self) {
+        loop {
+            match self.claim(MEDIA_KINDS, 1).await {
+                Ok(jobs) if !jobs.is_empty() => {
+                    self.run_claimed(jobs).await;
+                    continue;
+                }
+                Ok(_) => {}
+                Err(err) => tracing::error!("media worker: {err}"),
+            }
+            tokio::select! {
+                _ = self.state.media_jobs.notified() => {},
+                _ = tokio::time::sleep(POLL_INTERVAL) => {},
+            }
+        }
+    }
+
     async fn poll_duplicates(&self) {
         loop {
             if let Err(err) = crate::duplicates::index_batch(&self.state).await {
@@ -149,6 +167,7 @@ impl JobWorker {
             _ = shutdown => {},
             _ = self.poll_jobs(QUICK_KINDS, QUICK_JOBS, false) => {},
             _ = self.poll_jobs(IMPORT_KINDS, self.import_limit(), true) => {},
+            _ = self.poll_media() => {},
             _ = self.poll_suggestions() => {},
             _ = self.poll_duplicates() => {},
         }
@@ -191,4 +210,43 @@ pub async fn reconcile(state: &AppState) -> Result<usize> {
         }
     }
     Ok(fixed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn media_enqueue_wakes_the_worker_without_waiting_for_disk_poll() {
+        let directory = tempfile::tempdir().unwrap();
+        let cfg = crate::config::Config::load_from_home(directory.path().to_path_buf()).unwrap();
+        let state = AppState::open(cfg, None).unwrap();
+        let worker = JobWorker::new(state.clone());
+        let task = tokio::spawn(async move { worker.poll_media().await });
+        // A deliberately invalid request settles as failed as soon as the lane wakes.
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let id = state
+            .db
+            .call(|conn| job_db::create(conn, crate::jobs::KIND_MERGE_MEDIA, "", 2))
+            .await
+            .unwrap();
+        state.media_jobs.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let job = state
+                    .db
+                    .call(move |conn| job_db::get(conn, id))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if job.state == "failed" {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        task.abort();
+    }
 }

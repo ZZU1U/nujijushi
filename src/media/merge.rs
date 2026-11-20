@@ -159,17 +159,38 @@ pub fn stitch(
         return compress::encode(output, settings, upload_limit);
     }
     let max = compress::photo_limit(upload_limit) as usize;
+    encode_lossless(&output, max)
+}
+
+fn encode_lossless(output: &DynamicImage, max: usize) -> Result<Vec<u8>> {
+    for quality in [CompressionType::Default, CompressionType::Best] {
+        if let Some(bytes) = encode_png(output, max, quality)? {
+            return Ok(bytes);
+        }
+    }
+    Err(Error::invalid(format!(
+        "The merged PNG exceeds the {max}-byte photo limit. Try Fit to Telegram."
+    )))
+}
+
+fn encode_png(
+    output: &DynamicImage,
+    max: usize,
+    quality: CompressionType,
+) -> Result<Option<Vec<u8>>> {
     let mut writer = LimitedOutput::new(max);
-    let encoded =
-        PngEncoder::new_with_quality(&mut writer, CompressionType::Best, FilterType::Adaptive)
-            .write_image(output.as_bytes(), width, height, output.color().into());
+    let encoded = PngEncoder::new_with_quality(&mut writer, quality, FilterType::Adaptive)
+        .write_image(
+            output.as_bytes(),
+            output.width(),
+            output.height(),
+            output.color().into(),
+        );
     if writer.exceeded {
-        return Err(Error::invalid(format!(
-            "The merged PNG exceeds the {max}-byte photo limit. Try Fit to Telegram."
-        )));
+        return Ok(None);
     }
     encoded?;
-    Ok(writer.bytes)
+    Ok(Some(writer.bytes))
 }
 
 pub(super) struct LimitedOutput {
@@ -213,6 +234,59 @@ mod tests {
         RgbaImage::from_pixel(width, height, Rgba(color))
             .save(path)
             .unwrap();
+    }
+
+    #[test]
+    fn png_retries_at_best_compression_when_the_faster_encoding_exceeds_the_limit() {
+        let image = DynamicImage::ImageRgba8(RgbaImage::from_fn(640, 480, |x, y| {
+            let tile = ((x / 3 * 199) ^ (y / 3 * 181)) as u8;
+            Rgba([tile, 255 - tile, tile / 2, 255])
+        }));
+        let best = encode_png(&image, usize::MAX, CompressionType::Best)
+            .unwrap()
+            .unwrap();
+        let faster = encode_png(&image, usize::MAX, CompressionType::Default)
+            .unwrap()
+            .unwrap();
+        assert!(faster.len() > best.len());
+        let constrained = encode_lossless(&image, best.len()).unwrap();
+        assert_eq!(constrained, best);
+        assert_eq!(
+            image::load_from_memory(&constrained).unwrap().into_rgba8(),
+            image.into_rgba8()
+        );
+    }
+
+    #[test]
+    #[ignore = "reports timing for representative merged canvases"]
+    fn compare_merge_png_encoding() {
+        for (name, image) in [
+            (
+                "gradient",
+                RgbaImage::from_fn(2400, 1200, |x, y| {
+                    Rgba([((x + y) / 16) as u8, (x / 10) as u8, (y / 5) as u8, 255])
+                }),
+            ),
+            (
+                "textured",
+                RgbaImage::from_fn(2400, 1200, |x, y| {
+                    let grain = (x.wrapping_mul(25_443).rotate_left(y & 15)
+                        ^ y.wrapping_mul(700_001)) as u8;
+                    Rgba([grain, (x / 10) as u8, (y / 5) as u8, 255])
+                }),
+            ),
+        ] {
+            let image = DynamicImage::ImageRgba8(image);
+            for mode in [CompressionType::Best, CompressionType::Default] {
+                let start = std::time::Instant::now();
+                let bytes = encode_png(&image, usize::MAX, mode).unwrap().unwrap();
+                eprintln!(
+                    "{name} {mode:?}: {:?}, {} bytes",
+                    start.elapsed(),
+                    bytes.len()
+                );
+            }
+        }
     }
 
     #[test]
