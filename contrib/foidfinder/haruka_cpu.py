@@ -46,10 +46,18 @@ class HarukaCpu:
             str(weights), sess_options=options, providers=[CPU_PROVIDER]
         )
         self.session.disable_fallback()
+        inputs = self.session.get_inputs()
+        outputs = self.session.get_outputs()
+        if len(inputs) != 1 or len(outputs) != 1:
+            raise ValueError("Haruka ONNX must have one image input and one logits output")
+        self.input_name = inputs[0].name
+        self.output_name = outputs[0].name
         self.label_count = label_count
 
     def predict(self, image: Image.Image) -> np.ndarray:
-        (logits,) = self.session.run(["logits"], {"images": model_input(image)})
+        (logits,) = self.session.run(
+            [self.output_name], {self.input_name: model_input(image)}
+        )
         if logits.shape != (1, self.label_count) or not np.isfinite(logits).all():
             raise ValueError("Haruka model output does not match its tag metadata")
         logits = logits[0]

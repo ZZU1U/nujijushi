@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -23,7 +24,9 @@ class HarukaCpuTest(unittest.TestCase):
         np.testing.assert_array_equal(tensor[0, :, 224, 438], white)
 
     @patch("haruka_cpu.ort.InferenceSession")
-    def test_uses_only_the_cpu_provider_and_returns_probabilities(self, session):
+    def test_uses_the_cpu_provider_and_the_exported_tensor_names(self, session):
+        session.return_value.get_inputs.return_value = [SimpleNamespace(name="input")]
+        session.return_value.get_outputs.return_value = [SimpleNamespace(name="output")]
         backend = HarukaCpu(Path("haruka-tagger.onnx"), label_count=3, threads=2)
         self.assertEqual(session.call_args.kwargs["providers"], ["CPUExecutionProvider"])
         self.assertEqual(session.call_args.kwargs["sess_options"].intra_op_num_threads, 2)
@@ -32,8 +35,9 @@ class HarukaCpuTest(unittest.TestCase):
         probabilities = backend.predict(Image.new("RGB", (448, 448)))
         np.testing.assert_array_equal(probabilities, [0.0, 0.5, 1.0])
         outputs, inputs = session.return_value.run.call_args.args
-        self.assertEqual(outputs, ["logits"])
-        self.assertEqual(inputs["images"].shape, (1, 3, 448, 448))
+        self.assertEqual(outputs, ["output"])
+        self.assertEqual(list(inputs), ["input"])
+        self.assertEqual(inputs["input"].shape, (1, 3, 448, 448))
 
 
 if __name__ == "__main__":
