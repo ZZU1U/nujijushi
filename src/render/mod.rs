@@ -14,10 +14,20 @@ pub use caption::{CaptionContext, build_context};
 pub use truncate::{CAPTION_LIMIT, RenderedCaption};
 
 /// Bundled caption templates; a channel can also carry its own inline template.
-pub const BUILTIN_TEMPLATES: &[(&str, &str)] = &[(
-    "default",
-    include_str!("../../templates/captions/default.html.j2"),
-)];
+pub const BUILTIN_TEMPLATES: &[(&str, &str)] = &[
+    (
+        "default",
+        include_str!("../../templates/captions/default.html.j2"),
+    ),
+    (
+        "compact",
+        include_str!("../../templates/captions/compact.html.j2"),
+    ),
+    (
+        "detailed",
+        include_str!("../../templates/captions/detailed.html.j2"),
+    ),
+];
 
 pub struct Renderer {
     env: Environment<'static>,

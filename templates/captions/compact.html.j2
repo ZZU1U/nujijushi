@@ -1,0 +1,14 @@
+{%- if post.title -%}
+<b>{{ post.title }}</b>
+{% endif -%}
+{%- if author.given or author.handle -%}
+{{ author.label }}{% if source_link and attribution_inline %} · {{ source_link }}{% endif %}
+{% elif source_link and attribution_inline -%}
+{{ source_link }}
+{% endif -%}
+{%- if hashtags -%}
+{{ hashtags }}
+{% endif -%}
+{%- if source_link and attribution_footer -%}
+{{ source_link }}
+{% endif -%}

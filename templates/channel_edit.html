@@ -37,7 +37,7 @@
         <label>min media<input name="min_media" type="number" min="0" value="{{ channel.min_media }}"></label>
         <label>tag style
           <select name="tag_style">
-            {% for t in tag_styles %}<option value="{{ t }}" {{ 'selected' if channel.tag_style == t else '' }}>{{ t }}</option>{% endfor %}
+            {% for t in tag_styles %}<option value="{{ t }}" {{ 'selected' if channel.tag_style == t else '' }}>{{ t | capitalize }}</option>{% endfor %}
           </select>
         </label>
         <label>max tags<input name="max_tags" type="number" min="0" value="{{ channel.max_tags }}"></label>
@@ -55,7 +55,7 @@
         <label>required tags (csv)<input name="required_tags" value="{{ channel.required_tags }}"></label>
         <label>built-in template
           <select name="template_name">
-            {% for t in templates %}<option value="{{ t }}" {{ 'selected' if channel.template_name == t else '' }}>{{ t }}</option>{% endfor %}
+            {% for t in templates %}<option value="{{ t }}" {{ 'selected' if channel.template_name == t else '' }}>{{ t | capitalize }}</option>{% endfor %}
           </select>
         </label>
       </div>

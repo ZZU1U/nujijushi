@@ -193,3 +193,12 @@ fn a_name_that_is_the_handle_is_not_printed_twice() {
     assert!(rendered.starts_with("<b>asobinin</b>"), "{rendered}");
     assert!(!rendered.contains("(@asobinin)"), "{rendered}");
 }
+
+#[test]
+fn compact_and_detailed_presets() {
+    let mut channel = Channel::new("night shift", "@night_shift");
+    channel.template_name = "compact".into();
+    insta::assert_snapshot!("compact_caption", render(&channel, &post(), false, false));
+    channel.template_name = "detailed".into();
+    insta::assert_snapshot!("detailed_caption", render(&channel, &post(), false, false));
+}

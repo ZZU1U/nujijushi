@@ -1,0 +1,8 @@
+---
+source: tests/captions.rs
+expression: "render(&channel, &post(), false, false)"
+---
+<b>Quiet harbour</b>
+Nightjar
+#original #landscape #digital_art #harbour
+via <a href="https://www.pixiv.net/artworks/123456">Pixiv</a>

@@ -55,7 +55,7 @@
     </label>
     <label>caption template
       <select name="template_name">
-        {% for t in templates %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+        {% for t in templates %}<option value="{{ t }}">{{ t | capitalize }}</option>{% endfor %}
       </select>
     </label>
     <label class="check"><input type="checkbox" name="enabled"> enable scheduled publishing now</label>
