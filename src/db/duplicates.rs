@@ -158,15 +158,47 @@ fn insert_matches(
 
 pub const PAGE_SIZE: i64 = 20;
 
+// Hidden panels are no longer in the visual index. Equal blob hashes still
+// provide exact evidence, including when both posts have merged the same panel.
+const RETAINED_EXACT_MATCHES: &str = "
+    WITH hidden AS NOT MATERIALIZED (
+        SELECT s.post_id, s.ordinal, s.blob_hash FROM media_merge_sources s
+        WHERE EXISTS (
+            SELECT 1 FROM media_merges m WHERE m.post_id = s.post_id
+            AND s.ordinal BETWEEN m.first_ordinal AND m.last_ordinal
+        )
+    ), source_matches AS (
+        SELECT s.post_id AS first_id, m.post_id AS second_id,
+               s.ordinal AS first_position, m.ordinal AS second_position, s.blob_hash
+        FROM hidden s JOIN media m USING (blob_hash) WHERE s.post_id <> m.post_id
+        UNION ALL
+        SELECT s.post_id, t.post_id, s.ordinal, t.ordinal, s.blob_hash
+        FROM hidden s JOIN hidden t USING (blob_hash) WHERE s.post_id < t.post_id
+    ), retained AS (
+        SELECT MIN(first_id, second_id) AS left_post_id, MAX(first_id, second_id) AS right_post_id,
+               CASE WHEN first_id < second_id THEN first_position ELSE second_position END AS left_ordinal,
+               CASE WHEN first_id < second_id THEN second_position ELSE first_position END AS right_ordinal,
+               blob_hash
+        FROM source_matches s
+        JOIN posts a ON a.id = s.first_id JOIN posts b ON b.id = s.second_id
+        WHERE a.source <> b.source
+    )
+";
+
 pub fn pairs(conn: &Connection, offset: i64) -> Result<Vec<(i64, i64)>> {
-    let mut stmt = conn.prepare(
-        "SELECT m.left_post_id, m.right_post_id FROM duplicate_matches m
+    let mut stmt = conn.prepare(&format!(
+        "{RETAINED_EXACT_MATCHES}
+         SELECT m.left_post_id, m.right_post_id FROM (
+             SELECT left_post_id, right_post_id, distance FROM duplicate_matches
+             UNION ALL
+             SELECT left_post_id, right_post_id, 0 FROM retained
+         ) m
          WHERE NOT EXISTS (SELECT 1 FROM duplicate_dismissals d
                WHERE d.left_post_id = m.left_post_id AND d.right_post_id = m.right_post_id)
          GROUP BY m.left_post_id, m.right_post_id
          ORDER BY MIN(m.distance), m.right_post_id DESC, m.left_post_id DESC
          LIMIT ?1 OFFSET ?2",
-    )?;
+    ))?;
     Ok(stmt
         .query_map(params![PAGE_SIZE + 1, offset], |row| {
             Ok((row.get(0)?, row.get(1)?))
@@ -184,13 +216,18 @@ pub struct Evidence {
 }
 
 pub fn evidence(conn: &Connection, left: i64, right: i64) -> Result<Vec<Evidence>> {
-    let mut stmt = conn.prepare(
-        "SELECT a.blob_hash, b.blob_hash, a.ordinal, b.ordinal, m.distance
+    let mut stmt = conn.prepare(&format!(
+        "{RETAINED_EXACT_MATCHES}
+         SELECT a.blob_hash, b.blob_hash, a.ordinal AS left_ordinal,
+                b.ordinal AS right_ordinal, m.distance AS distance
          FROM duplicate_matches m JOIN media a ON a.id = m.left_media_id
          JOIN media b ON b.id = m.right_media_id
          WHERE m.left_post_id = ?1 AND m.right_post_id = ?2
-         ORDER BY m.distance, a.ordinal, b.ordinal",
-    )?;
+         UNION
+         SELECT blob_hash, blob_hash, left_ordinal, right_ordinal, 0
+         FROM retained WHERE left_post_id = ?1 AND right_post_id = ?2
+         ORDER BY distance, left_ordinal, right_ordinal",
+    ))?;
     Ok(stmt
         .query_map(params![left, right], |row| {
             Ok(Evidence {
@@ -208,11 +245,16 @@ pub fn dismiss(conn: &Connection, first: i64, second: i64) -> Result<bool> {
     let (left, right) = (first.min(second), first.max(second));
     Ok(conn
         .query_row(
-            "INSERT INTO duplicate_dismissals (left_post_id, right_post_id)
+            &format!(
+                "{RETAINED_EXACT_MATCHES}
+            INSERT INTO duplicate_dismissals (left_post_id, right_post_id)
          SELECT ?1, ?2 WHERE EXISTS (
              SELECT 1 FROM duplicate_matches WHERE left_post_id = ?1 AND right_post_id = ?2
+             UNION ALL
+             SELECT 1 FROM retained WHERE left_post_id = ?1 AND right_post_id = ?2
          )
-         ON CONFLICT (left_post_id, right_post_id) DO NOTHING RETURNING 1",
+         ON CONFLICT (left_post_id, right_post_id) DO NOTHING RETURNING 1"
+            ),
             params![left, right],
             |row| row.get::<_, i64>(0),
         )

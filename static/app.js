@@ -220,6 +220,7 @@
 
     if (wasLive && !isLive(job.state)) {
       setText(row.querySelector('[data-tag-refresh]'), job.state === 'done' ? 'Review suggestions' : 'See details');
+      setText(row.querySelector('[data-merge-refresh]'), job.state === 'done' ? 'See merged gallery' : 'See details');
       const label = job.kind_label || job.kind;
       const detail = job.message ? ' — ' + job.message : '';
       toast(label + ' #' + job.id + ' ' + job.state + detail, job.state === 'done' ? 'ok' : 'fail');
@@ -235,6 +236,8 @@
     watchJobs.forEach((job) => byId.set(String(job.id), job));
     const tagJob = status && status.tag_suggestion_job;
     if (tagJob) byId.set(String(tagJob.id), tagJob);
+    const mergeJob = status && status.media_merge_job;
+    if (mergeJob) byId.set(String(mergeJob.id), mergeJob);
     let live = false;
 
     all('[data-job]').forEach((row) => {
@@ -278,7 +281,11 @@
     if (typeof window.fetch !== 'function') return;
     if (!document.querySelector('[data-job], [data-channel], [data-queue], [data-duplicates-indexing]')) return;
     const tagReview = document.querySelector('[data-tag-review]');
-    const statusUrl = tagReview ? '/api/status?tag_post=' + encodeURIComponent(tagReview.dataset.tagReview) : '/api/status';
+    const merge = document.querySelector('[data-merge-post]');
+    const params = new URLSearchParams();
+    if (tagReview) params.set('tag_post', tagReview.dataset.tagReview);
+    if (merge) params.set('merge_post', merge.dataset.mergePost);
+    const statusUrl = '/api/status' + (params.toString() ? '?' + params.toString() : '');
 
     let timer = null;
     let quietPolls = 0;

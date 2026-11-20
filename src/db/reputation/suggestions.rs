@@ -188,9 +188,13 @@ fn matching_posts(
     if let Some(key) = key {
         let hash = key.split(',').next().unwrap_or_default();
         let mut stmt = conn.prepare(
-            "SELECT DISTINCT m.post_id FROM media m WHERE m.blob_hash = ?1 AND ?2 = (
+            "SELECT m.post_id FROM media m WHERE m.blob_hash = ?1 AND ?2 = (
                  SELECT group_concat(blob_hash, ',' ORDER BY blob_hash) FROM media WHERE post_id = m.post_id
-             ) ORDER BY m.post_id",
+             )
+             UNION
+             SELECT s.post_id FROM media_merge_sources s WHERE s.blob_hash = ?1 AND ?2 = (
+                 SELECT group_concat(blob_hash, ',' ORDER BY blob_hash) FROM media_merge_sources WHERE post_id = s.post_id
+             ) ORDER BY 1",
         )?;
         for id in stmt.query_map(params![hash, key], |row| row.get(0))? {
             let id = id?;

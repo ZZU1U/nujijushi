@@ -134,6 +134,8 @@ Click a post card to select it, or click its post number to open it. **Select al
 
 The post detail page shows whether a tag came from the source, a manual edit, or both. Removing a source tag keeps it hidden on that post after re-import. Undo restores it if the most recent import still supplied it. Edit manual tags in the separate **Save tags** form.
 
+Select consecutive still images of the same height and choose **Merge side by side** to replace them with a single PNG. Watch the job on the post page and refresh the gallery when it finishes. **Undo merge** restores its source panels. Re-importing the same panels in the same order keeps the merge. A changed source gallery replaces the edited gallery. The active gallery is used by new previews and deliveries. Completed mirrors and Telegram messages are delivery snapshots.
+
 `GET /metrics` answers in the Prometheus text format (posts by state and nsfw, channels by
 enabled, queue depth per channel/state, import jobs, storage mirrors). It sits outside the
 cookie gate because a scraper has no session and the document carries counts only — bind the

@@ -14,9 +14,40 @@
         <a href="/media/{{ m.hash }}" target="_blank"><img loading="lazy" src="/media/{{ m.hash }}" alt=""></a>
         {% endif %}
         <figcaption class="hint">{{ m.ext }} {{ m.width }}×{{ m.height }} · {{ m.kib }} KiB</figcaption>
+        {% if m.can_select and not merge_job.active %}
+        <label class="hint">
+          <input type="checkbox" name="sel_{{ m.id }}" value="on" form="merge-gallery">
+          Select image {{ loop.index }}
+        </label>
+        {% endif %}
+        {% if m.undo_id %}
+        <form method="post" action="/posts/{{ post.id }}/media" class="inline">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="gallery_version" value="{{ gallery_version }}">
+          <input type="hidden" name="merge_id" value="{{ m.undo_id }}">
+          <button type="submit" name="action" value="undo" class="small ghost">Undo merge</button>
+        </form>
+        {% endif %}
       </figure>
       {% endfor %}
     </div>
+
+    {% if can_merge and not merge_job.active %}
+    <form method="post" action="/posts/{{ post.id }}/media" id="merge-gallery">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="gallery_version" value="{{ gallery_version }}">
+      <button type="submit" name="action" value="merge">Merge side by side</button>
+      <span class="hint">Select consecutive images of the same height.</span>
+    </form>
+    {% endif %}
+    {% if merge_job %}
+    <p class="hint" aria-live="polite" {% if merge_job.active %}data-job="{{ merge_job.id }}" data-state="{{ merge_job.state }}" data-merge-post="{{ post.id }}"{% endif %}>
+      <span class="badge" data-role="state">{{ merge_job.state }}</span>
+      {% if merge_job.total %}<span data-role="counts">{{ merge_job.progress }}/{{ merge_job.total }}</span>{% endif %}
+      <span data-role="message">{{ merge_job.message }}</span>
+      {% if merge_job.active %}<a data-merge-refresh href="/posts/{{ post.id }}">Refresh gallery</a>{% endif %}
+    </p>
+    {% endif %}
 
     <dl class="facts">
       <dt>artist</dt><dd>{% if post.artist_url %}<a href="{{ post.artist_url }}" target="_blank">{{ post.artist }}</a>{% else %}{{ post.artist }}{% endif %}</dd>

@@ -13,7 +13,11 @@ const QUICK_KINDS: &[&str] = &[
     crate::jobs::KIND_PUBLISH_ITEM,
     crate::jobs::KIND_STORAGE_DRAIN,
 ];
-const IMPORT_KINDS: &[&str] = &[crate::jobs::KIND_IMPORT, crate::jobs::KIND_WATCH_CHECK];
+const IMPORT_KINDS: &[&str] = &[
+    crate::jobs::KIND_IMPORT,
+    crate::jobs::KIND_WATCH_CHECK,
+    crate::jobs::KIND_MERGE_MEDIA,
+];
 const TAG_SUGGESTIONS_LOCK: &str = "suggest-tags.lock";
 const QUICK_JOBS: i64 = 4;
 const POLL_INTERVAL: Duration = Duration::from_secs(2);

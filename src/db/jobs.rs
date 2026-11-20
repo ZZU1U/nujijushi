@@ -77,6 +77,19 @@ pub fn set_state(conn: &Connection, id: i64, state: &str, message: Option<&str>)
     Ok(())
 }
 
+pub fn label_running(conn: &Connection, id: i64, message: &str) -> Result<()> {
+    let changed = conn.execute(
+        "UPDATE jobs SET message = ?2, updated_at = ?3 WHERE id = ?1 AND state = 'running'",
+        params![id, message, fmt_ts(Utc::now())],
+    )?;
+    if changed == 0 {
+        return Err(crate::error::Error::invalid(
+            "This merge was interrupted. Select the panels again.",
+        ));
+    }
+    Ok(())
+}
+
 pub fn progress(conn: &Connection, id: i64, done: i64, total: i64) -> Result<()> {
     conn.execute(
         "UPDATE jobs SET progress = ?1, total = ?2, updated_at = ?3 WHERE id = ?4",

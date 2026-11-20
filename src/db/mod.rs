@@ -3,6 +3,7 @@
 pub mod channels;
 pub mod duplicates;
 pub mod jobs;
+pub mod media_merges;
 pub mod migrate;
 pub mod mirrors;
 pub mod posts;

@@ -3,6 +3,7 @@
 pub mod auth;
 mod curation;
 pub mod forms;
+mod media_merges;
 pub mod routes;
 mod tag_suggestions;
 pub mod views;

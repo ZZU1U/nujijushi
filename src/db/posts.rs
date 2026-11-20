@@ -10,7 +10,7 @@ use crate::source::NormalizedPost;
 
 use super::{fmt_ts, get_bool, get_ts, get_ts_required, tags};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewMedia {
     pub blob_hash: String,
     pub ext: String,
@@ -24,6 +24,23 @@ pub struct NewMedia {
     pub sensitive: bool,
     /// This item's own extractor metadata (JSON), when the source wrote one.
     pub meta_json: Option<String>,
+}
+
+impl From<&MediaItem> for NewMedia {
+    fn from(item: &MediaItem) -> Self {
+        Self {
+            blob_hash: item.blob_hash.clone(),
+            ext: item.ext.clone(),
+            mime: item.mime.clone(),
+            width: item.width,
+            height: item.height,
+            bytes: item.bytes,
+            is_video: item.is_video,
+            poster_hash: item.poster_hash.clone(),
+            sensitive: item.sensitive,
+            meta_json: item.meta_json.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -120,7 +137,10 @@ pub fn upsert(
     np: &NormalizedPost,
     media: &[NewMedia],
 ) -> Result<(i64, bool)> {
-    super::transaction(conn, |conn| upsert_post(conn, np, media))
+    super::transaction(conn, |conn| {
+        let (id, created, _) = upsert_post(conn, np, media)?;
+        Ok((id, created))
+    })
 }
 
 #[derive(Debug)]
@@ -128,6 +148,7 @@ pub struct StoredImport {
     pub post_id: Option<i64>,
     pub created: bool,
     pub suggestion: Option<super::reputation::Suggestion>,
+    pub merges_reset: bool,
 }
 
 /// Apply archive changes and import-time curation in the same commit. Watched
@@ -148,6 +169,7 @@ pub fn store_import(
             post_id: Some(id),
             created: false,
             suggestion: None,
+            merges_reset: false,
         });
     }
     let guest = match submitted_by {
@@ -170,9 +192,10 @@ pub fn store_import(
             post_id: matched.post_id,
             created: false,
             suggestion: Some(matched.status),
+            merges_reset: false,
         });
     }
-    let (id, created) = upsert_post(&tx, post, media)?;
+    let (id, created, merges_reset) = upsert_post(&tx, post, media)?;
     if created {
         tx.execute(
             "UPDATE posts SET operator_import = ?1 WHERE id = ?2",
@@ -208,10 +231,15 @@ pub fn store_import(
         post_id: Some(id),
         created,
         suggestion,
+        merges_reset,
     })
 }
 
-fn upsert_post(conn: &Connection, np: &NormalizedPost, media: &[NewMedia]) -> Result<(i64, bool)> {
+fn upsert_post(
+    conn: &Connection,
+    np: &NormalizedPost,
+    media: &[NewMedia],
+) -> Result<(i64, bool, bool)> {
     let now = Utc::now();
     let author_id = match &np.author {
         Some(author) => Some(upsert_author(conn, &np.source, author, now)?),
@@ -274,23 +302,27 @@ fn upsert_post(conn: &Connection, np: &NormalizedPost, media: &[NewMedia]) -> Re
 
     tags::refresh_source(conn, post_id, &np.tags)?;
 
-    if !media.is_empty() {
-        conn.execute("DELETE FROM media WHERE post_id = ?1", [post_id])?;
-        for (ordinal, item) in media.iter().enumerate() {
-            // self-heal the blob catalogue: media rows are FK-bound to it
-            conn.execute(
-                "INSERT INTO blobs (hash, ext, bytes, created_at) VALUES (?1, ?2, ?3, ?4)
+    let merges_reset = !media.is_empty() && super::media_merges::refresh(conn, post_id, media)?;
+    Ok((post_id, existing.is_none(), merges_reset))
+}
+
+pub(super) fn replace_media(conn: &Connection, post_id: i64, media: &[NewMedia]) -> Result<()> {
+    conn.execute("DELETE FROM media WHERE post_id = ?1", [post_id])?;
+    for (ordinal, item) in media.iter().enumerate() {
+        // self-heal the blob catalogue: media rows are FK-bound to it
+        conn.execute(
+            "INSERT INTO blobs (hash, ext, bytes, created_at) VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT (hash) DO NOTHING",
-                params![item.blob_hash, item.ext, item.bytes, fmt_ts(Utc::now())],
-            )?;
-            if let Some(poster) = &item.poster_hash {
-                conn.execute(
-                    "INSERT INTO blobs (hash, ext, bytes, created_at) VALUES (?1, 'jpg', 0, ?2)
-                     ON CONFLICT (hash) DO NOTHING",
-                    params![poster, fmt_ts(Utc::now())],
-                )?;
-            }
+            params![item.blob_hash, item.ext, item.bytes, fmt_ts(Utc::now())],
+        )?;
+        if let Some(poster) = &item.poster_hash {
             conn.execute(
+                "INSERT INTO blobs (hash, ext, bytes, created_at) VALUES (?1, 'jpg', 0, ?2)
+                     ON CONFLICT (hash) DO NOTHING",
+                params![poster, fmt_ts(Utc::now())],
+            )?;
+        }
+        conn.execute(
                 "INSERT INTO media (post_id, ordinal, blob_hash, mime, width, height, is_video, poster_hash, sensitive, meta_json)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
@@ -306,10 +338,8 @@ fn upsert_post(conn: &Connection, np: &NormalizedPost, media: &[NewMedia]) -> Re
                     item.meta_json
                 ],
             )?;
-        }
     }
-
-    Ok((post_id, existing.is_none()))
+    Ok(())
 }
 
 fn upsert_author(
@@ -350,17 +380,20 @@ pub fn get(conn: &Connection, id: i64) -> Result<Post> {
 
     post.tags = tags::for_post(conn, id)?;
 
+    post.media = media(conn, id)?;
+    Ok(post)
+}
+
+pub(super) fn media(conn: &Connection, id: i64) -> Result<Vec<MediaItem>> {
     let mut stmt = conn.prepare(
         "SELECT m.id, m.post_id, m.ordinal, m.blob_hash, m.mime, m.width, m.height, m.is_video,
                 m.poster_hash, m.sensitive, m.meta_json, b.ext, b.bytes
          FROM media m JOIN blobs b ON b.hash = m.blob_hash
          WHERE m.post_id = ?1 ORDER BY m.ordinal",
     )?;
-    let rows = stmt.query_map([id], media_from_row)?;
-    for row in rows {
-        post.media.push(row?);
-    }
-    Ok(post)
+    Ok(stmt
+        .query_map([id], media_from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 pub fn find_by_source_id(conn: &Connection, source: &str, source_id: &str) -> Result<Option<i64>> {

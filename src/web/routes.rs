@@ -60,6 +60,7 @@ pub fn router(ws: Arc<WebState>) -> Router {
         .route("/posts", get(posts_page).post(posts_bulk))
         .route("/posts/{id}", get(post_page).post(post_update))
         .route("/posts/{id}/tags", post(post_tag_action))
+        .route("/posts/{id}/media", post(super::media_merges::action))
         .route(
             "/posts/{id}/tag-suggestions",
             post(super::tag_suggestions::action),
@@ -688,7 +689,7 @@ async fn post_page(
 ) -> WebResult<Html<String>> {
     let app = &ws.app;
     let suggestions_enabled = app.cfg.tag_suggestions.enabled;
-    let (post, tags, removals, tag_review) = app
+    let (post, tags, removals, tag_review, merge_undo, merge_job) = app
         .db
         .call(move |conn| {
             let post = post_db::get(conn, id)?;
@@ -702,6 +703,8 @@ async fn post_page(
                 tag_db::provenance(conn, id)?,
                 tag_db::removals(conn, id)?,
                 tag_review,
+                crate::db::media_merges::undo_ids(conn, id)?,
+                crate::db::media_merges::latest_job(conn, id)?,
             ))
         })
         .await?;
@@ -765,11 +768,18 @@ async fn post_page(
         captions.push(preview);
     }
 
+    let merge_undo: std::collections::HashMap<_, _> = merge_undo.into_iter().collect();
+    let can_merge = post
+        .media
+        .windows(2)
+        .any(|items| items.iter().all(crate::media::merge::supports));
     let media: Vec<Value> = post
         .media
         .iter()
-        .map(|item| {
+        .enumerate()
+        .map(|(position, item)| {
             json!({
+                "id": item.id,
                 "hash": item.blob_hash,
                 "thumb": item.poster_hash.clone().unwrap_or_else(|| item.blob_hash.clone()),
                 "ext": item.ext,
@@ -777,6 +787,8 @@ async fn post_page(
                 "width": item.width,
                 "height": item.height,
                 "kib": (item.bytes as f64 / 1024.0).round(),
+                "can_select": can_merge && crate::media::merge::supports(item),
+                "undo_id": merge_undo.get(&position),
             })
         })
         .collect();
@@ -819,6 +831,9 @@ async fn post_page(
             })),
             "media_total": media_total,
             "media": media,
+            "can_merge": can_merge,
+            "merge_job": merge_job.as_ref().map(|job| job_view(job, now)),
+            "gallery_version": crate::db::media_merges::gallery_version(&post.media),
             "tag_review": tag_review,
             "can_suggest_tags": suggestions_enabled && post.media.iter().any(|media| !media.is_video),
             "captions": captions,
@@ -1436,7 +1451,11 @@ pub fn job_view(job: &job_db::Job, now: chrono::DateTime<chrono::Utc>) -> Value 
         "kind_label": kind_label(&job.kind),
         "watch_id": (job.kind == crate::jobs::KIND_WATCH_CHECK)
             .then(|| job.payload.as_deref()?.parse::<i64>().ok()).flatten(),
-        "payload": job.payload,
+        "payload": if job.kind == crate::jobs::KIND_MERGE_MEDIA {
+            job.post_id.map(|id| format!("post #{id}"))
+        } else {
+            job.payload.clone()
+        },
         "state": job.state,
         "progress": job.progress,
         "total": job.total,
@@ -1463,6 +1482,7 @@ fn kind_label(kind: &str) -> &str {
         crate::jobs::KIND_STORAGE_DRAIN => "storage upload",
         crate::jobs::KIND_WATCH_CHECK => "watch check",
         crate::jobs::KIND_TAG_SUGGESTIONS => "suggest tags",
+        crate::jobs::KIND_MERGE_MEDIA => "merge images",
         other => other,
     }
 }
@@ -1538,6 +1558,7 @@ async fn jobs_retry(
 #[derive(serde::Deserialize)]
 struct StatusQuery {
     tag_post: Option<i64>,
+    merge_post: Option<i64>,
 }
 
 async fn api_status(
@@ -1554,6 +1575,15 @@ async fn api_status(
             .call(move |conn| crate::db::tag_suggestions::latest_job(conn, post_id))
             .await?;
         payload["tag_suggestion_job"] =
+            json!(job.as_ref().map(|job| job_view(job, chrono::Utc::now())));
+    }
+    if let Some(post_id) = query.merge_post {
+        let job = ws
+            .app
+            .db
+            .call(move |conn| crate::db::media_merges::latest_job(conn, post_id))
+            .await?;
+        payload["media_merge_job"] =
             json!(job.as_ref().map(|job| job_view(job, chrono::Utc::now())));
     }
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(payload)).into_response())

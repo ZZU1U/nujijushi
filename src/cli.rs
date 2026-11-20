@@ -2439,16 +2439,7 @@ fn cmd_gc(cfg: Config, dry_run: bool) -> Result<()> {
     let db = crate::db::Db::open(cfg.db_path())?;
     let store = crate::blob::BlobStore::new(cfg.blobs_dir(), cfg.thumbs_dir())?;
     if dry_run {
-        let (blobs, bytes) = db.with(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT COUNT(*), COALESCE(SUM(bytes), 0) FROM blobs b
-                 WHERE NOT EXISTS (SELECT 1 FROM media m WHERE m.blob_hash = b.hash)
-                   AND NOT EXISTS (SELECT 1 FROM media m WHERE m.poster_hash = b.hash)",
-            )?;
-            let row =
-                stmt.query_row([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?;
-            Ok(row)
-        })?;
+        let (blobs, bytes) = db.with(|conn| crate::db::media_merges::orphan_blob_totals(conn))?;
         println!(
             "would delete {blobs} unreferenced blob(s), {:.1} MiB (dry run)",
             bytes as f64 / 1_048_576.0

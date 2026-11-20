@@ -116,9 +116,7 @@ impl BlobStore {
                 std::fs::create_dir_all(parent)?;
             }
             // write atomically so a crash never leaves a truncated blob
-            let tmp = dest.with_extension(format!("{ext}.part"));
-            std::fs::write(&tmp, bytes)?;
-            std::fs::rename(&tmp, &dest)?;
+            write_atomically(&dest, |tmp| Ok(std::fs::write(tmp, bytes)?))?;
         }
 
         let is_video = is_video_ext(&ext);
@@ -145,21 +143,21 @@ impl BlobStore {
         if dest.exists() {
             return Ok(Some(dest));
         }
-        let img = match image::load_from_memory(bytes) {
-            Ok(img) => img,
-            Err(_) => return Ok(None),
-        };
-        let thumb = img.thumbnail(size, size);
+        encode_thumbnail(bytes, size)?
+            .map(|bytes| self.write_thumb_bytes(hash, &bytes))
+            .transpose()
+    }
+
+    pub(crate) fn write_thumb_bytes(&self, hash: &str, bytes: &[u8]) -> Result<PathBuf> {
+        let dest = self.thumb_path(hash);
+        if dest.exists() {
+            return Ok(dest);
+        }
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let tmp = dest.with_extension("webp.part");
-        thumb
-            .to_rgb8()
-            .save_with_format(&tmp, image::ImageFormat::WebP)
-            .map_err(|e| Error::other(format!("webp encode failed: {e}")))?;
-        std::fs::rename(&tmp, &dest)?;
-        Ok(Some(dest))
+        write_atomically(&dest, |tmp| Ok(std::fs::write(tmp, bytes)?))?;
+        Ok(dest)
     }
 
     /// Register a blob row (idempotent).
@@ -185,20 +183,11 @@ impl BlobStore {
     pub fn gc(&self, conn: &Connection) -> Result<GcReport> {
         let mut report = GcReport::default();
 
-        // blob rows with no media referencing them
-        let orphans: Vec<(String, String, i64)> = {
-            let mut stmt = conn.prepare(
-                "SELECT b.hash, b.ext, b.bytes FROM blobs b
-                 WHERE NOT EXISTS (SELECT 1 FROM media m WHERE m.blob_hash = b.hash)
-                   AND NOT EXISTS (SELECT 1 FROM media m WHERE m.poster_hash = b.hash)",
-            )?;
-            let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
-            let mut out = Vec::new();
-            for row in rows {
-                out.push(row?);
-            }
-            out
-        };
+        // Hold the write lock from the reference check through unlinking so a
+        // media commit cannot concurrently attach a blob selected for cleanup.
+        let tx =
+            rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+        let orphans = crate::db::media_merges::orphan_blobs(&tx)?;
         for (hash, ext, bytes) in orphans {
             let path = self.path_for(&hash, &ext);
             if path.exists() && std::fs::remove_file(&path).is_ok() {
@@ -209,7 +198,7 @@ impl BlobStore {
             if thumb.exists() && std::fs::remove_file(&thumb).is_ok() {
                 report.removed_thumbs += 1;
             }
-            conn.execute("DELETE FROM blobs WHERE hash = ?1", [hash])?;
+            tx.execute("DELETE FROM blobs WHERE hash = ?1", [hash])?;
         }
 
         // thumbnails whose blob is gone
@@ -223,7 +212,7 @@ impl BlobStore {
                 let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
                     continue;
                 };
-                let exists: bool = conn.query_row(
+                let exists: bool = tx.query_row(
                     "SELECT EXISTS(SELECT 1 FROM blobs WHERE hash = ?1)",
                     [stem],
                     |row| row.get(0),
@@ -233,6 +222,7 @@ impl BlobStore {
                 }
             }
         }
+        tx.commit()?;
         Ok(report)
     }
 
@@ -260,6 +250,27 @@ fn dir_size(dir: &Path) -> u64 {
             }
         })
         .sum()
+}
+
+pub(crate) fn encode_thumbnail(bytes: &[u8], size: u32) -> Result<Option<Vec<u8>>> {
+    let Ok(image) = image::load_from_memory(bytes) else {
+        return Ok(None);
+    };
+    let mut out = Cursor::new(Vec::new());
+    image
+        .thumbnail(size, size)
+        .to_rgb8()
+        .write_to(&mut out, image::ImageFormat::WebP)?;
+    Ok(Some(out.into_inner()))
+}
+
+fn write_atomically(dest: &Path, write: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
+    let tmp = dest.with_extension(format!("{}.part", uuid::Uuid::new_v4()));
+    let result = write(&tmp).and_then(|()| Ok(std::fs::rename(&tmp, dest)?));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 pub fn probe_dimensions(bytes: &[u8]) -> Option<(Option<u32>, Option<u32>)> {
