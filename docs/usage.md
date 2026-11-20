@@ -106,6 +106,8 @@ carries the bare word. `author.mention` is the `@handle` form, for a template th
 wants to ping someone.
 
 Filters: `truncate_words(n)`, `hashtags`, `tag_links(base)`, `one_line`.
+
+Generated Telegram hashtags turn punctuation such as brackets into word boundaries. For example, `character_name_(franchise_name)` becomes `#character_name_franchise_name`. Use the `hashtags` template filter for the same formatting in custom captions.
 Autoescaping is on — `{{ source_link }}` is the only pre-built HTML.
 
 Per-channel options: `--tag-style hashtags|plain|none`, `--max-tags N`,
@@ -131,6 +133,8 @@ next-slots preview · import box with job progress · **jobs** (every action, li
 **users** (roles, quotas, ban/promote).
 
 Click a post card to select it, or click its post number to open it. **Select all on page** selects the visible page of results for bulk actions.
+
+On the post page, open **Edit post details** to change the title or description. A blank field clears its text. Edits survive re-imports, and future captions use the saved text wherever the channel template includes it.
 
 The post detail page shows whether a tag came from the source, a manual edit, or both. Removing a source tag keeps it hidden on that post after re-import. Undo restores it if the most recent import still supplied it. Edit manual tags in the separate **Save tags** form.
 

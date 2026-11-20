@@ -258,7 +258,9 @@ fn upsert_post(
         Some(id) => {
             conn.execute(
                 "UPDATE posts SET url = COALESCE(?1, url), author_id = COALESCE(?2, author_id),
-                    title = COALESCE(?3, title), description = COALESCE(?4, description),
+                    title = CASE WHEN title_edited = 0 THEN COALESCE(?3, title) ELSE title END,
+                    description = CASE WHEN description_edited = 0
+                        THEN COALESCE(?4, description) ELSE description END,
                     rating = ?5, posted_at = COALESCE(?6, posted_at), updated_at = ?7,
                     raw_json = COALESCE(?8, raw_json), notes = COALESCE(?10, notes)
                  WHERE id = ?9",
@@ -660,6 +662,33 @@ pub fn set_notes(conn: &Connection, id: i64, notes: Option<&str>) -> Result<()> 
         "UPDATE posts SET notes = ?1, updated_at = ?2 WHERE id = ?3",
         params![notes, fmt_ts(Utc::now()), id],
     )?;
+    Ok(())
+}
+
+/// An omitted field stays as it was. A submitted empty field clears its text.
+pub fn edit_text(
+    conn: &Connection,
+    id: i64,
+    title: Option<&str>,
+    description: Option<&str>,
+) -> Result<()> {
+    let title = title.map(str::trim);
+    let description = description.map(|text| text.replace("\r\n", "\n").replace('\r', "\n"));
+    let description = description.as_deref().map(str::trim);
+    let updated = conn.execute(
+        "UPDATE posts SET
+            title_edited = title_edited OR (?1 IS NOT NULL AND title IS NOT NULLIF(?1, '')),
+            description_edited = description_edited
+                OR (?2 IS NOT NULL AND description IS NOT NULLIF(?2, '')),
+            title = CASE WHEN ?1 IS NULL THEN title ELSE NULLIF(?1, '') END,
+            description = CASE WHEN ?2 IS NULL THEN description ELSE NULLIF(?2, '') END,
+            updated_at = ?3
+         WHERE id = ?4",
+        params![title, description, fmt_ts(Utc::now()), id],
+    )?;
+    if updated == 0 {
+        return Err(Error::NotFound(format!("post {id}")));
+    }
     Ok(())
 }
 

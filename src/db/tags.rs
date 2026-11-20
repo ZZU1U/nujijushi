@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::error::Result;
 use crate::model::TagRuleAction;
 
-/// Telegram-hashtag-safe canonical form: lowercase, trimmed, spaces to `_`.
+/// Canonical archive tag form: lowercase, trimmed, spaces to `_`.
 pub fn normalize(raw: &str) -> Option<String> {
     let cleaned: String = raw
         .trim()

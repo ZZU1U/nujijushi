@@ -22,6 +22,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0015_media_merges.sql"),
     include_str!("../../migrations/0016_media_compressions.sql"),
     include_str!("../../migrations/0017_tagger_character_names.sql"),
+    include_str!("../../migrations/0018_post_text_edits.sql"),
 ];
 
 pub fn schema_version(conn: &Connection) -> Result<i64> {
@@ -137,6 +138,15 @@ mod tests {
                 && media_columns.iter().any(|column| column == "meta_json"),
             "media.sensitive / media.meta_json are missing: {media_columns:?}"
         );
+        let edit_columns: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('posts')
+                 WHERE name IN ('title_edited', 'description_edited')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(edit_columns, 2);
     }
 
     #[test]

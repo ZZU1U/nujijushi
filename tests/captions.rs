@@ -116,6 +116,35 @@ fn forty_tags_are_capped_and_hashtagged() {
 }
 
 #[test]
+fn generated_hashtags_keep_character_and_franchise_in_one_link() {
+    let mut channel = Channel::new("tagged", "@tagged");
+    let mut post = post();
+    post.author = None;
+    post.description = None;
+    post.url = None;
+    post.tags = [
+        "character_name_(franchise_name)",
+        "character_name_franchise_name",
+        "fate/stay night",
+        "初音ミク",
+        "第٢章",
+        "2026",
+        "(?)",
+    ]
+    .map(String::from)
+    .into();
+    let default = render(&channel, &post, false, false);
+    insta::assert_snapshot!("telegram_hashtag_variants", default);
+
+    channel.template = Some("{{ tags | hashtags }}".into());
+    assert_eq!(render(&channel, &post, false, false), default);
+
+    channel.tag_style = TagStyle::Plain;
+    channel.template = Some("{{ hashtags }}".into());
+    assert!(render(&channel, &post, false, false).contains("character_name_(franchise_name)"));
+}
+
+#[test]
 fn very_long_description_is_clipped_to_the_limit() {
     let channel = Channel::new("long", "@long");
     let mut post = post();

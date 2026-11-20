@@ -95,6 +95,10 @@ where
 #[derive(Debug, Deserialize)]
 pub struct PostEdit {
     #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
     pub rating: Option<String>,
     /// auto | yes | no
     #[serde(default)]

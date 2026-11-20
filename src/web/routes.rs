@@ -875,6 +875,9 @@ async fn post_update(
     app.db
         .call(move |conn| {
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            if form.title.is_some() || form.description.is_some() {
+                post_db::edit_text(&tx, id, form.title.as_deref(), form.description.as_deref())?;
+            }
             if let Some(state) = state {
                 let changed = post_db::get(&tx, id)?.state != state;
                 if changed || form.approval_points.is_some() {

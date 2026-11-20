@@ -26,11 +26,7 @@ fn escape(text: &str) -> String {
 /// Render the tag block for a channel's tag style.
 pub fn tag_block(tags: &[String], style: TagStyle) -> String {
     match style {
-        TagStyle::Hashtags => tags
-            .iter()
-            .map(|t| format!("#{}", t.replace(' ', "_")))
-            .collect::<Vec<_>>()
-            .join(" "),
+        TagStyle::Hashtags => super::filters::render_hashtags(tags),
         TagStyle::Plain => tags.join(", "),
         TagStyle::None => String::new(),
     }

@@ -271,6 +271,86 @@ fn job_row(html: &str, id: i64) -> &str {
 }
 
 #[tokio::test]
+async fn post_details_can_be_edited_and_cleared_across_source_refreshes() {
+    use nujijushi::db::posts;
+
+    let h = harness();
+    h.add_channel().await;
+    let post_id = h.post_only("42").await;
+    let path = format!("/posts/{post_id}");
+    let page = body_text(h.send(h.get(&path)).await).await;
+    assert!(page.contains("Edit post details"));
+    assert!(page.contains("name=\"title\" value=\"Artwork 42\""));
+    assert!(page.contains("<textarea name=\"description\""));
+
+    let denied = h
+        .send(h.post(&path, "csrf=bad&title=Blocked&description=Blocked"))
+        .await;
+    assert_eq!(denied.status(), StatusCode::BAD_REQUEST);
+    let post = || h.state.db.with(|conn| posts::get(conn, post_id)).unwrap();
+    assert_eq!(post().title.as_deref(), Some("Artwork 42"));
+    assert!(post().description.is_none());
+
+    let form = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("csrf", &h.ws.csrf)
+        .append_pair("title", "Artwork 42")
+        .append_pair(
+            "description",
+            "A curated description & notes.\r\n\r\n</textarea><script>alert(1)</script>",
+        )
+        .finish();
+    assert_eq!(
+        h.send(h.post(&path, &form)).await.status(),
+        StatusCode::SEE_OTHER
+    );
+    let description = "A curated description & notes.\n\n</textarea><script>alert(1)</script>";
+    assert_eq!(post().description.as_deref(), Some(description));
+    let page = body_text(h.send(h.get(&path)).await).await;
+    assert!(!page.contains("<script>alert(1)</script>"));
+    let caption = page.split_once("<pre class=\"caption\">").unwrap().1;
+    assert!(
+        caption
+            .split_once("</pre>")
+            .unwrap()
+            .0
+            .contains("A curated description")
+    );
+
+    let refresh = |title: &str| {
+        let mut source = NormalizedPost::new("pixiv", "42");
+        source.title = Some(title.into());
+        source.description = Some("A fresh description from the source".into());
+        h.state
+            .db
+            .with(|conn| posts::upsert(conn, &source, &[]))
+            .unwrap()
+    };
+    assert_eq!(refresh("Refreshed source title"), (post_id, false));
+    let refreshed = post();
+    assert_eq!(refreshed.title.as_deref(), Some("Refreshed source title"));
+    assert_eq!(refreshed.description.as_deref(), Some(description));
+
+    let edit_title = format!("csrf={}&title=Curated+title", h.ws.csrf);
+    assert_eq!(
+        h.send(h.post(&path, &edit_title)).await.status(),
+        StatusCode::SEE_OTHER
+    );
+    assert_eq!(post().description.as_deref(), Some(description));
+    let clear_description = format!("csrf={}&description=+", h.ws.csrf);
+    assert_eq!(
+        h.send(h.post(&path, &clear_description)).await.status(),
+        StatusCode::SEE_OTHER
+    );
+    assert_eq!(refresh("Another source title"), (post_id, false));
+    let edited = post();
+    assert_eq!(edited.title.as_deref(), Some("Curated title"));
+    assert!(edited.description.is_none());
+    assert_eq!(edited.state, refreshed.state);
+    assert_eq!(edited.url, refreshed.url);
+    assert_eq!(edited.media, refreshed.media);
+}
+
+#[tokio::test]
 async fn post_detail_shows_tag_provenance_and_can_undo_a_source_removal() {
     use nujijushi::db::tags;
 

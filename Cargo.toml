@@ -25,6 +25,8 @@ image = { version = "0.25", default-features = false, features = [
 ] }
 minijinja = "3"
 rand = "0.9"
+# Already used by tracing-subscriber. Reuse its Unicode character classes for Telegram tags.
+regex-automata = { version = "0.4", default-features = false, features = ["meta", "syntax", "unicode-gencat"] }
 # same version teloxide-core uses, so the two unify
 reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
