@@ -362,6 +362,26 @@ pub fn from_gallery_metadata(
     post.url = first_string(meta, &["post_url", "url", "webpage_url", "tweet_url"])
         .or_else(|| fallback_url.map(|u| u.to_string()));
 
+    if source == "pixiv"
+        && !category.contains("novel")
+        && !post
+            .url
+            .as_deref()
+            .is_some_and(|url| url.contains("/novel/"))
+        && !fallback_url.is_some_and(|url| url.contains("/novel/"))
+        && !meta
+            .get("subcategory")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind.contains("novel"))
+    {
+        let artwork_id = first_string(meta, &["illust_id", "artwork_id", "id", "post_id"]);
+        if let Some(id) = artwork_id.filter(|id| {
+            id.bytes().all(|byte| byte.is_ascii_digit()) && !id.trim_start_matches('0').is_empty()
+        }) {
+            post.url = Some(format!("https://www.pixiv.net/artworks/{id}"));
+        }
+    }
+
     // `title` and `caption` overlap on several sites: never duplicate one into the other.
     post.title = first_string(meta, &["title", "subject"]).and_then(|t| tidy_description(&t));
     post.description = first_string(
@@ -593,6 +613,23 @@ mod tests {
         assert_eq!(rating_from_tags(&["nsfw".into()]), Rating::Explicit);
         assert_eq!(rating_from_tags(&["lingerie".into()]), Rating::Questionable);
         assert_eq!(rating_from_tags(&["landscape".into()]), Rating::Sfw);
+    }
+
+    #[test]
+    fn pixiv_artwork_urls_replace_image_links_on_import() {
+        let cdn = "https://i.pximg.net/img-original/123_p0.png";
+        let artwork = json!({"category":"pixiv", "id":123, "url":cdn});
+        let artwork = from_gallery_metadata(&artwork, vec![], "pixiv", Some(cdn)).unwrap();
+        assert_eq!(
+            artwork.url.as_deref(),
+            Some("https://www.pixiv.net/artworks/123")
+        );
+        let unknown = json!({"category":"pixiv", "id":"filename", "url":cdn});
+        let unknown = from_gallery_metadata(&unknown, vec![], "pixiv", None).unwrap();
+        assert_eq!(unknown.url.as_deref(), Some(cdn));
+        let novel = json!({"category":"pixiv", "subcategory":"novel", "id":123, "url":cdn});
+        let novel = from_gallery_metadata(&novel, vec![], "pixiv", None).unwrap();
+        assert_eq!(novel.url.as_deref(), Some(cdn));
     }
 
     #[test]
