@@ -30,6 +30,26 @@ pub struct PostFilter {
     pub flash: Option<String>,
 }
 
+impl PostFilter {
+    pub fn page_url(&self, page: i64) -> String {
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        for (key, value) in [
+            ("search", &self.search),
+            ("state", &self.state),
+            ("source", &self.source),
+            ("nsfw", &self.nsfw),
+            ("sent", &self.sent),
+            ("tag", &self.tag),
+        ] {
+            if let Some(value) = value.as_deref().filter(|value| !value.is_empty()) {
+                query.append_pair(key, value);
+            }
+        }
+        query.append_pair("page", &page.to_string());
+        format!("/posts?{}", query.finish())
+    }
+}
+
 /// Raw form map: checkbox lists arrive as repeated keys (`sel_<id>`).
 pub type FormMap = std::collections::HashMap<String, String>;
 

@@ -906,6 +906,82 @@ async fn the_grid_hides_sent_posts_until_asked() {
     assert!(!only.contains(&card(waiting)), "sent-only means sent only");
 }
 
+#[tokio::test]
+async fn both_pager_links_preserve_all_filters() {
+    use nujijushi::db::{posts, queue};
+
+    let h = harness();
+    let channel = h.add_channel().await;
+    let search = "sea + stars & moon?";
+    let source = "archive & studio";
+    let tag = "Night & Sky";
+    let matching = h
+        .state
+        .db
+        .with(|conn| {
+            let mut matching = Vec::new();
+            for index in 0..25 {
+                let mut post = NormalizedPost::new(source, index.to_string());
+                post.description = Some(search.into());
+                post.tags = vec![tag.into()];
+                let (id, _) = posts::upsert(conn, &post, &[])?;
+                posts::set_state(conn, id, PostState::Approved)?;
+                let queue_id = queue::enqueue_new(conn, id, channel.id, 0)?.unwrap();
+                queue::mark_sent(conn, queue_id, "7", chrono::Utc::now())?;
+                matching.push(id);
+            }
+            Ok(matching)
+        })
+        .unwrap();
+    let nonmatching = h.post_only("unrelated").await;
+    let filters = [
+        ("search", search),
+        ("state", "approved"),
+        ("source", source),
+        ("nsfw", "no"),
+        ("sent", "yes"),
+        ("tag", tag),
+    ];
+    let path = format!(
+        "/posts?{}",
+        url::form_urlencoded::Serializer::new(String::new())
+            .extend_pairs(filters)
+            .finish()
+    );
+    let link = |html: &str, rel: &str, page: &str| {
+        let href = html
+            .split_once(&format!("rel=\"{rel}\" href=\""))
+            .unwrap()
+            .1
+            .split_once('"')
+            .unwrap()
+            .0;
+        let href = htmlescape::decode_html(href).unwrap();
+        let parsed: std::collections::HashMap<_, _> =
+            url::form_urlencoded::parse(href.strip_prefix("/posts?").unwrap().as_bytes()).collect();
+        assert_eq!(parsed.len(), filters.len() + 1);
+        for (key, value) in filters {
+            assert_eq!(parsed[key], value);
+        }
+        assert_eq!(parsed["page"], page);
+        href
+    };
+
+    let first = body_text(h.send(h.get(&path)).await).await;
+    assert!(first.contains("25 post(s)"));
+    assert_eq!(first.matches("class=\"post-link\"").count(), 24);
+    let second = body_text(h.send(h.get(&link(&first, "next", "2"))).await).await;
+    assert!(second.contains("25 post(s)"));
+    assert_eq!(second.matches("class=\"post-link\"").count(), 1);
+    assert!(second.contains(&format!("href=\"/posts/{}\"", matching[0])));
+    assert!(!second.contains(&format!("href=\"/posts/{nonmatching}\"")));
+    assert!(!second.contains("rel=\"next\""));
+    let back = body_text(h.send(h.get(&link(&second, "prev", "1"))).await).await;
+    assert!(back.contains("25 post(s)"));
+    assert_eq!(back.matches("class=\"post-link\"").count(), 24);
+    assert!(!back.contains("rel=\"prev\""));
+}
+
 /// A rejected post is the curator's "no", so the grid hides it — but an explicit
 /// state filter can always ask for it back, and the count agrees with the cards.
 #[tokio::test]

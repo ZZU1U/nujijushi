@@ -91,7 +91,7 @@
 </form>
 
 <nav class="pager">
-  {% if page_no > 1 %}<a class="button small ghost" href="/posts?page={{ page_no - 1 }}">← previous</a>{% endif %}
-  {% if has_next %}<a class="button small ghost" href="/posts?page={{ page_no + 1 }}">next →</a>{% endif %}
+  {% if previous_page %}<a class="button small ghost" rel="prev" href="{{ previous_page }}">← previous</a>{% endif %}
+  {% if next_page %}<a class="button small ghost" rel="next" href="{{ next_page }}">next →</a>{% endif %}
 </nav>
 {% endblock %}

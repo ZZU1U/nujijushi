@@ -518,7 +518,7 @@ async fn posts_page(
         author_id: None,
         search: query.search.clone().filter(|s| !s.is_empty()),
         limit: per_page,
-        offset: (page - 1) * per_page,
+        offset: (page - 1).saturating_mul(per_page),
     };
     let filter_for_count = post_db::PostFilter {
         limit: 0,
@@ -571,8 +571,8 @@ async fn posts_page(
             "flash": decode_flash(&query.flash),
             "cards": cards,
             "total": total,
-            "page_no": page,
-            "has_next": (page * per_page) < total,
+            "previous_page": (page > 1).then(|| query.page_url(page - 1)),
+            "next_page": (page.saturating_mul(per_page) < total).then(|| query.page_url(page + 1)),
             "filters": {
                 "state": query.state,
                 "source": query.source,
