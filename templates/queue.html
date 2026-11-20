@@ -47,6 +47,9 @@
             <input type="number" name="message_id" min="1" aria-label="Telegram message ID (optional)" placeholder="Message ID">
             <button name="action" value="delivered" class="small">delivered</button>
             <button name="action" value="not_delivered" class="small ghost">not delivered</button>
+          {% elif i.state == 'held' %}
+            <a class="button small" href="/channels/{{ channel.id }}/preview">review preview</a>
+            <button name="action" value="remove" class="small danger">remove</button>
           {% else %}
             {% if i.pinned %}
               <button name="action" value="unpin" class="small ghost">unpin</button>

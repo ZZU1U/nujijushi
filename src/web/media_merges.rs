@@ -85,7 +85,10 @@ pub(super) async fn action(
         }
         _ => return Err(Error::invalid("Unknown gallery action").into()),
     };
-    Ok(flash_redirect(&format!("/posts/{post_id}"), message))
+    Ok(flash_redirect(
+        &format!("/posts/{post_id}?section=media"),
+        message,
+    ))
 }
 
 fn compression_settings(form: &FormMap, mode: &str) -> WebResult<Compression> {

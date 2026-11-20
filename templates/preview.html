@@ -4,6 +4,19 @@
 <section class="panel">
   <h2>next slots · {{ channel.title }} <span class="hint">{{ channel.tg_id }}</span></h2>
   <p class="hint"><a href="/channels/{{ channel.id }}/edit">settings</a> · <a href="/channels/{{ channel.id }}/queue">queue</a></p>
+  {% if stopped %}
+  <p class="hint">Scheduling is off for this channel. These times show when posts could go out after scheduling is enabled.</p>
+  {% endif %}
+  {% if held %}
+  <article class="slot">
+    <header>
+      <span class="badge">held for review</span>
+      <a href="/posts/{{ held.post_id }}">View artwork #{{ held.post_id }}</a>
+      <span class="hint">{{ held.media }} media · {{ held.messages }} message(s) · {{ held.reason }}</span>
+    </header>
+    <pre class="caption">{{ held.caption | safe }}</pre>
+  </article>
+  {% endif %}
   {% if items %}
     {% for item in items %}
     <article class="slot">
@@ -18,8 +31,22 @@
       <pre class="caption">{{ item.caption | safe }}</pre>
     </article>
     {% endfor %}
-  {% else %}
-    <p class="hint">Nothing would be published — the queue is empty or every item is vetoed.</p>
+  {% elif not held %}
+    <p class="hint">The queue has no posts eligible for publishing.</p>
+  {% endif %}
+  {% if enable_item %}
+  <form method="post" action="/channels/{{ channel.id }}/preview">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="queue_id" value="{{ enable_item.queue_id }}">
+    <input type="hidden" name="post_id" value="{{ enable_item.post_id }}">
+    <input type="hidden" name="target" value="{{ channel.tg_id }}">
+    <input type="hidden" name="held" value="{{ 'true' if held else 'false' }}">
+    <p class="hint">Confirming allows scheduled publishing for {{ channel.title }}.
+      If the scheduler is running, queued posts can go out as soon as a slot is due.</p>
+    <button type="submit">{{ 'Confirm preview and enable scheduling' if stopped else 'Confirm preview and release post' }}</button>
+  </form>
+  {% elif held and not held.allowed %}
+  <p class="hint">This post cannot be released. Review the post or remove it from the <a href="/channels/{{ channel.id }}/queue">queue</a>.</p>
   {% endif %}
 </section>
 {% endblock %}

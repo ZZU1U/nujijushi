@@ -8,7 +8,7 @@ pub use scheduler::{is_active, is_due, local_day_start, next_active_start, next_
 pub use selection::{Candidate, Selection};
 
 use crate::error::Result;
-use crate::model::{Channel, PostState};
+use crate::model::{Channel, PostState, QueueState};
 use crate::state::AppState;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -38,13 +38,32 @@ pub async fn enqueue_checked(
     enqueue_as(state, channel, post_id, priority, true).await
 }
 
-/// Keep the policy decision, queue row, and implicit approval in one write.
+pub async fn hold_for_preview(
+    state: &AppState,
+    channel: &Channel,
+    post_id: i64,
+) -> Result<EnqueueOutcome> {
+    enqueue(state, channel, post_id, 0, true, QueueState::Held).await
+}
+
 pub async fn enqueue_as(
     state: &AppState,
     channel: &Channel,
     post_id: i64,
     priority: i64,
     admin: bool,
+) -> Result<EnqueueOutcome> {
+    enqueue(state, channel, post_id, priority, admin, QueueState::Queued).await
+}
+
+/// Keep the policy decision, queue row, and implicit approval in one write.
+async fn enqueue(
+    state: &AppState,
+    channel: &Channel,
+    post_id: i64,
+    priority: i64,
+    admin: bool,
+    queue_state: QueueState,
 ) -> Result<EnqueueOutcome> {
     let channel = channel.clone();
     let reputation = state.cfg.guest_reputation;
@@ -66,7 +85,13 @@ pub async fn enqueue_as(
                     "an admin must approve the post first".into(),
                 ));
             }
-            let Some(queue_id) = crate::db::queue::enqueue_new(&tx, post_id, channel.id, priority)?
+            let Some(queue_id) = crate::db::queue::enqueue_with_state(
+                &tx,
+                post_id,
+                channel.id,
+                priority,
+                queue_state,
+            )?
             else {
                 return Ok(EnqueueOutcome::AlreadyQueued);
             };

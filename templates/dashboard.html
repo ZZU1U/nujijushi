@@ -13,6 +13,43 @@
 </section>
 {% endif %}
 
+{% if setup is defined and setup %}
+<section class="panel setup">
+  <div class="setup-heading">
+    <div>
+      <h2>first run setup</h2>
+      <p class="hint">Complete these steps to publish your first post.</p>
+    </div>
+    {% if setup.next and setup.next.href %}
+    <a class="button" href="{{ setup.next.href }}">{{ setup.next.action }} →</a>
+    {% endif %}
+  </div>
+  <ol class="setup-steps">
+    {% for step in setup.steps %}
+    <li class="{{ 'done' if step.done else '' }}">
+      <span class="setup-marker" role="img" aria-label="{{ 'Complete' if step.done else 'Incomplete' }}">{% if step.done %}✓{% else %}{{ loop.index }}{% endif %}</span>
+      <div>
+        <strong>{{ step.title }}</strong>
+        <div class="hint">{{ step.detail }}</div>
+      </div>
+      {% if loop.last and scheduler.stale %}
+      <code class="setup-action">nujijushi run</code>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+  {% if not setup.connected %}
+  <div id="telegram-setup" class="panel inset">
+    <h3>Configure Telegram</h3>
+    <p>Create a bot with @BotFather. Set <code>[telegram] bot_token</code> in your <code>config.toml</code>
+      or set <code>TG_BOT_TOKEN</code> in the environment. Restart nujijushi to load the token.</p>
+    <p class="hint">To manage the archive from Telegram, find your user ID with <code>/whoami</code>
+      in a private chat with the running bot, add it to <code>[access] admins</code>, and restart.</p>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
 <section class="stats">
   <div class="stat"><span class="num">{{ stats.posts }}</span><span class="lbl">posts</span></div>
   <div class="stat"><span class="num">{{ stats.approved }}</span><span class="lbl">approved</span></div>

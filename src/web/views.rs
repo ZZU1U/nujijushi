@@ -23,6 +23,10 @@ const TEMPLATES: &[(&str, &str)] = &[
         include_str!("../../templates/post_detail.html"),
     ),
     (
+        "post_delete.html",
+        include_str!("../../templates/post_delete.html"),
+    ),
+    (
         "channels.html",
         include_str!("../../templates/channels.html"),
     ),

@@ -24,14 +24,27 @@ pub struct PostFilter {
     pub sent: Option<String>,
     #[serde(default)]
     pub search: Option<String>,
+    #[serde(default)]
+    pub setup: bool,
     #[serde(default, deserialize_with = "empty_as_none")]
     pub page: Option<i64>,
+    #[serde(default)]
+    pub per_page: Option<String>,
     #[serde(default)]
     pub flash: Option<String>,
 }
 
+pub const POST_PAGE_SIZES: [i64; 3] = [24, 48, 96];
+
+pub fn post_page_size(value: &str) -> Option<i64> {
+    value
+        .parse()
+        .ok()
+        .filter(|size| POST_PAGE_SIZES.contains(size))
+}
+
 impl PostFilter {
-    pub fn page_url(&self, page: i64) -> String {
+    pub fn page_url(&self, page: i64, per_page: i64) -> String {
         let mut query = url::form_urlencoded::Serializer::new(String::new());
         for (key, value) in [
             ("search", &self.search),
@@ -45,6 +58,10 @@ impl PostFilter {
                 query.append_pair(key, value);
             }
         }
+        if self.setup {
+            query.append_pair("setup", "true");
+        }
+        query.append_pair("per_page", &per_page.to_string());
         query.append_pair("page", &page.to_string());
         format!("/posts?{}", query.finish())
     }
@@ -90,6 +107,19 @@ where
             .map(Some)
             .map_err(serde::de::Error::custom),
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PostDetailQuery {
+    pub flash: Option<String>,
+    pub section: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PostDelete {
+    #[serde(default)]
+    pub csrf: String,
+    pub imported_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Debug, Deserialize)]

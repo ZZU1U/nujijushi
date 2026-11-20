@@ -5,6 +5,7 @@ mod curation;
 pub mod forms;
 mod media_merges;
 pub mod routes;
+mod setup;
 mod tag_suggestions;
 pub mod views;
 

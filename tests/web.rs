@@ -375,6 +375,11 @@ async fn post_detail_shows_tag_provenance_and_can_undo_a_source_removal() {
     assert!(html.contains("<span class=\"badge\">source</span>"));
     assert!(html.contains("<span class=\"badge\">manual</span>"));
     assert!(html.contains("name=\"tags\" value=\"original, favorite\""));
+    assert!(html.contains("<details class=\"panel post-disclosure\">\n      <summary>Tags"));
+    assert!(html.contains("<details class=\"panel post-disclosure\">\n      <summary>Media tools"));
+    assert!(
+        html.contains("<details class=\"panel post-disclosure\" open>\n      <summary>Review post")
+    );
 
     let edit = format!("csrf={}&notes=reviewed", h.ws.csrf);
     assert_eq!(
@@ -394,7 +399,7 @@ async fn post_detail_shows_tag_provenance_and_can_undo_a_source_removal() {
         StatusCode::SEE_OTHER
     );
     let html = body_text(h.send(h.get(&path)).await).await;
-    assert!(html.contains("removed source tags"));
+    assert!(html.contains("Removed source tags"));
     assert!(html.contains("Undo removal of source tag original"));
     assert!(!html.contains("Remove source tag original"));
     assert!(html.contains("name=\"tags\" value=\"original, favorite\""));
@@ -406,7 +411,7 @@ async fn post_detail_shows_tag_provenance_and_can_undo_a_source_removal() {
     );
     let html = body_text(h.send(h.get(&path)).await).await;
     assert!(html.contains("Remove source tag original"));
-    assert!(!html.contains("removed source tags"));
+    assert!(!html.contains("Removed source tags"));
 }
 
 #[tokio::test]
@@ -1064,7 +1069,8 @@ async fn both_pager_links_preserve_all_filters() {
         let href = htmlescape::decode_html(href).unwrap();
         let parsed: std::collections::HashMap<_, _> =
             url::form_urlencoded::parse(href.strip_prefix("/posts?").unwrap().as_bytes()).collect();
-        assert_eq!(parsed.len(), filters.len() + 1);
+        assert_eq!(parsed.len(), filters.len() + 2);
+        assert_eq!(parsed["per_page"], "24");
         for (key, value) in filters {
             assert_eq!(parsed[key], value);
         }
@@ -1214,6 +1220,13 @@ async fn a_guest_submission_is_badged_in_the_grid() {
 async fn the_dashboard_says_when_the_scheduler_is_not_running() {
     let h = harness();
     let html = body_text(h.send(h.get("/")).await).await;
+    assert!(
+        html.contains("first run setup"),
+        "fresh dashboard should guide setup: {html}"
+    );
+    assert!(html.contains("Add a channel"), "{html}");
+    assert!(html.contains("Import artwork"), "{html}");
+    assert!(html.contains("Queue a post"), "{html}");
     assert!(
         html.contains("nothing is publishing on a schedule"),
         "banner missing: {html}"
@@ -2642,4 +2655,318 @@ async fn fit_photo_is_reversible_and_merge_output_can_use_the_same_settings() {
             .await
             .contains("Undo merge")
     );
+}
+
+#[tokio::test]
+async fn setup_explains_credentials_and_accepts_web_only_publishing() {
+    let mut h = harness();
+    let cfg = Arc::make_mut(&mut h.state.cfg);
+    let token = cfg.bot_token.take();
+    cfg.bot_enabled = false;
+    cfg.access.admins.clear();
+    h.ws = WebState::new(h.state.clone()).unwrap();
+    let html = body_text(h.send(h.get("/")).await).await;
+    assert!(html.contains("href=\"#telegram-setup\">Configure Telegram"));
+    assert!(html.contains("[telegram] bot_token"));
+    assert!(html.contains("[access] admins"));
+    assert!(html.contains("Restart nujijushi"));
+
+    Arc::make_mut(&mut h.state.cfg).bot_token = token;
+    h.ws = WebState::new(h.state.clone()).unwrap();
+    let html = body_text(h.send(h.get("/")).await).await;
+    assert!(html.contains(">Add a channel →"));
+    assert!(!html.contains("[access] admins"));
+
+    let html = body_text(h.send(h.get("/channels")).await).await;
+    assert!(html.contains("name=\"enabled\"> enable scheduled publishing now"));
+    let response = h
+        .send(h.post(
+            "/channels",
+            &format!(
+                "csrf={}&title=Art&alias=art&tg_id=%40test_channel",
+                h.ws.csrf
+            ),
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let channel = h
+        .state
+        .db
+        .with(|conn| nujijushi::db::channels::get(conn, 1))
+        .unwrap();
+    assert!(!channel.enabled);
+}
+
+#[tokio::test]
+async fn setup_holds_the_first_post_until_preview_and_survives_an_empty_queue() {
+    use nujijushi::db::queue;
+    use nujijushi::tg::publish::{PublishOutcome, publish_channel, publish_item};
+
+    let h = harness();
+    let channel = h.add_channel().await;
+    let post_id = h.post_only("1").await;
+    h.state
+        .db
+        .set_setting(
+            nujijushi::queue::scheduler::TICK_KEY,
+            &chrono::Utc::now().to_rfc3339(),
+        )
+        .unwrap();
+
+    let html = body_text(h.send(h.get("/posts?setup=true")).await).await;
+    assert!(html.contains("action=\"/setup/queue\""));
+    assert!(html.contains("Hold for preview"));
+    let preview_path = format!("/channels/{}/preview", channel.id);
+    let form = format!(
+        "csrf={}&channel={}&post_id={post_id}",
+        h.ws.csrf, channel.id
+    );
+    let response = h.send(h.post("/setup/queue", &form)).await;
+    assert_eq!(response.headers()[header::LOCATION], preview_path);
+    let item = h
+        .state
+        .db
+        .with(|conn| queue::list(conn, channel.id, &[QueueState::Held], 1))
+        .unwrap()
+        .pop()
+        .expect("the queue holds a review item");
+    assert!(!matches!(
+        publish_channel(&h.state, &channel, false, false)
+            .await
+            .unwrap(),
+        PublishOutcome::Published { .. }
+    ));
+    assert!(matches!(
+        publish_item(&h.state, item.id, false).await.unwrap(),
+        PublishOutcome::NotDue(_)
+    ));
+    assert_eq!(h.mock.send_count(), 0);
+
+    let html = body_text(h.send(h.get("/")).await).await;
+    assert!(html.contains("first run setup"));
+    assert!(html.contains(">Open preview →"));
+    let preview = body_text(h.send(h.get(&preview_path)).await).await;
+    assert!(preview.contains("held for review"));
+    assert!(preview.contains(&format!("View artwork #{post_id}")));
+    assert!(preview.contains("Confirm preview and release post"));
+    assert!(preview.contains("#original"));
+    assert_eq!(h.mock.send_count(), 0);
+
+    let confirm = |csrf| {
+        format!(
+            "csrf={csrf}&queue_id={}&post_id={post_id}&held=true&target=%40test_channel",
+            item.id
+        )
+    };
+    let invalid = h.send(h.post(&preview_path, &confirm("wrong"))).await;
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+    h.state
+        .db
+        .with(|conn| nujijushi::db::posts::set_state(conn, post_id, PostState::Rejected))
+        .unwrap();
+    let blocked = h.send(h.post(&preview_path, &confirm(&h.ws.csrf))).await;
+    assert_eq!(blocked.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        h.state
+            .db
+            .with(|conn| queue::get(conn, item.id))
+            .unwrap()
+            .state,
+        QueueState::Held
+    );
+    h.state
+        .db
+        .with(|conn| nujijushi::db::posts::set_state(conn, post_id, PostState::Approved))
+        .unwrap();
+
+    let response = h.send(h.post(&preview_path, &confirm(&h.ws.csrf))).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let duplicate = h.send(h.post(&preview_path, &confirm(&h.ws.csrf))).await;
+    assert_eq!(duplicate.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(h.mock.send_count(), 0, "the web request never sends");
+    assert!(matches!(
+        publish_channel(&h.state, &channel, false, false)
+            .await
+            .unwrap(),
+        PublishOutcome::Published { .. }
+    ));
+    assert_eq!(h.mock.send_count(), 1);
+    h.state
+        .db
+        .with(|conn| queue::delete(conn, item.id))
+        .unwrap();
+    h.state
+        .db
+        .set_setting(nujijushi::queue::scheduler::TICK_KEY, "stale")
+        .unwrap();
+    let html = body_text(h.send(h.get("/")).await).await;
+    assert!(!html.contains("first run setup"));
+    assert!(html.contains("nothing is publishing on a schedule"));
+}
+
+#[tokio::test]
+async fn setup_links_to_preview_when_only_stopped_channels_have_queued_posts() {
+    let h = harness();
+    let channel = h.add_channel().await;
+    let (post_id, queue_id) = h.queue_a_post("1", &channel).await;
+    h.state
+        .db
+        .with(|conn| {
+            nujijushi::db::channels::set_enabled(conn, channel.id, false)?;
+            nujijushi::db::channels::set_paused(conn, channel.id, true)
+        })
+        .unwrap();
+    h.state
+        .db
+        .set_setting(
+            nujijushi::queue::scheduler::TICK_KEY,
+            &chrono::Utc::now().to_rfc3339(),
+        )
+        .unwrap();
+
+    let html = body_text(h.send(h.get("/")).await).await;
+    assert!(html.contains("first run setup"));
+    assert!(html.contains(">Open preview →"));
+    let path = format!("/channels/{}/preview", channel.id);
+    let preview = body_text(h.send(h.get(&path)).await).await;
+    assert!(preview.contains("Scheduling is off for this channel"));
+    assert!(preview.contains("Confirm preview and enable scheduling"));
+    assert!(preview.contains("#original"));
+    let form = format!(
+        "csrf={}&queue_id={queue_id}&post_id={post_id}&held=false&target=%40test_channel",
+        h.ws.csrf
+    );
+    assert_eq!(
+        h.send(h.post(&path, &form)).await.status(),
+        StatusCode::SEE_OTHER
+    );
+    let stored = h
+        .state
+        .db
+        .with(|conn| nujijushi::db::channels::get(conn, channel.id))
+        .unwrap();
+    assert!(stored.enabled && !stored.paused);
+    assert_eq!(h.mock.send_count(), 0);
+    let html = body_text(h.send(h.get("/")).await).await;
+    assert!(!html.contains("first run setup"));
+}
+
+#[tokio::test]
+async fn posts_per_page_is_bounded_remembered_and_preserved_while_paging() {
+    let h = harness();
+    for n in 1..=51 {
+        h.post_only(&n.to_string()).await;
+    }
+    let count_cards = |html: &str| html.matches(r#"aria-label="Open post #"#).count();
+
+    let defaults = body_text(h.send(h.get("/posts?per_page=10000")).await).await;
+    assert_eq!(count_cards(&defaults), 24);
+
+    let response = h
+        .send(h.get("/posts?per_page=48&source=pixiv&search=Artwork&setup=true"))
+        .await;
+    let cookie = response.headers()[header::SET_COOKIE].to_str().unwrap();
+    assert!(cookie.starts_with("nujijushi_posts_per_page=48;"));
+    let html = body_text(response).await;
+    assert_eq!(count_cards(&html), 48);
+    assert!(html.contains(r#"<option value="48" selected>"#));
+    assert!(html.contains("Page 1 of 2"));
+    assert!(
+        html.contains("search=Artwork&amp;source=pixiv&amp;setup=true&amp;per_page=48&amp;page=2")
+    );
+
+    let mut request = h.get("/posts?page=999");
+    request.headers_mut().insert(
+        header::COOKIE,
+        format!(
+            "{}={}; nujijushi_posts_per_page=48",
+            auth::COOKIE,
+            h.ws.session
+        )
+        .parse()
+        .unwrap(),
+    );
+    let response = h.send(request).await;
+    assert!(!response.headers().contains_key(header::SET_COOKIE));
+    let html = body_text(response).await;
+    assert_eq!(count_cards(&html), 3);
+    assert!(html.contains("Page 2 of 2"));
+    assert!(!html.contains(r#"rel="next""#));
+
+    let expanded = body_text(h.send(h.get("/posts?per_page=96")).await).await;
+    assert_eq!(count_cards(&expanded), 51);
+}
+
+#[tokio::test]
+async fn post_page_deletion_requires_confirmation_and_waits_for_an_active_send() {
+    use nujijushi::db::{posts, queue};
+    use nujijushi::queue::lease;
+
+    let h = harness();
+    let channel = h.add_channel().await;
+    let (id, queue_id) = h.queue_a_post("65", &channel).await;
+    let other = h.post_only("66").await;
+    let path = format!("/posts/{id}");
+    let confirmation = format!("{path}/delete");
+    let html = body_text(h.send(h.get(&path)).await).await;
+    assert!(html.contains(&format!(r#"href="{confirmation}">Delete post…"#)));
+    let html = body_text(h.send(h.get(&confirmation)).await).await;
+    assert!(html.contains(&format!("Delete post #{id}?")));
+    assert!(html.contains("queue entries"));
+    assert!(html.contains("Copies already published to Telegram or mirrored to storage stay"));
+    assert_eq!(h.send(h.get(&path)).await.status(), StatusCode::OK);
+
+    let imported = h
+        .state
+        .db
+        .with(|conn| posts::get(conn, id))
+        .unwrap()
+        .imported_at;
+    let form = |csrf: &str, stamp: chrono::DateTime<chrono::Utc>| {
+        url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("csrf", csrf)
+            .append_pair("imported_at", &stamp.to_rfc3339())
+            .finish()
+    };
+    let valid = form(&h.ws.csrf, imported);
+    let wrong_csrf = form("wrong", imported);
+    assert_eq!(
+        h.send(h.post(&confirmation, &wrong_csrf)).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+    let stale = form(&h.ws.csrf, imported - chrono::Duration::seconds(1));
+    assert_eq!(
+        h.send(h.post(&confirmation, &stale)).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    assert!(
+        lease::acquire(&h.state, queue_id, channel.tg_id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let blocked = h.send(h.post(&confirmation, &valid)).await;
+    assert!(Harness::flash(&blocked).contains("Wait for the current send"));
+    let html = body_text(h.send(h.get(&confirmation)).await).await;
+    assert!(!html.contains(&format!(r#"action="{confirmation}""#)));
+    assert_eq!(
+        h.state
+            .db
+            .with(|conn| queue::get(conn, queue_id))
+            .unwrap()
+            .state,
+        QueueState::Sending
+    );
+    lease::release(&h.state, queue_id).await.unwrap();
+
+    let response = h.send(h.post(&confirmation, &valid)).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        response.headers()[header::LOCATION],
+        "/posts?flash=Post+deleted"
+    );
+    assert_eq!(h.send(h.get(&path)).await.status(), StatusCode::NOT_FOUND);
+    assert!(h.state.db.with(|conn| queue::get(conn, queue_id)).is_err());
+    assert!(h.state.db.with(|conn| posts::get(conn, other)).is_ok());
 }

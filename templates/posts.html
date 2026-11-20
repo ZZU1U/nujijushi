@@ -1,7 +1,15 @@
 {% extends "base.html" %}
 {% block title %}posts{% endblock %}
 {% block body %}
+{% if setup %}
+<section class="panel">
+  <h2>Choose your first post</h2>
+  <p>Select one post and its Telegram channel. The post stays on hold until you confirm its preview.</p>
+  <a href="/">Back to setup</a>
+</section>
+{% endif %}
 <form class="filters panel" method="get" action="/posts">
+  {% if setup %}<input type="hidden" name="setup" value="true">{% endif %}
   <input name="search" placeholder="search title / description / id" value="{{ filters.search }}">
   <select name="state">
     <option value="" {{ 'selected' if not filters.state else '' }}>not rejected</option>
@@ -23,46 +31,53 @@
     <option value="yes" {{ 'selected' if filters.sent == 'yes' else '' }}>sent only</option>
   </select>
   <input name="tag" placeholder="tag" value="{{ filters.tag }}">
-  <button type="submit">filter</button>
+  <label class="page-size">Posts per page
+    <select name="per_page">
+      {% for size in page_sizes %}<option value="{{ size }}"{{ ' selected' if size == per_page else '' }}>{{ size }}</option>{% endfor %}
+    </select>
+  </label>
+  <button type="submit">Apply</button>
   <span class="hint">{{ total }} post(s)</span>
   <a class="hint post-duplicates-link" href="/duplicates">review duplicates</a>
 </form>
 
 {% if top_tags %}
 <div class="tagcloud">
-  {% for t in top_tags %}<a href="/posts?tag={{ t.tag }}">#{{ t.tag }} <span class="hint">{{ t.count }}</span></a>{% endfor %}
+  {% for t in top_tags %}<a href="/posts?tag={{ t.tag }}{% if setup %}&amp;setup=true{% endif %}">#{{ t.tag }} <span class="hint">{{ t.count }}</span></a>{% endfor %}
 </div>
 {% endif %}
 
-<form method="post" action="/posts" id="bulk">
+<form method="post" action="{% if setup %}/setup/queue{% else %}/posts{% endif %}" id="bulk">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <div class="bulkbar panel">
-    {% if cards %}
+    {% if cards and not setup %}
     <div class="bulk-selection" data-post-selection hidden>
       <button type="button" class="small ghost" data-select-posts>Select all on page</button>
       <button type="button" class="small ghost" data-clear-posts>Clear</button>
       <span class="hint" data-post-selection-count aria-live="polite" aria-atomic="true"></span>
     </div>
     {% endif %}
+    {% if not setup %}
     <span class="hint">select posts, then:</span>
     <button name="action" value="approve" class="small">approve</button>
     <button name="action" value="reject" class="small ghost">reject</button>
     <button name="action" value="nsfw_yes" class="small ghost">mark nsfw</button>
     <button name="action" value="nsfw_no" class="small ghost">mark sfw</button>
     <button name="action" value="nsfw_auto" class="small ghost">nsfw auto</button>
-    <select name="channel">
+    {% endif %}
+    <select name="channel" aria-label="Destination channel">
       <option value="">choose channel…</option>
       {% for c in channels %}<option value="{{ c.id }}">{{ c.title }}</option>{% endfor %}
     </select>
-    <button name="action" value="queue" class="small">queue</button>
-    <button name="action" value="delete" class="small danger" onclick="return confirm('Delete the selected posts and their media links?')">delete</button>
+    <button name="action" value="queue" class="small">{{ 'Hold for preview' if setup else 'queue' }}</button>
+    {% if not setup %}<button name="action" value="delete" class="small danger" onclick="return confirm('Delete the selected posts and their media links?')">delete</button>{% endif %}
   </div>
 
   {% if cards %}
   <div class="grid">
     {% for c in cards %}
     <article class="card post{{ ' pushed' if c.pushed else '' }}">
-      <input type="checkbox" name="sel_{{ c.id }}" id="post-pick-{{ c.id }}" class="pick" aria-label="Select post #{{ c.id }}" data-post-pick>
+      <input {% if setup %}type="radio" name="post_id" value="{{ c.id }}" required{% else %}type="checkbox" name="sel_{{ c.id }}"{% endif %} id="post-pick-{{ c.id }}" class="pick" aria-label="Select post #{{ c.id }}" data-post-pick>
       <label class="post-pick-area" for="post-pick-{{ c.id }}" aria-hidden="true"></label>
       <div class="thumb">
         {% if c.thumb %}<img loading="lazy" src="/thumb/{{ c.thumb }}" alt="">{% else %}<span class="noimg">no media</span>{% endif %}
@@ -90,8 +105,11 @@
   {% endif %}
 </form>
 
-<nav class="pager">
+{% if previous_page or next_page %}
+<nav class="pager" aria-label="Posts pagination">
   {% if previous_page %}<a class="button small ghost" rel="prev" href="{{ previous_page }}">← previous</a>{% endif %}
+  <span class="hint">Page {{ page_number }} of {{ page_count }}</span>
   {% if next_page %}<a class="button small ghost" rel="next" href="{{ next_page }}">next →</a>{% endif %}
 </nav>
+{% endif %}
 {% endblock %}

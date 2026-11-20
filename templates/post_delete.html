@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}delete post #{{ id }}{% endblock %}
+{% block body %}
+<section class="panel confirm-post-delete">
+  <h1>Delete post #{{ id }}?</h1>
+  {% if title %}<p><strong>{{ title }}</strong></p>{% endif %}
+  <p>This permanently removes the post from your archive, including its notes, tags, media links, and queue entries. Copies already published to Telegram or mirrored to storage stay where they are.</p>
+  {% if sending %}
+  <p class="hint">This post is being sent. Wait for the send to finish, then refresh this page.</p>
+  <a class="button ghost" href="/posts/{{ id }}">Back to post</a>
+  {% else %}
+  <form method="post" action="/posts/{{ id }}/delete" class="post-buttons">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="imported_at" value="{{ imported_at }}">
+    <a class="button ghost" href="/posts/{{ id }}">Cancel</a>
+    <button class="danger" type="submit">Delete post</button>
+  </form>
+  {% endif %}
+</section>
+{% endblock %}

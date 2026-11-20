@@ -93,6 +93,7 @@ string_enum! {
     /// Lifecycle of a queue entry. `unknown` is a reconciled `sending` whose
     /// outcome could not be confirmed (never auto-resent).
     QueueState {
+        Held => "held",
         Queued => "queued",
         Sending => "sending",
         Sent => "sent",

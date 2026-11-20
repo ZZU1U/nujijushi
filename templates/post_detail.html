@@ -4,86 +4,51 @@
 {% endmacro %}
 {% block title %}post #{{ post.id }}{% endblock %}
 {% block body %}
-<div class="detail">
-  <section class="panel">
-    <h2>#{{ post.id }} <span class="hint">{{ post.source }} / {{ post.source_id }}</span></h2>
-    <p class="hint">{{ media | length }} item(s) · {{ media_total }}</p>
-    <div class="media-grid">
-      {% for m in media %}
-      <figure id="media-{{ loop.index }}">
-        {% if m.is_video %}
-        <video controls preload="none" poster="/thumb/{{ m.thumb }}" src="/media/{{ m.hash }}"></video>
-        {% else %}
-        <a href="/media/{{ m.hash }}" target="_blank"><img loading="lazy" src="/media/{{ m.hash }}" alt=""></a>
-        {% endif %}
-        <figcaption class="hint">{{ m.ext }} {{ m.width }}×{{ m.height }} · {{ m.kib }} KiB</figcaption>
-        {% if m.over_photo_limit %}<p class="hint">Exceeds the photo upload limits</p>{% endif %}
-        {% if m.can_select and not merge_job.active %}
-        <label class="hint">
-          <input type="checkbox" name="sel_{{ m.id }}" value="on" form="merge-gallery">
-          Select image {{ loop.index }}
-        </label>
-        {% endif %}
-        {% if m.can_compress and not merge_job.active %}
-        <details>
-          <summary>Compress image</summary>
-          <form method="post" action="/posts/{{ post.id }}/media">
-            <input type="hidden" name="csrf" value="{{ csrf }}">
-            <input type="hidden" name="gallery_version" value="{{ gallery_version }}">
-            <input type="hidden" name="media_id" value="{{ m.id }}">
-            <label>Mode
-              <select name="output">
-                <option value="fit">Fit to Telegram</option>
-                <option value="quality">Use exact JPEG quality</option>
-              </select>
-            </label>
-            {{ compression_quality() }}
-            <p class="hint">Fit uses this quality as a maximum and can resize or add borders. JPEG fills transparency with white.</p>
-            <button type="submit" name="action" value="compress" class="small">Compress</button>
-          </form>
-        </details>
-        {% endif %}
-        {% if m.compressed %}
-        <form method="post" action="/posts/{{ post.id }}/media" class="inline">
-          <input type="hidden" name="csrf" value="{{ csrf }}">
-          <input type="hidden" name="gallery_version" value="{{ gallery_version }}">
-          <input type="hidden" name="media_id" value="{{ m.id }}">
-          <button type="submit" name="action" value="undo_compression" class="small ghost">Undo compression</button>
-        </form>
-        {% elif m.undo_id %}
-        <form method="post" action="/posts/{{ post.id }}/media" class="inline">
-          <input type="hidden" name="csrf" value="{{ csrf }}">
-          <input type="hidden" name="gallery_version" value="{{ gallery_version }}">
-          <input type="hidden" name="merge_id" value="{{ m.undo_id }}">
-          <button type="submit" name="action" value="undo" class="small ghost">Undo merge</button>
-        </form>
-        {% endif %}
-      </figure>
-      {% endfor %}
+<header class="post-heading">
+  <div>
+    <a href="/posts" class="hint">← Posts</a>
+    <h1>{{ post.title or ('Post #' ~ post.id) }}</h1>
+    <div class="hint">#{{ post.id }} · {{ post.source }} / {{ post.source_id }}
+      <span class="badge state-{{ post.state }}">{{ post.state }}</span>
     </div>
+  </div>
+  <a class="button small ghost post-delete-link" href="/posts/{{ post.id }}/delete">Delete post…</a>
+</header>
 
-    {% if can_merge and not merge_job.active %}
-    <form method="post" action="/posts/{{ post.id }}/media" id="merge-gallery">
-      <input type="hidden" name="csrf" value="{{ csrf }}">
-      <input type="hidden" name="gallery_version" value="{{ gallery_version }}">
-      <button type="submit" name="action" value="merge">Merge side by side</button>
-      <span class="hint">Select consecutive images of the same height.</span>
-      <details>
-        <summary>Merge output options</summary>
-        <label>Output
-          <select name="output">
-            <option value="lossless">Lossless PNG</option>
-            <option value="fit">Fit to Telegram</option>
-            <option value="quality">Use exact JPEG quality</option>
-          </select>
-        </label>
-        {{ compression_quality() }}
-        <p class="hint">Fit uses this quality as a maximum and can resize or add borders. JPEG fills transparency with white.</p>
-      </details>
-    </form>
-    {% endif %}
+<div class="detail">
+  <div>
+    <section class="panel">
+      <h2>Artwork <span class="hint">{{ media | length }} item(s) · {{ media_total }}</span></h2>
+      {% if media %}
+      <div class="media-grid">
+        {% for m in media %}
+        <figure id="media-{{ loop.index }}">
+          {% if m.is_video %}
+          <video controls preload="none" poster="/thumb/{{ m.thumb }}" src="/media/{{ m.hash }}"></video>
+          {% else %}
+          <a href="/media/{{ m.hash }}" target="_blank"><img loading="lazy" src="/media/{{ m.hash }}" alt=""></a>
+          {% endif %}
+          <figcaption class="hint">{{ m.ext }} {{ m.width }}×{{ m.height }} · {{ m.kib }} KiB</figcaption>
+          {% if m.over_photo_limit %}<p class="hint">Exceeds the photo upload limits</p>{% endif %}
+        </figure>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="hint">No media archived for this post.</p>
+      {% endif %}
+      <dl class="facts">
+        {% if post.artist %}
+        <dt>artist</dt><dd>{% if post.artist_url %}<a href="{{ post.artist_url }}" target="_blank">{{ post.artist }}</a>{% else %}{{ post.artist }}{% endif %}</dd>
+        {% endif %}
+        {% if post.url %}<dt>source</dt><dd><a href="{{ post.url }}" target="_blank">Open original post</a></dd>{% endif %}
+        <dt>rating</dt><dd>{{ post.rating }} {% if post.nsfw %}<span class="badge red">nsfw</span>{% else %}<span class="badge green">sfw</span>{% endif %} <span class="hint">override: {{ post.nsfw_override }}</span></dd>
+        <dt>imported</dt><dd class="hint">{{ post.imported }}{% if submitter %} · via telegram {{ submitter.label }}{% if not submitter.admin %} <span class="badge amber">not an admin</span>{% endif %}{% endif %}</dd>
+        {% if post.description %}<dt>description</dt><dd class="prose">{{ post.description }}</dd>{% endif %}
+      </dl>
+    </section>
+
     {% if merge_job %}
-    <p class="hint" aria-live="polite" {% if merge_job.active %}data-job="{{ merge_job.id }}" data-state="{{ merge_job.state }}" data-merge-post="{{ post.id }}"{% endif %}>
+    <p class="hint post-job-status" aria-live="polite" {% if merge_job.active %}data-job="{{ merge_job.id }}" data-state="{{ merge_job.state }}" data-merge-post="{{ post.id }}"{% endif %}>
       <span class="badge" data-role="state">{{ merge_job.state }}</span>
       {% if merge_job.total %}<span data-role="counts">{{ merge_job.progress }}/{{ merge_job.total }}</span>{% endif %}
       <span data-role="message">{{ merge_job.message }}</span>
@@ -91,18 +56,90 @@
     </p>
     {% endif %}
 
-    <dl class="facts">
-      <dt>artist</dt><dd>{% if post.artist_url %}<a href="{{ post.artist_url }}" target="_blank">{{ post.artist }}</a>{% else %}{{ post.artist }}{% endif %}</dd>
-      {% if post.title %}<dt>title</dt><dd>{{ post.title }}</dd>{% endif %}
-      {% if post.url %}<dt>source</dt><dd><a href="{{ post.url }}" target="_blank">{{ post.url }}</a></dd>{% endif %}
-      <dt>rating</dt><dd>{{ post.rating }} {% if post.nsfw %}<span class="badge red">nsfw</span>{% else %}<span class="badge green">sfw</span>{% endif %} <span class="hint">override: {{ post.nsfw_override }}</span></dd>
-      <dt>imported</dt><dd class="hint">{{ post.imported }}{% if submitter %} · via telegram {{ submitter.label }}{% if not submitter.admin %} <span class="badge amber">not an admin</span>{% endif %}{% endif %}</dd>
-      {% if post.description %}<dt>description</dt><dd class="prose">{{ post.description }}</dd>{% endif %}
-    </dl>
+    {% if has_media_tools %}
+    <details class="panel post-disclosure"{% if open_section == 'media' %} open{% endif %}>
+      <summary>Media tools</summary>
+      <div class="post-disclosure-body">
+        {% if merge_job.active %}
+        <p class="hint">A gallery edit is in progress.</p>
+        {% else %}
+        {% for m in media %}
+          {% if m.can_compress or m.compressed or m.undo_id %}
+          <div class="post-tool-row">
+            <a class="post-image-link" href="#media-{{ loop.index }}">Image {{ loop.index }}</a>
+            {% if m.can_select %}
+            <label class="check">
+              <input type="checkbox" name="sel_{{ m.id }}" value="on" form="merge-gallery" aria-label="Include image {{ loop.index }} in merge">
+              Include in merge
+            </label>
+            {% endif %}
+            {% if m.can_compress %}
+            <details class="post-inline-options">
+              <summary>Compress image</summary>
+              <form method="post" action="/posts/{{ post.id }}/media" class="post-command">
+                <input type="hidden" name="csrf" value="{{ csrf }}">
+                <input type="hidden" name="gallery_version" value="{{ gallery_version }}">
+                <input type="hidden" name="media_id" value="{{ m.id }}">
+                <label>Mode
+                  <select name="output">
+                    <option value="fit">Fit to Telegram</option>
+                    <option value="quality">Use exact JPEG quality</option>
+                  </select>
+                </label>
+                {{ compression_quality() }}
+                <p class="hint">Fit uses this quality as a maximum and can resize or add borders. JPEG fills transparency with white.</p>
+                <button type="submit" name="action" value="compress" class="small">Compress</button>
+              </form>
+            </details>
+            {% endif %}
+            {% if m.compressed %}
+            <form method="post" action="/posts/{{ post.id }}/media" class="inline">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <input type="hidden" name="gallery_version" value="{{ gallery_version }}">
+              <input type="hidden" name="media_id" value="{{ m.id }}">
+              <button type="submit" name="action" value="undo_compression" class="small ghost">Undo compression</button>
+            </form>
+            {% elif m.undo_id %}
+            <form method="post" action="/posts/{{ post.id }}/media" class="inline">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <input type="hidden" name="gallery_version" value="{{ gallery_version }}">
+              <input type="hidden" name="merge_id" value="{{ m.undo_id }}">
+              <button type="submit" name="action" value="undo" class="small ghost">Undo merge</button>
+            </form>
+            {% endif %}
+          </div>
+          {% endif %}
+        {% endfor %}
+        {% if can_merge %}
+        <form method="post" action="/posts/{{ post.id }}/media" id="merge-gallery" class="post-tool-row">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="gallery_version" value="{{ gallery_version }}">
+          <button type="submit" name="action" value="merge" class="small">Merge side by side</button>
+          <span class="hint">Select consecutive images of the same height.</span>
+          <details class="post-inline-options">
+            <summary>Merge output options</summary>
+            <label>Output
+              <select name="output">
+                <option value="lossless">Lossless PNG</option>
+                <option value="fit">Fit to Telegram</option>
+                <option value="quality">Use exact JPEG quality</option>
+              </select>
+            </label>
+            {{ compression_quality() }}
+            <p class="hint">Fit uses this quality as a maximum and can resize or add borders. JPEG fills transparency with white.</p>
+          </details>
+        </form>
+        {% endif %}
+        {% endif %}
+      </div>
+    </details>
+    {% endif %}
+  </div>
 
-    <details class="panel inset">
+  <aside>
+    <details class="panel post-disclosure">
       <summary>Edit post details</summary>
-      <form method="post" action="/posts/{{ post.id }}">
+      <form class="post-disclosure-body" method="post" action="/posts/{{ post.id }}">
         <input type="hidden" name="csrf" value="{{ csrf }}">
         <label>Title
           <input name="title" value="{{ post.title }}">
@@ -114,141 +151,150 @@
       </form>
     </details>
 
-    <div class="tagcloud">
-      {% for t in post.tags %}
-      <div>
-        <a href="/posts?tag={{ t.name }}">#{{ t.name }}</a>
-        {% if t.source %}<span class="badge">source</span>{% endif %}
-        {% if t.manual %}<span class="badge">manual</span>{% endif %}
-        {% if t.source %}
-        <form method="post" action="/posts/{{ post.id }}/tags" class="inline">
+    <details class="panel post-disclosure" open>
+      <summary>Review post</summary>
+      <div class="post-disclosure-body">
+        <form method="post" action="/posts/{{ post.id }}">
           <input type="hidden" name="csrf" value="{{ csrf }}">
-          <input type="hidden" name="tag_id" value="{{ t.id }}">
-          <button type="submit" name="action" value="remove" class="small ghost" aria-label="Remove source tag {{ t.name }}">remove</button>
+          <div class="post-review-fields">
+            <label>Rating
+              <select name="rating">
+                {% for r in ratings %}<option value="{{ r }}" {{ 'selected' if post.rating == r else '' }}>{{ r }}</option>{% endfor %}
+              </select>
+            </label>
+            <label>Sensitivity
+              <select name="nsfw">
+                <option value="auto" {{ 'selected' if post.nsfw_override == 'auto' else '' }}>Automatic</option>
+                <option value="yes" {{ 'selected' if post.nsfw_override == 'yes' else '' }}>Force NSFW</option>
+                <option value="no" {{ 'selected' if post.nsfw_override == 'no' else '' }}>Force SFW</option>
+              </select>
+            </label>
+            <label>State
+              <select name="state">
+                {% for s in states %}<option value="{{ s }}" {{ 'selected' if post.state == s else '' }}>{{ s }}</option>{% endfor %}
+              </select>
+            </label>
+          </div>
+          {% if guest_review %}
+          <label>Guest approval reward
+            <input type="number" name="approval_points" min="5" max="20" step="1" placeholder="10">
+            <span class="hint">Optional total to split among guests. Select approved to set it.</span>
+          </label>
+          {% endif %}
+          <label>Notes
+            <input name="notes" value="{{ post.notes }}">
+          </label>
+          <button type="submit" class="small">Save changes</button>
+        </form>
+      </div>
+    </details>
+
+    <details class="panel post-disclosure"{% if open_section == 'tags' %} open{% endif %}>
+      <summary>Tags <span class="hint">{{ post.tags | length }}</span></summary>
+      <div class="post-disclosure-body">
+        <div class="tagcloud">
+          {% for t in post.tags %}
+          <div class="post-tag">
+            <a href="/posts?tag={{ t.name }}">#{{ t.name }}</a>
+            {% if t.source %}<span class="badge">source</span>{% endif %}
+            {% if t.manual %}<span class="badge">manual</span>{% endif %}
+            {% if t.source %}
+            <form method="post" action="/posts/{{ post.id }}/tags" class="inline">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <input type="hidden" name="tag_id" value="{{ t.id }}">
+              <button type="submit" name="action" value="remove" class="small ghost" aria-label="Remove source tag {{ t.name }}">remove</button>
+            </form>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+        {% if post.tag_removals %}
+        <h3>Removed source tags</h3>
+        <div class="tagcloud">
+          {% for t in post.tag_removals %}
+          <form method="post" action="/posts/{{ post.id }}/tags" class="inline">
+            <input type="hidden" name="csrf" value="{{ csrf }}">
+            <input type="hidden" name="tag_id" value="{{ t.id }}">
+            <span class="badge">#{{ t.name }}</span>
+            <button type="submit" name="action" value="undo" class="small ghost" aria-label="Undo removal of source tag {{ t.name }}">undo</button>
+          </form>
+          {% endfor %}
+        </div>
+        {% endif %}
+
+        <form method="post" action="/posts/{{ post.id }}" class="post-tool-row">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <label>Manual tags (comma separated)
+            <input name="tags" value="{{ post.manual_tags }}">
+          </label>
+          <button type="submit" class="small">Save tags</button>
+        </form>
+      </div>
+    </details>
+
+    {% if can_suggest_tags or tag_review %}
+    <details class="panel post-disclosure"{% if open_section == 'suggestions' or tag_review.job.active %} open{% endif %}>
+      <summary>Tag suggestions{% if tag_review.suggestions %} <span class="hint">{{ tag_review.suggestions | length }} to review</span>{% endif %}</summary>
+      <div class="post-disclosure-body">
+        {% if tag_review %}
+        <div {% if tag_review.job.active %}data-job="{{ tag_review.job.id }}" data-state="{{ tag_review.job.state }}" data-tag-review="{{ post.id }}"{% endif %}>
+          <p class="hint" aria-live="polite">
+            <span class="badge" data-role="state">{{ tag_review.job.state }}</span>
+            <span data-role="message">{{ tag_review.job.message }}</span>
+            {% if tag_review.job.active %}
+            <span data-role="counts" {% if not tag_review.job.total %}hidden{% endif %}>{{ tag_review.job.progress }}/{{ tag_review.job.total }}</span>
+            <a data-tag-refresh href="/posts/{{ post.id }}?section=suggestions">Refresh status</a>
+            {% endif %}
+          </p>
+        </div>
+        {% if tag_review.stale %}
+        <p class="hint">The artwork or source metadata changed. Suggest tags again to review the current post.</p>
+        {% endif %}
+        {% for suggestion in tag_review.suggestions %}
+        <form method="post" action="/posts/{{ post.id }}/tag-suggestions" class="post-tool-row">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="job_id" value="{{ tag_review.job.id }}">
+          <input type="hidden" name="suggestion_id" value="{{ suggestion.id }}">
+          <label>{{ suggestion.kind }}
+            <input name="tag" value="{{ suggestion.tag }}" aria-label="Edit suggested {{ suggestion.kind }} tag {{ suggestion.tag }}">
+          </label>
+          <p class="hint">
+            {% if suggestion.wiki_url %}<a href="{{ suggestion.wiki_url }}">{{ suggestion.evidence }}</a>{% else %}{{ suggestion.evidence }}{% endif %}
+            {% if suggestion.character_tag_id %} · ID {{ suggestion.character_tag_id }}{% endif %}
+            {% for position in suggestion.images %} · <a href="#media-{{ position }}">Image {{ position }}</a>{% endfor %}
+          </p>
+          <button type="submit" name="action" value="accept" class="small">Save tag</button>
+          <button type="submit" name="action" value="discard" class="small ghost">Discard</button>
+        </form>
+        {% endfor %}
+        {% endif %}
+        {% if can_suggest_tags and (not tag_review or not tag_review.job.active) %}
+        <form method="post" action="/posts/{{ post.id }}/tag-suggestions">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <button type="submit" name="action" value="generate" class="small">{{ 'Suggest again' if tag_review else 'Suggest tags' }}</button>
         </form>
         {% endif %}
       </div>
-      {% endfor %}
-    </div>
-    {% if post.tag_removals %}
-    <h3>removed source tags</h3>
-    <div class="tagcloud">
-      {% for t in post.tag_removals %}
-      <form method="post" action="/posts/{{ post.id }}/tags" class="inline">
-        <input type="hidden" name="csrf" value="{{ csrf }}">
-        <input type="hidden" name="tag_id" value="{{ t.id }}">
-        <span class="badge">#{{ t.name }}</span>
-        <button type="submit" name="action" value="undo" class="small ghost" aria-label="Undo removal of source tag {{ t.name }}">undo</button>
-      </form>
-      {% endfor %}
-    </div>
+    </details>
     {% endif %}
 
-    <form method="post" action="/posts/{{ post.id }}" class="panel inset">
-      <input type="hidden" name="csrf" value="{{ csrf }}">
-      <label>manual tags (comma separated)
-        <input name="tags" value="{{ post.manual_tags }}">
-      </label>
-      <button type="submit">save tags</button>
-    </form>
-
-    {% if can_suggest_tags or tag_review %}
-    <section class="panel inset" aria-label="Tag suggestions">
-      {% if tag_review %}
-      <div {% if tag_review.job.active %}data-job="{{ tag_review.job.id }}" data-state="{{ tag_review.job.state }}" data-tag-review="{{ post.id }}"{% endif %}>
-        <p class="hint" aria-live="polite">
-          <span class="badge" data-role="state">{{ tag_review.job.state }}</span>
-          <span data-role="message">{{ tag_review.job.message }}</span>
-          {% if tag_review.job.active %}
-          <span data-role="counts" {% if not tag_review.job.total %}hidden{% endif %}>{{ tag_review.job.progress }}/{{ tag_review.job.total }}</span>
-          <a data-tag-refresh href="/posts/{{ post.id }}">Refresh status</a>
-          {% endif %}
-        </p>
-      </div>
-      {% if tag_review.stale %}
-      <p class="hint">The artwork or source metadata changed. Suggest tags again to review the current post.</p>
-      {% endif %}
-      {% for suggestion in tag_review.suggestions %}
-      <form method="post" action="/posts/{{ post.id }}/tag-suggestions" class="panel inset">
-        <input type="hidden" name="csrf" value="{{ csrf }}">
-        <input type="hidden" name="job_id" value="{{ tag_review.job.id }}">
-        <input type="hidden" name="suggestion_id" value="{{ suggestion.id }}">
-        <label>{{ suggestion.kind }}
-          <input name="tag" value="{{ suggestion.tag }}" aria-label="Edit suggested {{ suggestion.kind }} tag {{ suggestion.tag }}">
-        </label>
-        <p class="hint">
-          {% if suggestion.wiki_url %}<a href="{{ suggestion.wiki_url }}">{{ suggestion.evidence }}</a>{% else %}{{ suggestion.evidence }}{% endif %}
-          {% if suggestion.character_tag_id %} · ID {{ suggestion.character_tag_id }}{% endif %}
-          {% for position in suggestion.images %} · <a href="#media-{{ position }}">Image {{ position }}</a>{% endfor %}
-        </p>
-        <button type="submit" name="action" value="accept">Save tag</button>
-        <button type="submit" name="action" value="discard" class="ghost">Discard</button>
-      </form>
-      {% endfor %}
-      {% endif %}
-      {% if can_suggest_tags and (not tag_review or not tag_review.job.active) %}
-      <form method="post" action="/posts/{{ post.id }}/tag-suggestions">
-        <input type="hidden" name="csrf" value="{{ csrf }}">
-        <button type="submit" name="action" value="generate">{{ 'Suggest again' if tag_review else 'Suggest tags' }}</button>
-      </form>
-      {% endif %}
-    </section>
-    {% endif %}
-
-    <form method="post" action="/posts/{{ post.id }}" class="panel inset">
-      <input type="hidden" name="csrf" value="{{ csrf }}">
-      <div class="fieldrow">
-        <label>rating
-          <select name="rating">
-            {% for r in ratings %}<option value="{{ r }}" {{ 'selected' if post.rating == r else '' }}>{{ r }}</option>{% endfor %}
-          </select>
-        </label>
-        <label>nsfw
-          <select name="nsfw">
-            <option value="auto" {{ 'selected' if post.nsfw_override == 'auto' else '' }}>auto</option>
-            <option value="yes" {{ 'selected' if post.nsfw_override == 'yes' else '' }}>force nsfw</option>
-            <option value="no" {{ 'selected' if post.nsfw_override == 'no' else '' }}>force sfw</option>
-          </select>
-        </label>
-        <label>state
-          <select name="state">
-            {% for s in states %}<option value="{{ s }}" {{ 'selected' if post.state == s else '' }}>{{ s }}</option>{% endfor %}
-          </select>
-        </label>
-      </div>
-      {% if guest_review %}
-      <label>Guest approval reward
-        <input type="number" name="approval_points" min="5" max="20" step="1" placeholder="10">
-        <span class="hint">Optional total to split among guests. Select approved to set it.</span>
-      </label>
-      {% endif %}
-      <label>notes
-        <input name="notes" value="{{ post.notes }}">
-      </label>
-      <button type="submit">save</button>
-      <span class="hint">queue it from <a href="/posts">the posts grid</a></span>
-    </form>
-  </section>
-
-  <aside class="panel">
-    <h2>caption preview</h2>
-    {% if captions %}
+    <section class="panel post-captions">
+      <h2>Caption previews</h2>
       {% for c in captions %}
-      <div class="caption-box">
-        <div class="row">
-          <strong>{{ c.channel }}</strong>
+      <details class="caption-box"{% if loop.first %} open{% endif %}>
+        <summary>
+          {{ c.channel }}
           {% if c.allowed %}<span class="badge green">sendable</span>{% else %}<span class="badge red">vetoed</span>{% endif %}
           {% if c.spoiler %}<span class="badge">spoiler</span>{% endif %}
-          <span class="hint">{{ c.length }} chars · {{ c.messages }} message(s)</span>
           {% if c.eta %}<span class="badge accent" title="when it would go out if nobody interferes">est. {{ c.eta }} · in {{ c.eta_in }}</span>{% endif %}
-        </div>
+        </summary>
         <pre class="caption">{{ c.caption | safe }}</pre>
-        <div class="hint">{{ c.verdict }}</div>
-      </div>
+        <p class="hint">{{ c.length }} chars · {{ c.messages }} message(s) · {{ c.verdict }}</p>
+      </details>
+      {% else %}
+        <p class="hint"><a href="/channels#add-channel">Add a channel</a> to preview a caption.</p>
       {% endfor %}
-    {% else %}
-      <p class="hint">Add a channel to see how this post would be captioned.</p>
-    {% endif %}
+    </section>
   </aside>
 </div>
 {% endblock %}

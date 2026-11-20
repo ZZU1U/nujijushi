@@ -31,7 +31,7 @@
   {% else %}<p class="hint">None yet — add one below.</p>{% endif %}
 </section>
 
-<section class="panel">
+<section class="panel" id="add-channel">
   <h2>add a channel</h2>
   <p class="hint">
     Create the channel in Telegram, add your bot as an administrator with "post messages",
@@ -58,7 +58,7 @@
         {% for t in templates %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
       </select>
     </label>
-    <label class="check"><input type="checkbox" name="enabled" checked> enabled</label>
+    <label class="check"><input type="checkbox" name="enabled"> enable scheduled publishing now</label>
     <label class="check"><input type="checkbox" name="include_source_tag" checked> add source hashtag</label>
     <div class="form-actions"><button type="submit">create channel</button></div>
   </form>

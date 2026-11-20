@@ -23,6 +23,8 @@ Install `gallery-dl` for gallery-site imports and `ffmpeg` if you want video thu
 
 ## Quick start
 
+For guided web setup, run `nujijushi init`, then `nujijushi run` and open the [admin UI](http://127.0.0.1:8788/). The dashboard walks you through configuring Telegram, importing artwork, and holding the first post for preview. Confirm the preview when you are ready to let the scheduler publish it.
+
 1. **Initialize your archive.**
 
    ```bash

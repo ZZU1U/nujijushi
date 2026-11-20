@@ -47,16 +47,67 @@ pub fn enqueue_new(
     channel_id: i64,
     priority: i64,
 ) -> Result<Option<i64>> {
+    enqueue_with_state(conn, post_id, channel_id, priority, QueueState::Queued)
+}
+
+pub(crate) fn enqueue_with_state(
+    conn: &Connection,
+    post_id: i64,
+    channel_id: i64,
+    priority: i64,
+    state: QueueState,
+) -> Result<Option<i64>> {
     Ok(conn
         .query_row(
             "INSERT INTO queue (post_id, channel_id, state, priority, pinned, added_at)
-         VALUES (?1, ?2, 'queued', ?3, 0, ?4)
+         VALUES (?1, ?2, ?3, ?4, 0, ?5)
          ON CONFLICT (post_id, channel_id) DO NOTHING
          RETURNING id",
-            params![post_id, channel_id, priority, fmt_ts(Utc::now())],
+            params![
+                post_id,
+                channel_id,
+                state.as_str(),
+                priority,
+                fmt_ts(Utc::now())
+            ],
             |row| row.get(0),
         )
         .optional()?)
+}
+
+/// Move a reviewed post into the publishable queue. The caller checks policy
+/// and enables the destination in the same transaction.
+pub fn release_held(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE queue SET state = 'queued' WHERE id = ?1 AND state = 'held'",
+        [id],
+    )?;
+    Ok(())
+}
+
+pub fn has_confirmed_delivery(conn: &Connection) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM queue WHERE state = 'sent')
+             OR EXISTS(SELECT 1 FROM sends WHERE ok = 1)",
+        [],
+        |row| row.get(0),
+    )?)
+}
+
+pub fn count_successful_sends(conn: &Connection) -> Result<i64> {
+    Ok(
+        conn.query_row("SELECT COUNT(*) FROM sends WHERE ok = 1", [], |row| {
+            row.get(0)
+        })?,
+    )
+}
+
+pub fn count_all(conn: &Connection, state: QueueState) -> Result<i64> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM queue WHERE state = ?1",
+        [state.as_str()],
+        |row| row.get(0),
+    )?)
 }
 
 pub fn get(conn: &Connection, id: i64) -> Result<QueueItem> {
@@ -234,12 +285,15 @@ pub fn skip(conn: &Connection, id: i64) -> Result<()> {
 
 /// Put a finished item back in the queue (retry / re-run).
 pub fn requeue(conn: &Connection, id: i64) -> Result<()> {
-    conn.execute(
+    let updated = conn.execute(
         "UPDATE queue SET state = 'queued', lease_token = NULL, lease_at = NULL, last_error = NULL,
             sent_at = NULL, tg_message_ids = NULL
-         WHERE id = ?1",
+         WHERE id = ?1 AND state <> 'held'",
         [id],
     )?;
+    if updated == 0 && get(conn, id).is_ok_and(|item| item.state == QueueState::Held) {
+        return Err(Error::invalid("confirm the held post from its preview"));
+    }
     Ok(())
 }
 

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Json, Router, middleware};
@@ -12,7 +12,8 @@ use serde_json::{Value, json};
 use super::auth;
 use super::forms;
 use super::forms::{
-    ChannelForm, FormMap, ImportForm, LoginForm, PostEdit, PostFilter, PostTagAction, QueueAction,
+    ChannelForm, FormMap, ImportForm, LoginForm, POST_PAGE_SIZES, PostDelete, PostDetailQuery,
+    PostEdit, PostFilter, PostTagAction, QueueAction, post_page_size,
 };
 use super::views::{APP_CSS, APP_JS};
 use super::{WebState, auth as web_auth};
@@ -59,6 +60,10 @@ pub fn router(ws: Arc<WebState>) -> Router {
         .route("/", get(dashboard))
         .route("/posts", get(posts_page).post(posts_bulk))
         .route("/posts/{id}", get(post_page).post(post_update))
+        .route(
+            "/posts/{id}/delete",
+            get(post_delete_page).post(post_delete),
+        )
         .route("/posts/{id}/tags", post(post_tag_action))
         .route("/posts/{id}/media", post(super::media_merges::action))
         .route(
@@ -80,7 +85,11 @@ pub fn router(ws: Arc<WebState>) -> Router {
             get(channel_edit_page).post(channel_update),
         )
         .route("/channels/{id}/queue", get(queue_page))
-        .route("/channels/{id}/preview", get(preview_page))
+        .route(
+            "/channels/{id}/preview",
+            get(preview_page).post(super::setup::start_scheduling),
+        )
+        .route("/setup/queue", post(super::setup::queue_post))
         .route("/queue/action", post(queue_action))
         .route("/publish", post(publish_action))
         .route("/storage/drain", post(storage_drain))
@@ -122,7 +131,8 @@ pub(super) fn flash_redirect(path: &str, message: &str) -> Response {
             other => format!("%{:02X}", other as u32 & 0xff),
         })
         .collect();
-    Redirect::to(&format!("{path}?flash={encoded}")).into_response()
+    let separator = if path.contains('?') { '&' } else { '?' };
+    Redirect::to(&format!("{path}{separator}flash={encoded}")).into_response()
 }
 
 fn decode_flash(raw: &Option<String>) -> Option<String> {
@@ -334,48 +344,52 @@ async fn dashboard(
     Query(query): Query<PostFilter>,
 ) -> WebResult<Html<String>> {
     let app = &ws.app;
-    let stats = app
+    let (stats, posts, delivered) = app
         .db
         .call(|conn| {
-            let posts: i64 = conn.query_row("SELECT COUNT(*) FROM posts", [], |r| r.get(0))?;
-            let approved: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM posts WHERE state = 'approved'",
-                [],
-                |r| r.get(0),
-            )?;
-            let queued: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM queue WHERE state = 'queued'",
-                [],
-                |r| r.get(0),
-            )?;
-            let sent: i64 =
-                conn.query_row("SELECT COUNT(*) FROM sends WHERE ok = 1", [], |r| r.get(0))?;
-            let unknown: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM queue WHERE state = 'unknown'",
-                [],
-                |r| r.get(0),
-            )?;
-            Ok(json!({
-                "posts": posts, "approved": approved, "queued": queued,
-                "sent": sent, "unknown": unknown,
-            }))
+            let posts = post_db::count(conn, None)?;
+            let stats = json!({
+                "posts": posts,
+                "approved": post_db::count(conn, Some(PostState::Approved))?,
+                "queued": queue_db::count_all(conn, QueueState::Queued)?,
+                "sent": queue_db::count_successful_sends(conn)?,
+                "unknown": queue_db::count_all(conn, QueueState::Unknown)?,
+            });
+            Ok((stats, posts, queue_db::has_confirmed_delivery(conn)?))
         })
         .await?;
 
     let channels = app.db.call(|conn| channel_db::list(conn)).await?;
     let now = chrono::Utc::now();
     let mut channel_views = Vec::new();
+    let mut setup_channels = Vec::new();
     for channel in &channels {
         let channel_id = channel.id;
         let since = crate::queue::scheduler::local_day_start(channel, now);
-        let (queued, sent_today) = app
+        let (counts, sent_today) = app
             .db
             .call(move |conn| {
-                let queued = queue_db::count_state(conn, channel_id, QueueState::Queued)?;
-                let sent = queue_db::sends_since(conn, channel_id, since)?;
-                Ok((queued, sent))
+                Ok((
+                    queue_db::counts(conn, channel_id)?,
+                    queue_db::sends_since(conn, channel_id, since)?,
+                ))
             })
             .await?;
+        let count = |state: QueueState| {
+            counts
+                .iter()
+                .find(|(name, _)| name == state.as_str())
+                .map_or(0, |(_, n)| *n)
+        };
+        let queued = count(QueueState::Queued);
+        setup_channels.push(super::setup::ChannelProgress {
+            id: channel.id,
+            active: channel.enabled && !channel.paused,
+            queued: queued > 0,
+            held: count(QueueState::Held) > 0,
+            sending: count(QueueState::Sending) > 0,
+            sent: count(QueueState::Sent) > 0,
+        });
         // when the next post would go out, if the scheduler is running
         let next_at = crate::queue::scheduler::upcoming_slots(channel, now, sent_today, 1)
             .into_iter()
@@ -466,6 +480,14 @@ async fn dashboard(
         })
         .await?;
 
+    let scheduler = scheduler_view(app, now).await?;
+    let setup = super::setup::view(
+        &app.cfg,
+        posts > 0,
+        delivered,
+        &setup_channels,
+        !scheduler.stale,
+    );
     let html = ws.pages.render(
         "dashboard.html",
         &json!({
@@ -478,7 +500,8 @@ async fn dashboard(
             "jobs": job_views,
             "recent_unknown": unknown,
             "storage": storage_views,
-            "scheduler": scheduler_view(app, now),
+            "scheduler": scheduler,
+            "setup": setup,
         }),
     )?;
     Ok(Html(html))
@@ -486,13 +509,21 @@ async fn dashboard(
 
 // ---------------------------------------------------------------- posts
 
+const POSTS_PER_PAGE_COOKIE: &str = "nujijushi_posts_per_page";
+
 async fn posts_page(
     State(ws): State<Arc<WebState>>,
     Query(query): Query<PostFilter>,
-) -> WebResult<Html<String>> {
+    headers: HeaderMap,
+) -> WebResult<Response> {
     let app = &ws.app;
-    let page = query.page.unwrap_or(1).max(1);
-    let per_page = 24;
+    let requested_size = query.per_page.as_deref().and_then(post_page_size);
+    let remembered_size =
+        auth::read_cookie(&headers, POSTS_PER_PAGE_COOKIE).and_then(post_page_size);
+    let per_page = requested_size
+        .or(remembered_size)
+        .unwrap_or(POST_PAGE_SIZES[0]);
+    let requested_page = query.page.unwrap_or(1);
     let filter = post_db::PostFilter {
         state: query
             .state
@@ -519,22 +550,23 @@ async fn posts_page(
         author_id: None,
         search: query.search.clone().filter(|s| !s.is_empty()),
         limit: per_page,
-        offset: (page - 1).saturating_mul(per_page),
-    };
-    let filter_for_count = post_db::PostFilter {
-        limit: 0,
         offset: 0,
-        ..filter.clone()
     };
-    let cards = app
+    let (cards, total, page, page_count) = app
         .db
-        .call(move |conn| post_db::cards(conn, &filter))
-        .await?;
-    // a real COUNT over the same filter: fetching up to 100k cards just to
-    // size the pager was wrong for search/nsfw filters and slow either way
-    let total = app
-        .db
-        .call(move |conn| post_db::count_cards(conn, &filter_for_count))
+        .call(move |conn| {
+            let tx = conn.transaction()?;
+            let total = post_db::count_cards(&tx, &filter)?;
+            let page_count = (total.saturating_add(per_page - 1) / per_page).max(1);
+            let page = requested_page.clamp(1, page_count);
+            let filter = post_db::PostFilter {
+                offset: (page - 1) * per_page,
+                ..filter
+            };
+            let cards = post_db::cards(&tx, &filter)?;
+            tx.commit()?;
+            Ok((cards, total, page, page_count))
+        })
         .await?;
     let sources = app.db.call(|conn| post_db::sources(conn)).await?;
     let tags = app.db.call(|conn| tag_db::most_used(conn, 30)).await?;
@@ -572,8 +604,12 @@ async fn posts_page(
             "flash": decode_flash(&query.flash),
             "cards": cards,
             "total": total,
-            "previous_page": (page > 1).then(|| query.page_url(page - 1)),
-            "next_page": (page.saturating_mul(per_page) < total).then(|| query.page_url(page + 1)),
+            "page_number": page,
+            "page_count": page_count,
+            "per_page": per_page,
+            "page_sizes": POST_PAGE_SIZES,
+            "previous_page": (page > 1).then(|| query.page_url(page - 1, per_page)),
+            "next_page": (page < page_count).then(|| query.page_url(page + 1, per_page)),
             "filters": {
                 "state": query.state,
                 "source": query.source,
@@ -586,9 +622,18 @@ async fn posts_page(
             "top_tags": tags.iter().map(|(t, n)| json!({"tag": t, "count": n})).collect::<Vec<_>>(),
             "channels": channels.iter().map(|c| json!({"id": c.id, "title": c.title})).collect::<Vec<_>>(),
             "states": PostState::all().iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            "setup": query.setup,
         }),
     )?;
-    Ok(Html(html))
+    let mut response = Html(html).into_response();
+    if let Some(size) = requested_size.filter(|size| Some(*size) != remembered_size) {
+        let cookie = HeaderValue::from_str(&format!(
+            "{POSTS_PER_PAGE_COOKIE}={size}; Path=/posts; HttpOnly; SameSite=Strict; Max-Age=2592000"
+        ))
+        .map_err(|err| Error::other(err.to_string()))?;
+        response.headers_mut().append(header::SET_COOKIE, cookie);
+    }
+    Ok(response)
 }
 
 async fn posts_bulk(
@@ -685,7 +730,7 @@ async fn posts_bulk(
 async fn post_page(
     State(ws): State<Arc<WebState>>,
     Path(id): Path<i64>,
-    Query(query): Query<PostFilter>,
+    Query(query): Query<PostDetailQuery>,
 ) -> WebResult<Html<String>> {
     let app = &ws.app;
     let suggestions_enabled = app.cfg.tag_suggestions.enabled;
@@ -775,6 +820,9 @@ async fn post_page(
         .media
         .windows(2)
         .any(|items| items.iter().all(crate::media::merge::supports));
+    let has_media_tools = post.media.iter().any(crate::media::merge::supports)
+        || !merge_undo.is_empty()
+        || !compressed.is_empty();
     let media: Vec<Value> = post
         .media
         .iter()
@@ -812,6 +860,7 @@ async fn post_page(
             "page": "posts",
             "csrf": ws.csrf,
             "flash": query.flash,
+            "open_section": query.section,
             "guest_review": guest_review,
             "post": {
                 "id": post.id,
@@ -840,6 +889,7 @@ async fn post_page(
             "media_total": media_total,
             "media": media,
             "can_merge": can_merge,
+            "has_media_tools": has_media_tools,
             "merge_job": merge_job.as_ref().map(|job| job_view(job, now)),
             "gallery_version": crate::db::media_merges::gallery_version(&post.media),
             "tag_review": tag_review,
@@ -861,6 +911,11 @@ async fn post_update(
     check_csrf(&ws, &form.csrf)?;
     let app = &ws.app;
     let enabled = app.cfg.guest_reputation;
+    let back = if form.tags.is_some() {
+        format!("/posts/{id}?section=tags")
+    } else {
+        format!("/posts/{id}")
+    };
     let rating = form
         .rating
         .as_deref()
@@ -918,7 +973,74 @@ async fn post_update(
             Ok(())
         })
         .await?;
-    Ok(flash_redirect(&format!("/posts/{id}"), "saved"))
+    Ok(flash_redirect(&back, "Changes saved"))
+}
+
+fn post_is_sending(conn: &rusqlite::Connection, id: i64) -> crate::error::Result<bool> {
+    Ok(queue_db::for_post(conn, id)?
+        .iter()
+        .any(|(_, _, state)| *state == QueueState::Sending))
+}
+
+async fn post_delete_page(
+    State(ws): State<Arc<WebState>>,
+    Path(id): Path<i64>,
+    Query(query): Query<PostDetailQuery>,
+) -> WebResult<Html<String>> {
+    let (post, sending) = ws
+        .app
+        .db
+        .call(move |conn| Ok((post_db::get(conn, id)?, post_is_sending(conn, id)?)))
+        .await?;
+    let html = ws.pages.render(
+        "post_delete.html",
+        &json!({
+            "page": "posts",
+            "csrf": ws.csrf,
+            "flash": query.flash,
+            "id": id,
+            "title": post.title,
+            "imported_at": post.imported_at.to_rfc3339(),
+            "sending": sending,
+        }),
+    )?;
+    Ok(Html(html))
+}
+
+async fn post_delete(
+    State(ws): State<Arc<WebState>>,
+    Path(id): Path<i64>,
+    Form(form): Form<PostDelete>,
+) -> WebResult<Response> {
+    check_csrf(&ws, &form.csrf)?;
+    let deleted = ws
+        .app
+        .db
+        .call(move |conn| {
+            // Keep the delivery check and deletion atomic with lease acquisition.
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let post = post_db::get(&tx, id)?;
+            if post.imported_at != form.imported_at {
+                return Err(Error::invalid(
+                    "This post changed. Open the confirmation again.",
+                ));
+            }
+            if post_is_sending(&tx, id)? {
+                return Ok(false);
+            }
+            post_db::delete(&tx, id)?;
+            tx.commit()?;
+            Ok(true)
+        })
+        .await?;
+    if deleted {
+        Ok(flash_redirect("/posts", "Post deleted"))
+    } else {
+        Ok(flash_redirect(
+            &format!("/posts/{id}/delete"),
+            "Wait for the current send to finish before deleting.",
+        ))
+    }
 }
 
 async fn post_tag_action(
@@ -955,7 +1077,10 @@ async fn post_tag_action(
         }
         _ => return Err(Error::invalid("unknown source tag action").into()),
     };
-    Ok(flash_redirect(&format!("/posts/{id}"), message))
+    Ok(flash_redirect(
+        &format!("/posts/{id}?section=tags"),
+        message,
+    ))
 }
 
 // ---------------------------------------------------------------- channels
@@ -1193,6 +1318,7 @@ async fn queue_page(
                 channel_id,
                 &[
                     QueueState::Queued,
+                    QueueState::Held,
                     QueueState::Unknown,
                     QueueState::Failed,
                     QueueState::Sending,
@@ -1316,18 +1442,41 @@ async fn queue_action(
 async fn preview_page(
     State(ws): State<Arc<WebState>>,
     Path(id): Path<i64>,
+    Query(query): Query<PostFilter>,
 ) -> WebResult<Html<String>> {
     let app = &ws.app;
     let channel = app.db.call(move |conn| channel_db::get(conn, id)).await?;
-    let items = crate::tg::publish::preview_channel(app, &channel, 10).await?;
+    let stopped = !channel.enabled || channel.paused;
+    let held = super::setup::held_preview(app, &channel).await?;
+    let mut projection = channel.clone();
+    projection.enabled = true;
+    projection.paused = false;
+    let items = crate::tg::publish::preview_channel(app, &projection, 10).await?;
+    let enable_item = if app.cfg.require_bot_token().is_ok() {
+        match &held {
+            Some(held) if held["allowed"] == true => Some(held.clone()),
+            None if stopped => items.first().map(|item| {
+                json!({
+                    "queue_id": item.queue_id,
+                    "post_id": item.post_id,
+                })
+            }),
+            _ => None,
+        }
+    } else {
+        None
+    };
     let now = chrono::Utc::now();
     let html = ws.pages.render(
         "preview.html",
         &json!({
             "page": "channels",
             "csrf": ws.csrf,
-            "flash": Value::Null,
+            "flash": decode_flash(&query.flash),
             "channel": {"id": channel.id, "title": channel.title, "tg_id": channel.tg_id},
+            "held": held,
+            "stopped": stopped,
+            "enable_item": enable_item,
             "items": items.iter().enumerate().map(|(index, item)| json!({
                 "slot": index + 1,
                 "queue_id": item.queue_id,
@@ -1340,7 +1489,6 @@ async fn preview_page(
                 "nsfw": item.nsfw,
                 "eta": crate::tg::publish::slot_label(item.eta, now),
                 "eta_in": crate::tg::publish::format_duration(item.eta - now),
-                "nsfw": item.nsfw,
             })).collect::<Vec<_>>(),
         }),
     )?;
@@ -1425,21 +1573,32 @@ async fn publish_action(
 }
 /// Is the scheduler alive? Read by the dashboard banner and `/api/status`, so a
 /// queue that is not moving can be explained instead of guessed at.
-fn scheduler_view(app: &AppState, now: chrono::DateTime<chrono::Utc>) -> Value {
+#[derive(serde::Serialize)]
+struct SchedulerView {
+    last_tick: Option<String>,
+    age_secs: Option<i64>,
+    age: String,
+    stale: bool,
+}
+
+async fn scheduler_view(
+    app: &AppState,
+    now: chrono::DateTime<chrono::Utc>,
+) -> crate::error::Result<SchedulerView> {
+    use crate::queue::scheduler::{STALE_SECS, TICK_KEY, tick_age};
+
     let last_tick = app
         .db
-        .setting(crate::queue::scheduler::TICK_KEY)
-        .ok()
-        .flatten();
-    let age = crate::queue::scheduler::tick_age(last_tick.as_deref(), now);
-    let age_text = age
-        .map(|secs| crate::tg::publish::format_duration(chrono::Duration::seconds(secs)))
-        .unwrap_or_else(|| "never".to_string());
-    json!({
-        "last_tick": last_tick,
-        "age_secs": age,
-        "age": age_text,
-        "stale": age.map(|secs| secs > crate::queue::scheduler::STALE_SECS).unwrap_or(true),
+        .call(|conn| crate::db::setting(conn, TICK_KEY))
+        .await?;
+    let age = tick_age(last_tick.as_deref(), now);
+    Ok(SchedulerView {
+        last_tick,
+        age_secs: age,
+        age: age
+            .map(|secs| crate::tg::publish::format_duration(chrono::Duration::seconds(secs)))
+            .unwrap_or_else(|| "never".to_string()),
+        stale: age.is_none_or(|secs| secs > STALE_SECS),
     })
 }
 
@@ -1660,7 +1819,7 @@ pub async fn status_payload(app: &AppState) -> crate::error::Result<Value> {
         "watch_jobs": watch_jobs.iter().flatten().map(|job| job_view(job, now)).collect::<Vec<_>>(),
         "duplicate_indexing": duplicate_indexing,
         "channels": channel_views,
-        "scheduler": scheduler_view(app, now),
+        "scheduler": scheduler_view(app, now).await?,
     }))
 }
 

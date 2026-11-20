@@ -98,13 +98,7 @@ impl Db {
     }
 
     pub fn setting(&self, key: &str) -> Result<Option<String>> {
-        self.with(|conn| {
-            Ok(conn
-                .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
-                    row.get(0)
-                })
-                .ok())
-        })
+        self.with(|conn| setting(conn, key))
     }
 
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
@@ -117,6 +111,15 @@ impl Db {
             Ok(())
         })
     }
+}
+
+pub fn setting(conn: &Connection, key: &str) -> Result<Option<String>> {
+    use rusqlite::OptionalExtension;
+    Ok(conn
+        .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+            row.get(0)
+        })
+        .optional()?)
 }
 
 // --- shared row helpers (timestamps are stored as RFC3339 TEXT) ---

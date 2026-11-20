@@ -32,14 +32,17 @@ pub fn constant_time_eq(a: &str, b: &str) -> bool {
 }
 
 pub fn cookie_value(headers: &header::HeaderMap) -> Option<String> {
-    let raw = headers.get(header::COOKIE)?.to_str().ok()?;
-    for part in raw.split(';') {
-        let part = part.trim();
-        if let Some(rest) = part.strip_prefix(&format!("{COOKIE}=")) {
-            return Some(rest.to_string());
-        }
-    }
-    None
+    read_cookie(headers, COOKIE).map(str::to_owned)
+}
+
+pub(super) fn read_cookie<'a>(headers: &'a header::HeaderMap, name: &str) -> Option<&'a str> {
+    headers
+        .get(header::COOKIE)?
+        .to_str()
+        .ok()?
+        .split(';')
+        .filter_map(|part| part.trim().split_once('='))
+        .find_map(|(key, value)| (key == name).then_some(value))
 }
 
 pub fn check(req: &Request, ws: &WebState) -> bool {
