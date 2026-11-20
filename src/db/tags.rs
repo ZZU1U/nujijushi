@@ -320,8 +320,11 @@ pub fn for_post(conn: &Connection, post_id: i64) -> Result<Vec<String>> {
 
 pub fn most_used(conn: &Connection, limit: i64) -> Result<Vec<(String, i64)>> {
     let mut stmt = conn.prepare(
-        "SELECT t.name, COUNT(*) AS n FROM active_post_tags pt JOIN tags t ON t.id = pt.tag_id
-         GROUP BY t.id ORDER BY n DESC, t.name LIMIT ?1",
+        "SELECT t.name, counts.n
+         FROM (SELECT tag_id, COUNT(DISTINCT post_id) AS n
+               FROM visible_post_tag_links GROUP BY tag_id) counts
+         JOIN tags t ON t.id = counts.tag_id
+         ORDER BY counts.n DESC, t.name LIMIT ?1",
     )?;
     let rows = stmt.query_map([limit], |row| Ok((row.get(0)?, row.get(1)?)))?;
     let mut out = Vec::new();
@@ -385,6 +388,14 @@ mod tests {
             // Saving the existing manual field does not apply a second alias hop.
             replace_manual(conn, post_id, &["illustration".into(), "favorite".into()])?;
             assert!(provenance(conn, post_id)?[0].manual);
+            assert!(suppress_source(conn, post_id, tag_id)?);
+            assert!(most_used(conn, 10)?.contains(&("illustration".into(), 2)));
+            let filter = super::super::posts::PostFilter {
+                tag: Some("illustration".into()),
+                ..Default::default()
+            };
+            assert_eq!(super::super::posts::cards(conn, &filter)?.len(), 2);
+            assert_eq!(super::super::posts::count_cards(conn, &filter)?, 2);
             remove(conn, post_id, &["#fine art".into()])?;
             first.tags.push("new tag".into());
             assert_eq!(
@@ -398,10 +409,6 @@ mod tests {
             assert_eq!(for_post(conn, other_id)?, ["illustration", "original"]);
             assert_eq!(removals(conn, post_id)?[0].name, "illustration");
             assert!(most_used(conn, 10)?.contains(&("illustration".into(), 1)));
-            let filter = super::super::posts::PostFilter {
-                tag: Some("illustration".into()),
-                ..Default::default()
-            };
             assert_eq!(super::super::posts::count_cards(conn, &filter)?, 1);
 
             // Undo restores a current source tag, but never resurrects one the source has dropped.

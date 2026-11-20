@@ -18,6 +18,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0011_watch_enabled.sql"),
     include_str!("../../migrations/0012_guest_reputation.sql"),
     include_str!("../../migrations/0013_tag_suggestions.sql"),
+    include_str!("../../migrations/0014_post_grid_reads.sql"),
 ];
 
 pub fn schema_version(conn: &Connection) -> Result<i64> {
@@ -163,7 +164,7 @@ mod tests {
 
         migrate(&mut conn).unwrap();
         assert!(has_table(&conn, "reputation_events").unwrap());
-        assert_eq!(schema_version(&conn).unwrap(), 13);
+        assert_eq!(schema_version(&conn).unwrap(), MIGRATIONS.len() as i64);
         let franchise: String = conn
             .query_row(
                 "SELECT franchise FROM tag_franchise_associations WHERE character_tag_id = 42",

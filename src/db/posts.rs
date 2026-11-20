@@ -468,7 +468,7 @@ fn filter_sql(filter: &PostFilter) -> (String, Vec<Value>) {
     match filter.sent {
         SentFilter::Any => {}
         SentFilter::NotSent => clauses.push(format!(
-            "p.id NOT IN (SELECT q.post_id FROM queue q WHERE q.state IN ({}))",
+            "NOT EXISTS (SELECT 1 FROM queue q WHERE q.post_id = p.id AND q.state IN ({}))",
             crate::db::queue::DELIVERED_STATES
         )),
         SentFilter::Sent => clauses.push(format!(
@@ -492,7 +492,7 @@ fn filter_sql(filter: &PostFilter) -> (String, Vec<Value>) {
         && let Some(norm) = tags::normalize(tag)
     {
         clauses.push(
-            "p.id IN (SELECT pt.post_id FROM active_post_tags pt JOIN tags t ON t.id = pt.tag_id WHERE t.name = ?)"
+            "p.id IN (SELECT pt.post_id FROM visible_post_tag_links pt JOIN tags t ON t.id = pt.tag_id WHERE t.name = ?)"
                 .into(),
         );
         values.push(Value::Text(norm));
@@ -702,7 +702,7 @@ mod tests {
             ..Default::default()
         };
         let (sql, values) = filter_sql(&tagged);
-        assert!(sql.contains("FROM active_post_tags"), "{sql}");
+        assert!(sql.contains("FROM visible_post_tag_links"), "{sql}");
         assert_eq!(values.len(), 1);
     }
 
