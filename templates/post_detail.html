@@ -143,9 +143,9 @@
       <h2>Add to queue</h2>
       <form method="post" action="/posts/{{ post.id }}/queue" class="post-buttons">
         <input type="hidden" name="csrf" value="{{ csrf }}">
-        <label>Destination <select name="channel" required>
+        <label>Destination <select name="channel" aria-label="Destination" required>
           <option value="">Choose a channel</option>
-          {% for c in channels %}<option value="{{ c.id }}">{{ c.title }}</option>{% endfor %}
+          {% for c in channels %}<option value="{{ c.id }}"{% if c.id == default_channel %} selected{% endif %}>{{ c.title }}</option>{% endfor %}
         </select></label>
         <button type="submit" class="small"{% if not outgoing_count %} disabled{% endif %}>Add to queue</button>
       </form>

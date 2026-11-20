@@ -36,6 +36,7 @@ fn ui_page(path: &str) -> bool {
             | "/duplicates"
             | "/watches"
             | "/users"
+            | "/settings"
     ) || match path.split('/').collect::<Vec<_>>().as_slice() {
         ["", "posts", id]
         | ["", "posts", id, "delete"]

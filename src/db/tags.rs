@@ -318,6 +318,38 @@ pub fn for_post(conn: &Connection, post_id: i64) -> Result<Vec<String>> {
     Ok(out)
 }
 
+pub fn card_tags(conn: &Connection, ids: &[i64]) -> Result<Vec<(i64, String)>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let slots = vec!["?"; ids.len()].join(",");
+    let mut stmt = conn.prepare(&format!(
+        "WITH visible AS (
+            SELECT post_id, tag_id, MIN(position) AS position FROM visible_post_tag_links
+            WHERE post_id IN ({slots}) GROUP BY post_id, tag_id
+         ), ranked AS (
+            SELECT post_id, tag_id, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY position) AS rank
+            FROM visible
+         )
+         SELECT ranked.post_id, t.name FROM ranked JOIN tags t ON t.id = ranked.tag_id
+         WHERE rank <= 3 ORDER BY ranked.post_id, rank"
+    ))?;
+    Ok(stmt
+        .query_map(rusqlite::params_from_iter(ids), |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+pub fn visible_count(conn: &Connection, name: &str) -> Result<i64> {
+    Ok(conn.query_row(
+        "SELECT COUNT(DISTINCT pt.post_id) FROM tags t JOIN visible_post_tag_links pt
+         ON pt.tag_id = t.id WHERE t.name = ?1",
+        [name],
+        |row| row.get(0),
+    )?)
+}
+
 pub fn most_used(conn: &Connection, limit: i64) -> Result<Vec<(String, i64)>> {
     let mut stmt = conn.prepare(
         "SELECT t.name, counts.n

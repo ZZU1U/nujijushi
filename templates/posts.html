@@ -1,5 +1,9 @@
 {% extends "base.html" %}
-{% block title %}posts{% endblock %}
+{% block title %}posts<div data-posts-more class="pager" hidden>
+  <button type="button" data-load-more>Load more</button>
+  <span role="status" data-batch-message></span>
+</div>
+{% endblock %}
 {% block body %}
 {% if setup %}
 <section class="panel">
@@ -8,52 +12,59 @@
   <a href="/">Back to setup</a>
 </section>
 {% endif %}
-<form class="filters panel" method="get" action="/posts">
+<form class="filters panel" data-post-filters method="get" action="/posts">
   {% if setup %}<input type="hidden" name="setup" value="true">{% endif %}
-  <input name="search" placeholder="search title / description / id" value="{{ filters.search }}">
-  <select name="state">
+  <input name="search" aria-label="Search posts" placeholder="search title / description / id" value="{{ filters.search }}">
+  <select name="state" aria-label="Post state">
     <option value="" {{ 'selected' if not filters.state else '' }}>not rejected</option>
     <option value="all" {{ 'selected' if filters.state == 'all' else '' }}>any state</option>
     {% for s in states %}<option value="{{ s }}" {{ 'selected' if filters.state == s else '' }}>{{ s }}</option>{% endfor %}
   </select>
-  <select name="source">
+  <select name="source" aria-label="Source">
     <option value="">any source</option>
     {% for s in sources %}<option value="{{ s }}" {{ 'selected' if filters.source == s else '' }}>{{ s }}</option>{% endfor %}
   </select>
-  <select name="nsfw">
+  <select name="nsfw" aria-label="Sensitivity">
     <option value="">sfw + nsfw</option>
     <option value="yes" {{ 'selected' if filters.nsfw == 'yes' else '' }}>nsfw only</option>
     <option value="no" {{ 'selected' if filters.nsfw == 'no' else '' }}>sfw only</option>
   </select>
-  <select name="sent">
+  <select name="sent" aria-label="Delivery">
     <option value="" {{ 'selected' if not filters.sent else '' }}>hide sent</option>
+    <option value="not_queued" {{ 'selected' if filters.sent == 'not_queued' else '' }}>Not queued</option>
     <option value="all" {{ 'selected' if filters.sent == 'all' else '' }}>with sent</option>
     <option value="yes" {{ 'selected' if filters.sent == 'yes' else '' }}>sent only</option>
   </select>
-  <input name="tag" placeholder="tag" value="{{ filters.tag }}">
-  <label class="page-size">Posts per page
+  <input name="tag" aria-label="Tag filter" placeholder="tag" value="{{ filters.tag }}">
+  <label class="page-size" data-posts-fallback>Posts per page
     <select name="per_page">
       {% for size in page_sizes %}<option value="{{ size }}"{{ ' selected' if size == per_page else '' }}>{{ size }}</option>{% endfor %}
     </select>
   </label>
-  <button type="submit">Apply</button>
+  <button type="submit" data-posts-fallback>Apply</button>
   <span class="hint">{{ total }} post(s)</span>
   <a class="hint post-duplicates-link" href="/duplicates">review duplicates</a>
 </form>
 
 {% if top_tags %}
-<div class="tagcloud">
-  {% for t in top_tags %}<a href="/posts?tag={{ t.tag }}{% if setup %}&amp;setup=true{% endif %}">#{{ t.tag }} <span class="hint">{{ t.count }}</span></a>{% endfor %}
-</div>
+<details id="posts-tag-menu" class="panel"{% if filters.tag %} open{% endif %}>
+  <summary>Tags{% if filters.tag %} · #{{ filters.tag }}{% endif %}</summary>
+  <div class="tagcloud">
+    {% for t in top_tags %}
+    <a href="{{ t.url }}"{% if t.active %} aria-current="true" class="active"{% endif %}>#{{ t.tag }} <span class="hint">{{ t.count }}</span></a>
+    {% endfor %}
+    {% if filters.tag %}<a href="{{ clear_tag_url }}">Clear tag</a>{% endif %}
+  </div>
+</details>
 {% endif %}
 
-<form method="post" action="{% if setup %}/setup/queue{% else %}/posts{% endif %}" id="bulk" data-grid-page="{{ page_number }}">
+<form method="post" action="{% if setup %}/setup/queue{% else %}/posts{% endif %}" id="bulk" data-grid-page="{{ page_number }}" data-next-cursor="{{ next_cursor }}">
   <input type="hidden" name="csrf" value="{{ csrf }}">
   <input type="hidden" name="back" value="{{ grid_url }}">
   <div class="bulkbar panel">
     {% if cards and not setup %}
     <div class="bulk-selection" data-post-selection hidden>
-      <button type="button" class="small ghost" data-select-posts>Select all on page</button>
+      <button type="button" class="small ghost" data-select-posts><span class="select-fallback">Select all on page</span><span class="select-loaded">Select all loaded posts</span></button>
       <button type="button" class="small ghost" data-clear-posts>Clear</button>
       <span class="hint" data-post-selection-count aria-live="polite" aria-atomic="true"></span>
     </div>
@@ -68,7 +79,7 @@
     {% endif %}
     <select name="channel" aria-label="Destination channel">
       <option value="">choose channel…</option>
-      {% for c in channels %}<option value="{{ c.id }}">{{ c.title }}</option>{% endfor %}
+      {% for c in channels %}<option value="{{ c.id }}"{% if c.id == default_channel %} selected{% endif %}>{{ c.title }}</option>{% endfor %}
     </select>
     <button name="action" value="queue" class="small">{{ 'Hold for preview' if setup else 'queue' }}</button>
     {% if not setup %}<button name="action" value="delete" class="small danger" data-confirm="Delete the selected posts and their media links?">delete</button>{% endif %}
@@ -76,34 +87,7 @@
 
   {% if cards %}
   <div class="grid">
-    {% for c in cards %}
-    <article class="card post{{ ' pushed' if c.pushed else '' }}">
-      <input {% if setup %}type="radio" name="post_id" value="{{ c.id }}" required{% else %}type="checkbox" name="sel_{{ c.id }}"{% endif %} id="post-pick-{{ c.id }}" class="pick" aria-label="Select post #{{ c.id }}" data-post-pick>
-      <label class="post-pick-area" for="post-pick-{{ c.id }}" aria-hidden="true"></label>
-      <div class="thumb">
-        {% if c.thumb %}<img loading="lazy" src="/thumb/{{ c.thumb }}" alt="">{% else %}<span class="noimg">no media</span>{% endif %}
-        {% if c.media_count > 1 %}<span class="count">{{ c.media_count }}</span>{% endif %}
-        {% if c.nsfw %}<span class="badge red corner">nsfw</span>{% endif %}
-      </div>
-      <div class="meta">
-        <div class="row">
-          <a class="post-link" href="/posts/{{ c.id }}" aria-label="Open post #{{ c.id }}">#{{ c.id }}</a>
-          <span class="badge state-{{ c.state }}">{{ c.state }}</span>
-          {% if c.queue_badges is defined %}
-          {% for entry in c.queue_badges %}
-          <span class="badge {{ 'green' if entry.class == 'sent' else 'amber' if entry.class == 'unknown' else '' }}">{{ entry.label }} · {{ entry.channel }}</span>
-          {% endfor %}
-          {% elif c.delivered %}<span class="badge green" title="sent to {{ c.channels }}">sent · {{ c.channels }}</span>
-          {% elif c.pushed %}<span class="badge" title="queued for {{ c.channels }}">queued · {{ c.channels }}</span>{% endif %}
-          <span class="badge">{{ c.rating }}</span>
-          {% if c.submitter_guest %}<span class="badge amber" title="submitted through Telegram by {{ c.submitter }}, who is not an admin">via {{ c.submitter }}</span>{% endif %}
-        </div>
-        <div class="hint">{{ c.artist }}</div>
-        <div class="snippet">{{ c.snippet }}</div>
-        <div class="hint">{{ c.source }} · {{ c.imported }}</div>
-      </div>
-    </article>
-    {% endfor %}
+    {% include "post_cards.html" %}
   </div>
   {% else %}
   <p class="hint">Nothing here. <a href="/import">Import some artwork</a>.</p>
@@ -111,10 +95,14 @@
 </form>
 
 {% if previous_page or next_page %}
-<nav class="pager" aria-label="Posts pagination">
+<nav data-posts-fallback class="pager" aria-label="Posts pagination">
   {% if previous_page %}<a class="button small ghost" rel="prev" href="{{ previous_page }}">← previous</a>{% endif %}
   <span class="hint">Page {{ page_number }} of {{ page_count }}</span>
   {% if next_page %}<a class="button small ghost" rel="next" href="{{ next_page }}">next →</a>{% endif %}
 </nav>
 {% endif %}
+<div data-posts-more class="pager" hidden>
+  <button type="button" data-load-more>Load more</button>
+  <span role="status" data-batch-message></span>
+</div>
 {% endblock %}

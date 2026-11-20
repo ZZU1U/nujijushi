@@ -99,7 +99,7 @@ test('queue on page 3 and return from a post in the same browser document', asyn
   const documents = countDocuments(page)
   const path = '/posts?page=3&per_page=24&source=local'
   await signIn(page, path)
-  await expect(page.getByText('Page 3 of 3')).toBeVisible()
+  await expect(page.locator('#bulk')).toHaveAttribute('data-grid-page', '3')
   const card = page.locator('.card.post').last()
   await card.locator('label.post-pick-area').click()
   await page.getByLabel('Destination channel').selectOption('1')
@@ -114,7 +114,7 @@ test('queue on page 3 and return from a post in the same browser document', asyn
   await expect(page.getByRole('heading', { name: 'Add to queue' })).toBeVisible()
   await page.getByRole('link', { name: '← Posts' }).click()
   await expect(page).toHaveURL(base + path)
-  await expect(page.getByText('Page 3 of 3')).toBeVisible()
+  await expect(page.locator('#bulk')).toHaveAttribute('data-grid-page', '3')
   await expect.poll(() => page.evaluate(() => scrollY)).toBe(savedScroll)
   expect(documents()).toBe(1)
 })
@@ -152,7 +152,7 @@ for (const width of [390, 1440]) test('every admin screen fits a ' + width + 'px
   await page.setViewportSize({ width, height: 844 })
   await signIn(page, '/')
   const routes = ['/', '/posts', '/posts/1', '/posts/1/delete', '/duplicates', '/channels',
-    '/channels/1/edit', '/channels/1/queue', '/channels/1/preview', '/import', '/jobs', '/watches', '/users']
+    '/channels/1/edit', '/settings', '/channels/1/queue', '/channels/1/preview', '/import', '/jobs', '/watches', '/users']
   for (const path of routes) {
     await page.goto(base + path)
     await expect(page.locator('.admin-shell main :is(h1, h2, form)').first(), { message: path }).toBeAttached()
@@ -236,6 +236,7 @@ test('a completed import displays its summary exactly once', async ({ page }) =>
   const row = page.locator('[data-job="' + queued.job_id + '"]')
   await expect(row.getByRole('link', { name: 'Open post' })).toBeVisible({ timeout: 10_000 })
   await expect(row.locator('[data-role="message"]')).toHaveText('updated post · 2 files')
+  await expect(page.locator('textarea[name="targets"]')).toBeEmpty()
   expect(documents()).toBe(1)
 })
 
@@ -305,4 +306,86 @@ test('navigation motion follows the reduced-motion preference', async ({ page })
   await page.getByRole('link', { name: 'import', exact: true }).click()
   await expect(page).toHaveURL(base + '/import')
   await expect(page.locator('main')).toHaveCSS('animation-name', 'view-in')
+})
+
+test('Posts appends batches, retains selections, and cancels an obsolete batch', async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 600 })
+  const documents = countDocuments(page)
+  await signIn(page, '/posts')
+  const cards = page.locator('[data-post-card]')
+  await expect(cards).toHaveCount(24)
+  const pick = cards.first().locator('[data-post-pick]')
+  await pick.check({ force: true })
+  await page.locator('[data-posts-more]').scrollIntoViewIfNeeded()
+  await expect(cards).toHaveCount(48)
+  await expect(pick).toBeChecked()
+
+  const post = cards.nth(32).getByRole('link', { name: /Open post/ })
+  await post.scrollIntoViewIfNeeded()
+  const scroll = await page.evaluate(() => scrollY)
+  await post.click()
+  await page.getByRole('link', { name: '← Posts' }).click()
+  await expect(cards).toHaveCount(48)
+  await expect(pick).toBeChecked()
+  await expect.poll(() => page.evaluate(() => scrollY)).toBe(scroll)
+
+  let started: () => void = () => {}
+  let finish: () => void = () => {}
+  const startedBatch = new Promise<void>((resolve) => { started = resolve })
+  const releaseBatch = new Promise<void>((resolve) => { finish = resolve })
+  await page.route('**/api/v1/posts/cards?*', async (route) => {
+    started()
+    await releaseBatch
+    await route.continue().catch(() => {})
+  })
+  await page.locator('[data-posts-more]').scrollIntoViewIfNeeded()
+  await startedBatch
+  try {
+    await page.getByRole('textbox', { name: 'Search posts' }).fill('Different heights')
+    await page.getByRole('textbox', { name: 'Search posts' }).press('Enter')
+    await expect(cards).toHaveCount(1)
+    await expect(page).toHaveURL(/search=Different\+heights/)
+  } finally {
+    finish()
+  }
+  await expect(cards).toHaveCount(1)
+  expect(documents()).toBe(1)
+})
+
+test('Posts applies card tags and archive queue defaults with overrides', async ({ page }) => {
+  const db = new DatabaseSync(join(directory, 'archive', 'nujijushi.sqlite3'))
+  try {
+    db.exec("PRAGMA busy_timeout=5000; INSERT OR IGNORE INTO tags (name) VALUES ('browser_tag');")
+    db.exec("INSERT OR IGNORE INTO post_tags (post_id,tag_id,origin) SELECT 2,id,'manual' FROM tags WHERE name='browser_tag';")
+  } finally {
+    db.close()
+  }
+  cli('channel', 'add', 'second', '@local_suggestion', '--no-verify')
+  await signIn(page, '/settings')
+  await page.getByLabel('Default queue channel').selectOption('2')
+  await page.getByRole('button', { name: 'Save settings' }).click()
+  await expect(page.getByText('Queue preference saved')).toBeVisible()
+  await page.getByRole('link', { name: 'posts', exact: true }).click()
+  await page.getByRole('combobox', { name: 'Source', exact: true }).selectOption('local')
+  await expect(page).toHaveURL(/source=local/)
+  await page.getByRole('textbox', { name: 'Search posts' }).fill('Different heights')
+  await expect(page.locator('[data-post-card]')).toHaveCount(1)
+  const card = page.locator('[data-post-card]').first()
+  await card.getByRole('link', { name: '#browser_tag' }).click()
+  await expect(page).toHaveURL(/source=local.*tag=browser_tag/)
+  await expect(page.locator('#posts-tag-menu .tagcloud a').first()).toHaveAttribute('aria-current', 'true')
+  await page.getByRole('link', { name: 'Clear tag' }).click()
+  await expect(page).toHaveURL(/source=local/)
+  expect(new URL(page.url()).searchParams.has('tag')).toBe(false)
+  await expect(page.getByLabel('Destination channel')).toHaveValue('2')
+  await card.getByRole('link', { name: /Open post/ }).click()
+  const queue = page.getByLabel('Destination', { exact: true })
+  await expect(queue).toHaveValue('2')
+  await queue.selectOption('1')
+  await page.getByRole('button', { name: 'Add to queue' }).click()
+  await expect(page.getByText(/queued.*art/i)).toBeVisible()
+  await page.getByRole('link', { name: 'Delete post…' }).click()
+  await page.getByRole('button', { name: 'Delete post', exact: true }).click()
+  await expect(page).toHaveURL(/search=Different\+heights.*source=local/)
+  await expect(page.locator('[data-post-card]')).toHaveCount(0)
 })

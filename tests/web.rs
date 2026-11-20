@@ -3394,3 +3394,103 @@ async fn queue_status_tracks_worker_and_scheduled_deliveries_for_its_channel() {
         .unwrap();
     assert_eq!(distinct.state, QueueState::Sent);
 }
+
+#[tokio::test]
+async fn posts_cursor_filter_and_web_default_follow_archive_state() {
+    use nujijushi::db::{channels, posts, queue, tags};
+    let h = harness();
+    let channel = h.add_channel().await;
+    let first = h.post_only("first").await;
+    let second = h.post_only("second").await;
+    let third = h.post_only("third").await;
+    let fourth = h.post_only("fourth").await;
+    let private = h.post_only("private").await;
+    let history = h.post_only("history").await;
+    h.state
+        .db
+        .with(|conn| {
+            // Equal times exercise the ID tiebreaker on both sides of a cursor.
+            conn.execute(
+                "UPDATE posts SET imported_at = '2025-01-01T00:00:00+00:00'",
+                [],
+            )?;
+            posts::set_state(conn, fourth, PostState::Archived)?;
+            posts::set_state(conn, second, PostState::Approved)?;
+            let job = queue::enqueue_new(conn, private, channel.id, 0)?.unwrap();
+            queue::mark_failed(conn, job, "assigned but failed")?;
+            queue::log_send(
+                conn,
+                queue::SendRecord {
+                    channel_id: channel.id,
+                    queue_id: job,
+                    post_id: history,
+                    ok: true,
+                    caption: None,
+                    message_ids: None,
+                    error: None,
+                },
+            )?;
+            tags::add_manual(
+                conn,
+                second,
+                &[
+                    "rare".into(),
+                    "landscape".into(),
+                    "water".into(),
+                    "fourth_tag".into(),
+                ],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    let shown = |html: &str, post: i64| html.contains(&format!("data-post-card=\"{post}\""));
+    let html = body_text(h.send(h.get("/posts?sent=not_queued")).await).await;
+    for included in [first, second, third] {
+        assert!(shown(&html, included));
+    }
+    for excluded in [fourth, private, history] {
+        assert!(!shown(&html, excluded));
+    }
+    let tagged = body_text(h.send(h.get("/posts?tag=rare&sent=not_queued")).await).await;
+    assert!(
+        tagged.contains("aria-current=\"true\"") && tagged.contains("#rare <span class=\"hint\">1")
+    );
+    let cursor = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("cursor", &format!("2025-01-01T00:00:00+00:00|{third}"))
+        .append_pair("sent", "not_queued")
+        .finish();
+    let result = h
+        .send(h.get(&format!("/api/v1/posts/cards?{cursor}")))
+        .await;
+    assert_eq!(result.status(), StatusCode::OK);
+    let batch: serde_json::Value = serde_json::from_str(&body_text(result).await).unwrap();
+    let cards = batch["html"].as_str().unwrap();
+    assert!(shown(cards, first) && shown(cards, second) && !shown(cards, third));
+    assert!(
+        cards.contains("#rare") && cards.contains("#landscape") && !cards.contains("#fourth_tag")
+    );
+
+    let form = format!("csrf={}&channel={}", h.ws.csrf, channel.id);
+    let response = h.send(h.post("/api/v1/settings", &form)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let reopened = AppState::open((*h.state.cfg).clone(), h.state.transport.clone()).unwrap();
+    assert_eq!(
+        reopened
+            .db
+            .with(|conn| { nujijushi::db::web_queue_default(conn, &channels::list(conn)?) })
+            .unwrap(),
+        Some(channel.id)
+    );
+    for path in ["/posts".into(), format!("/posts/{second}")] {
+        let html = body_text(h.send(h.get(&path)).await).await;
+        assert!(html.contains(&format!("value=\"{}\" selected", channel.id)));
+    }
+
+    h.state
+        .db
+        .with(|conn| channels::delete(conn, channel.id))
+        .unwrap();
+    let response = body_text(h.send(h.get("/settings")).await).await;
+    assert!(response.contains("No default"));
+}

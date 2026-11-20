@@ -430,3 +430,10 @@ tr[data-state="done"] .progress > span { background-image: none; background-colo
 [data-compression-options]:not(:has(select option[value="quality"]:checked)) [data-jpeg-quality] {
   display: none;
 }
+
+#posts-tag-menu .tagcloud { margin-top: .75rem; }
+.tagcloud a.active { border-color: var(--accent); color: var(--accent); }
+.post-card-tags { display: flex; gap: .35rem; flex-wrap: wrap; overflow-wrap: anywhere; font-size: .75rem; }
+.post-card-tags a { position: relative; z-index: 2; }
+
+.select-loaded { display: none; }

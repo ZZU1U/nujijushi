@@ -134,13 +134,17 @@ with live next-slot preview · ordered queue with pin/skip/requeue/remove ·
 next-slots preview · import box with job progress · **jobs** (every action, live) ·
 **users** (roles, quotas, ban/promote).
 
-Click a post card to select it, or click its post number to open it. **Select all on page** selects the visible page of results for bulk actions.
+On **Posts**, filters apply as you change them and more cards load as you scroll. **Not queued** shows new and approved artwork that has no queue assignment or recorded delivery. Open **Tags** to browse popular tags and see the active filter. Use **Settings → Default queue channel** to preselect a destination for web queue actions.
+
+Click a post card to select it, or click its post number to open it. **Select all loaded posts** selects the cards currently on screen and in the loaded feed.
 
 On the post page, open **Edit post details** to change the title or description. A blank field clears its text. Edits survive re-imports, and future captions use the saved text wherever the channel template includes it.
 
 The post detail page shows whether a tag came from the source, a manual edit, or both. Removing a source tag keeps it hidden on that post after re-import. Undo restores it if the most recent import still supplied it. Edit manual tags in the separate **Save tags** form.
 
 Select any still images of the same height and choose **Merge side by side** to replace them with a single PNG. The gallery updates in place when the job finishes. **Undo merge** restores its source panels. Re-imports keep a merge when every selected source image is still present, and keep visibility settings for matching images. The active gallery is used by new previews and deliveries. Hide individual images from future sends, mirrors, and shareable exports with **Hide from outgoing copies**. Use **Restore** to include them again. Completed mirrors and Telegram messages keep the gallery that was sent.
+
+Channel caption presets include **Default**, **Compact**, and **Detailed**. Compact shows title, credit, tags, and source attribution in fewer lines. Detailed includes an available description and artist handle. Both use the channel’s tag and attribution settings.
 
 Use `nujijushi export --share --out <new-directory>` to copy outgoing images and their `post.json` files. The regular backup retains all original images and the visibility settings.
 

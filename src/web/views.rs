@@ -16,6 +16,14 @@ const TEMPLATES: &[(&str, &str)] = &[
         "dashboard.html",
         include_str!("../../templates/dashboard.html"),
     ),
+    (
+        "post_cards.html",
+        include_str!("../../templates/post_cards.html"),
+    ),
+    (
+        "settings.html",
+        include_str!("../../templates/settings.html"),
+    ),
     ("posts.html", include_str!("../../templates/posts.html")),
     ("watches.html", include_str!("../../templates/watches.html")),
     (

@@ -2,7 +2,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{OriginalUri, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -109,12 +109,14 @@ pub fn router(ws: Arc<WebState>) -> Router {
         .route("/api/status", get(api_status))
         .route("/import", get(import_page).post(import_submit))
         .route("/users", get(users_page).post(users_action))
+        .route("/settings", get(settings_page).post(settings_save))
         .route("/logout", post(logout));
 
     let api = protected
         .clone()
         .route("/login", get(login_page).post(login_submit))
         .route("/dashboard", get(dashboard))
+        .route("/posts/cards", get(posts_more))
         .route("/jobs/{id}/status", get(super::admin::job))
         .route("/channels/{id}/queue/status", get(super::queue_status::get))
         .layer(middleware::from_fn(super::admin::api_response));
@@ -502,16 +504,114 @@ async fn posts_page(
     State(ws): State<Arc<WebState>>,
     Query(query): Query<PostFilter>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
 ) -> WebResult<Response> {
     let app = &ws.app;
     let requested_size = query.per_page.as_deref().and_then(post_page_size);
-    let remembered_size =
-        auth::read_cookie(&headers, POSTS_PER_PAGE_COOKIE).and_then(post_page_size);
+    let html_fallback = !uri.path().starts_with("/api/v1/");
+    let remembered_size = html_fallback
+        .then(|| auth::read_cookie(&headers, POSTS_PER_PAGE_COOKIE))
+        .flatten()
+        .and_then(post_page_size);
     let per_page = requested_size
         .or(remembered_size)
         .unwrap_or(POST_PAGE_SIZES[0]);
     let requested_page = query.page.unwrap_or(1);
-    let filter = post_db::PostFilter {
+    let filter = grid_filter(&query, per_page);
+    let (cards, mut decorations, total, page, page_count, next_cursor) = app
+        .db
+        .call(move |conn| {
+            let tx = conn.transaction()?;
+            let total = post_db::count_cards(&tx, &filter)?;
+            let page_count = (total.saturating_add(per_page - 1) / per_page).max(1);
+            let page = requested_page.clamp(1, page_count);
+            let filter = post_db::PostFilter {
+                offset: (page - 1) * per_page,
+                ..filter
+            };
+            let cards = post_db::cards(&tx, &filter)?;
+            let decorations = grid_decorations(&tx, &cards)?;
+            let next = if page < page_count {
+                next_card_cursor(&tx, &cards)?
+            } else {
+                None
+            };
+            tx.commit()?;
+            Ok((cards, decorations, total, page, page_count, next))
+        })
+        .await?;
+    let active_tag = query.tag.as_deref().and_then(tag_db::normalize);
+    let sources = app.db.call(|conn| post_db::sources(conn)).await?;
+    let (tags, channels, default_channel) = app
+        .db
+        .call({
+            let active_tag = active_tag.clone();
+            move |conn| {
+                let mut tags = tag_db::most_used(conn, 30)?;
+                if let Some(tag) = active_tag {
+                    tags.retain(|(name, _)| name != &tag);
+                    let count = tag_db::visible_count(conn, &tag)?;
+                    tags.insert(0, (tag, count));
+                }
+                let channels = channel_db::list(conn)?;
+                let default = crate::db::web_queue_default(conn, &channels)?;
+                Ok((tags, channels, default))
+            }
+        })
+        .await?;
+    let cards = grid_card_views(&cards, &mut decorations, &query);
+
+    let html = ws.pages.render(
+        "posts.html",
+        &json!({
+            "page": "posts",
+            "csrf": ws.csrf,
+            "flash": decode_flash(&query.flash),
+            "cards": cards,
+            "total": total,
+            "page_number": page,
+            "page_count": page_count,
+            "per_page": per_page,
+            "next_cursor": next_cursor,
+            "default_channel": default_channel,
+            "page_sizes": POST_PAGE_SIZES,
+            "grid_url": query.page_url(page, per_page),
+            "previous_page": (page > 1).then(|| query.page_url(page - 1, per_page)),
+            "next_page": (page < page_count).then(|| query.page_url(page + 1, per_page)),
+            "filters": {
+                "state": query.state,
+                "source": query.source,
+                "tag": active_tag,
+                "nsfw": query.nsfw,
+                "sent": query.sent,
+                "search": query.search,
+            },
+            "sources": sources,
+            "top_tags": tags.iter().map(|(tag, count)| json!({
+                "tag": tag, "count": count, "url": query.tag_url(Some(tag)),
+                "active": active_tag.as_ref() == Some(tag),
+            })).collect::<Vec<_>>(),
+            "clear_tag_url": query.tag_url(None),
+            "channels": channels.iter().map(|c| json!({"id": c.id, "title": c.title})).collect::<Vec<_>>(),
+            "states": PostState::all().iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            "setup": query.setup,
+        }),
+    )?;
+    let mut response = Html(html).into_response();
+    if let Some(size) =
+        requested_size.filter(|size| html_fallback && Some(*size) != remembered_size)
+    {
+        let cookie = HeaderValue::from_str(&format!(
+            "{POSTS_PER_PAGE_COOKIE}={size}; Path=/posts; HttpOnly; SameSite=Strict; Max-Age=2592000"
+        ))
+        .map_err(|err| Error::other(err.to_string()))?;
+        response.headers_mut().append(header::SET_COOKIE, cookie);
+    }
+    Ok(response)
+}
+
+fn grid_filter(query: &PostFilter, limit: i64) -> post_db::PostFilter {
+    post_db::PostFilter {
         state: query
             .state
             .as_deref()
@@ -529,6 +629,7 @@ async fn posts_page(
         sent: match query.sent.as_deref() {
             Some("yes") => post_db::SentFilter::Sent,
             Some("all") => post_db::SentFilter::Any,
+            Some("not_queued") => post_db::SentFilter::NotQueued,
             _ => post_db::SentFilter::NotSent,
         },
         // rejected posts are the curator's "no": the grid hides them unless the
@@ -536,102 +637,151 @@ async fn posts_page(
         without_rejected: matches!(query.state.as_deref(), None | Some("")),
         author_id: None,
         search: query.search.clone().filter(|s| !s.is_empty()),
-        limit: per_page,
+        limit,
         offset: 0,
-    };
-    let (cards, mut queue_badges, total, page, page_count) = app
+    }
+}
+
+fn next_card_cursor(
+    conn: &rusqlite::Connection,
+    cards: &[crate::model::PostCard],
+) -> crate::error::Result<Option<String>> {
+    cards
+        .last()
+        .map(|card| post_db::card_cursor(conn, card.id))
+        .transpose()
+}
+
+#[derive(Default)]
+struct CardDecoration {
+    tags: Vec<String>,
+    queue: Vec<Value>,
+}
+
+fn grid_decorations(
+    conn: &rusqlite::Connection,
+    cards: &[crate::model::PostCard],
+) -> crate::error::Result<HashMap<i64, CardDecoration>> {
+    let ids: Vec<_> = cards.iter().map(|card| card.id).collect();
+    let mut out = HashMap::<i64, CardDecoration>::new();
+    for (post, channel, state) in queue_db::card_states(conn, &ids)? {
+        out.entry(post).or_default().queue.push(json!({
+            "class": state.as_str(), "label": queue_state_label(state), "channel": channel
+        }));
+    }
+    for (post, tag) in tag_db::card_tags(conn, &ids)? {
+        out.entry(post).or_default().tags.push(tag);
+    }
+    Ok(out)
+}
+
+fn grid_card_views(
+    cards: &[crate::model::PostCard],
+    decorations: &mut HashMap<i64, CardDecoration>,
+    query: &PostFilter,
+) -> Vec<Value> {
+    cards.iter().map(|card| {
+        let decoration = decorations.remove(&card.id).unwrap_or_default();
+        json!({
+            "id": card.id, "source": card.source, "rating": card.rating.as_str(),
+            "state": card.state.as_str(), "artist": card.author_name, "submitted_by": card.submitted_by,
+            "submitter": card.submitter, "submitter_guest": card.submitter_guest,
+            "media_count": card.media_count, "thumb": card.thumb_hash, "nsfw": card.nsfw,
+            "snippet": card.snippet, "pushed": card.pushed, "queue_badges": decoration.queue,
+            "tags": decoration.tags.iter().map(|tag| json!({"name": tag, "url": query.tag_url(Some(tag))})).collect::<Vec<_>>(),
+            "imported": card.imported_at.with_timezone(&chrono::Local).format("%m-%d %H:%M").to_string(),
+        })
+    }).collect()
+}
+
+async fn posts_more(
+    State(ws): State<Arc<WebState>>,
+    Query(query): Query<PostFilter>,
+) -> WebResult<Json<Value>> {
+    const BATCH: usize = 24;
+    let cursor = query
+        .cursor
+        .as_deref()
+        .and_then(|cursor| cursor.split_once('|'))
+        .and_then(|(time, id)| {
+            chrono::DateTime::parse_from_rfc3339(time).ok()?;
+            Some((time.to_owned(), id.parse().ok()?))
+        })
+        .ok_or_else(|| Error::invalid("Invalid posts cursor. Reload Posts and try again."))?;
+    let filter = grid_filter(&query, (BATCH + 1) as i64);
+    let (cards, mut decorations, next_cursor) = ws
+        .app
         .db
         .call(move |conn| {
             let tx = conn.transaction()?;
-            let total = post_db::count_cards(&tx, &filter)?;
-            let page_count = (total.saturating_add(per_page - 1) / per_page).max(1);
-            let page = requested_page.clamp(1, page_count);
-            let filter = post_db::PostFilter {
-                offset: (page - 1) * per_page,
-                ..filter
+            let mut cards = post_db::cards_before(&tx, &filter, Some(cursor))?;
+            let more = cards.len() > BATCH;
+            cards.truncate(BATCH);
+            let next = if more {
+                next_card_cursor(&tx, &cards)?
+            } else {
+                None
             };
-            let cards = post_db::cards(&tx, &filter)?;
-            let ids: Vec<i64> = cards.iter().map(|card| card.id).collect();
-            let mut queue_badges: HashMap<i64, Vec<Value>> = HashMap::new();
-            for (post, channel, state) in queue_db::card_states(&tx, &ids)? {
-                queue_badges.entry(post).or_default().push(json!({
-                    "class": state.as_str(),
-                    "label": queue_state_label(state),
-                    "channel": channel
-                }));
-            }
+            let decorations = grid_decorations(&tx, &cards)?;
             tx.commit()?;
-            Ok((cards, queue_badges, total, page, page_count))
+            Ok((cards, decorations, next))
         })
         .await?;
-    let sources = app.db.call(|conn| post_db::sources(conn)).await?;
-    let tags = app.db.call(|conn| tag_db::most_used(conn, 30)).await?;
-    let channels = app.db.call(|conn| channel_db::list(conn)).await?;
-
-    let cards: Vec<Value> = cards
-        .iter()
-        .map(|card| {
-            json!({
-                "id": card.id,
-                "source": card.source,
-                "rating": card.rating.as_str(),
-                "state": card.state.as_str(),
-                "artist": card.author_name,
-                "submitted_by": card.submitted_by,
-                "submitter": card.submitter,
-                "submitter_guest": card.submitter_guest,
-                "media_count": card.media_count,
-                "thumb": card.thumb_hash,
-                "nsfw": card.nsfw,
-                "snippet": card.snippet,
-                "pushed": card.pushed,
-                "delivered": card.delivered,
-                "channels": card.channels,
-                "queue_badges": queue_badges.remove(&card.id).unwrap_or_default(),
-                "imported": card.imported_at.with_timezone(&chrono::Local).format("%m-%d %H:%M").to_string(),
-            })
-        })
-        .collect();
-
     let html = ws.pages.render(
-        "posts.html",
+        "post_cards.html",
         &json!({
-            "page": "posts",
-            "csrf": ws.csrf,
-            "flash": decode_flash(&query.flash),
-            "cards": cards,
-            "total": total,
-            "page_number": page,
-            "page_count": page_count,
-            "per_page": per_page,
-            "page_sizes": POST_PAGE_SIZES,
-            "grid_url": query.page_url(page, per_page),
-            "previous_page": (page > 1).then(|| query.page_url(page - 1, per_page)),
-            "next_page": (page < page_count).then(|| query.page_url(page + 1, per_page)),
-            "filters": {
-                "state": query.state,
-                "source": query.source,
-                "tag": query.tag,
-                "nsfw": query.nsfw,
-                "sent": query.sent,
-                "search": query.search,
-            },
-            "sources": sources,
-            "top_tags": tags.iter().map(|(t, n)| json!({"tag": t, "count": n})).collect::<Vec<_>>(),
-            "channels": channels.iter().map(|c| json!({"id": c.id, "title": c.title})).collect::<Vec<_>>(),
-            "states": PostState::all().iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            "cards": grid_card_views(&cards, &mut decorations, &query),
             "setup": query.setup,
         }),
     )?;
-    let mut response = Html(html).into_response();
-    if let Some(size) = requested_size.filter(|size| Some(*size) != remembered_size) {
-        let cookie = HeaderValue::from_str(&format!(
-            "{POSTS_PER_PAGE_COOKIE}={size}; Path=/posts; HttpOnly; SameSite=Strict; Max-Age=2592000"
-        ))
-        .map_err(|err| Error::other(err.to_string()))?;
-        response.headers_mut().append(header::SET_COOKIE, cookie);
-    }
-    Ok(response)
+    Ok(Json(json!({ "html": html, "next_cursor": next_cursor })))
+}
+
+async fn settings_page(
+    State(ws): State<Arc<WebState>>,
+    Query(query): Query<PostFilter>,
+) -> WebResult<Html<String>> {
+    let (channels, default_channel) = queue_channels(&ws.app).await?;
+    Ok(Html(ws.pages.render("settings.html", &json!({
+        "page": "settings", "csrf": ws.csrf, "flash": decode_flash(&query.flash),
+        "channels": channels.iter().map(|c| json!({"id": c.id, "title": c.title})).collect::<Vec<_>>(),
+        "default_channel": default_channel,
+    }))?))
+}
+
+async fn settings_save(
+    State(ws): State<Arc<WebState>>,
+    Form(form): Form<FormMap>,
+) -> WebResult<Response> {
+    check_csrf(&ws, forms::field(&form, "csrf").unwrap_or_default())?;
+    let channel = forms::field(&form, "channel")
+        .filter(|v| !v.is_empty())
+        .map(|id| {
+            id.parse::<i64>()
+                .map_err(|_| Error::invalid("Choose an available channel"))
+        })
+        .transpose()?;
+    ws.app
+        .db
+        .call(move |conn| {
+            let tx = conn.transaction()?;
+            let channel = channel.map(|id| channel_db::get(&tx, id)).transpose()?;
+            crate::db::set_web_queue_default(&tx, channel.as_ref())?;
+            tx.commit()?;
+            Ok(())
+        })
+        .await?;
+    Ok(flash_redirect("/settings", "Queue preference saved"))
+}
+
+async fn queue_channels(app: &AppState) -> crate::error::Result<(Vec<Channel>, Option<i64>)> {
+    app.db
+        .call(|conn| {
+            let channels = channel_db::list(conn)?;
+            let default = crate::db::web_queue_default(conn, &channels)?;
+            Ok((channels, default))
+        })
+        .await
 }
 
 async fn posts_bulk(
@@ -781,7 +931,7 @@ async fn post_page(
         .map(|tag| tag.name.as_str())
         .collect::<Vec<_>>()
         .join(", ");
-    let channels = app.db.call(|conn| channel_db::list(conn)).await?;
+    let (channels, default_channel) = queue_channels(app).await?;
     let rules = app.db.call(|conn| tag_db::TagRules::load(conn)).await?;
     let submitter = app
         .db
@@ -919,6 +1069,7 @@ async fn post_page(
             "tag_review": tag_review,
             "can_suggest_tags": suggestions_enabled && post.media.iter().any(|media| !media.is_video),
             "captions": captions,
+            "default_channel": default_channel,
             "ratings": Rating::all().iter().map(|r| r.as_str()).collect::<Vec<_>>(),
             "states": PostState::all().iter().map(|s| s.as_str()).collect::<Vec<_>>(),
             "channels": channels.iter().map(|c| json!({"id": c.id, "title": c.title})).collect::<Vec<_>>(),

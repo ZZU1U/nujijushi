@@ -35,3 +35,9 @@ body.login-body .admin-shell { display: grid; justify-items: center; }
 @keyframes view-in { from { opacity: .86; } }
 @keyframes navigation-in { from { transform: scaleX(.25); } }
 @keyframes feedback-in { from { opacity: .68; } }
+
+.admin-shell [data-posts-fallback] { display: none; }
+[data-posts-more]:not([hidden]) { min-height: 2.5rem; }
+
+.admin-shell .select-fallback { display: none; }
+.admin-shell .select-loaded { display: inline; }

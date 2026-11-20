@@ -127,6 +127,32 @@ pub fn setting(conn: &Connection, key: &str) -> Result<Option<String>> {
 use chrono::{DateTime, Utc};
 use rusqlite::Row;
 
+pub fn set_web_queue_default(
+    conn: &Connection,
+    channel: Option<&crate::model::Channel>,
+) -> Result<()> {
+    let value = channel
+        .map(|c| format!("{}:{}", c.id, fmt_ts(c.created_at)))
+        .unwrap_or_default();
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES ('web.default_queue_channel', ?1)
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        [value],
+    )?;
+    Ok(())
+}
+
+pub fn web_queue_default(
+    conn: &Connection,
+    channels: &[crate::model::Channel],
+) -> Result<Option<i64>> {
+    let saved = setting(conn, "web.default_queue_channel")?;
+    Ok(channels
+        .iter()
+        .find(|c| saved.as_deref() == Some(format!("{}:{}", c.id, fmt_ts(c.created_at)).as_str()))
+        .map(|c| c.id))
+}
+
 pub fn fmt_ts(dt: DateTime<Utc>) -> String {
     dt.to_rfc3339()
 }

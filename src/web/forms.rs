@@ -30,6 +30,7 @@ pub struct PostFilter {
     pub page: Option<i64>,
     #[serde(default)]
     pub per_page: Option<String>,
+    pub cursor: Option<String>,
     #[serde(default)]
     pub flash: Option<String>,
     pub next: Option<String>,
@@ -45,7 +46,17 @@ pub fn post_page_size(value: &str) -> Option<i64> {
 }
 
 impl PostFilter {
-    pub fn page_url(&self, page: i64, per_page: i64) -> String {
+    pub fn tag_url(&self, tag: Option<&str>) -> String {
+        let mut query = self.filter_query(tag);
+        let query = query.finish();
+        if query.is_empty() {
+            "/posts".into()
+        } else {
+            format!("/posts?{query}")
+        }
+    }
+
+    fn filter_query(&self, tag: Option<&str>) -> url::form_urlencoded::Serializer<'static, String> {
         let mut query = url::form_urlencoded::Serializer::new(String::new());
         for (key, value) in [
             ("search", &self.search),
@@ -53,7 +64,6 @@ impl PostFilter {
             ("source", &self.source),
             ("nsfw", &self.nsfw),
             ("sent", &self.sent),
-            ("tag", &self.tag),
         ] {
             if let Some(value) = value.as_deref().filter(|value| !value.is_empty()) {
                 query.append_pair(key, value);
@@ -62,6 +72,14 @@ impl PostFilter {
         if self.setup {
             query.append_pair("setup", "true");
         }
+        if let Some(tag) = tag.filter(|tag| !tag.is_empty()) {
+            query.append_pair("tag", tag);
+        }
+        query
+    }
+
+    pub fn page_url(&self, page: i64, per_page: i64) -> String {
+        let mut query = self.filter_query(self.tag.as_deref());
         query.append_pair("per_page", &per_page.to_string());
         query.append_pair("page", &page.to_string());
         format!("/posts?{}", query.finish())

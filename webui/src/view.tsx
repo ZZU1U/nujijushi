@@ -45,7 +45,7 @@ function jobText(job: Job, role: string | null) {
 
 function stableKey(node: Element, index: number) {
   if (node.id) return node.id
-  for (const attribute of ['data-queue', 'data-job', 'data-publish-job']) {
+  for (const attribute of ['data-post-card', 'data-queue', 'data-job', 'data-publish-job']) {
     const id = node.getAttribute(attribute)
     if (id) return attribute + ':' + id
   }

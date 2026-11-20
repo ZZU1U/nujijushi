@@ -53,6 +53,7 @@ pub enum SentFilter {
     NotSent,
     /// Only posts that already went out.
     Sent,
+    NotQueued,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -512,6 +513,13 @@ fn filter_sql(filter: &PostFilter) -> (String, Vec<Value>) {
     // "already sent" is one rule, shared with the queue: DELIVERED_STATES
     match filter.sent {
         SentFilter::Any => {}
+        SentFilter::NotQueued => clauses.push(
+            "p.state IN ('new', 'approved')
+             AND NOT EXISTS (SELECT 1 FROM queue q WHERE q.post_id = p.id)
+             AND p.id NOT IN (SELECT s.post_id FROM sends s JOIN posts published ON published.id = s.post_id
+                 WHERE s.ok = 1 AND s.sent_at >= published.imported_at)"
+                .into(),
+        ),
         SentFilter::NotSent => clauses.push(format!(
             "NOT EXISTS (SELECT 1 FROM queue q WHERE q.post_id = p.id AND q.state IN ({}))",
             crate::db::queue::DELIVERED_STATES
@@ -572,7 +580,24 @@ fn filter_sql(filter: &PostFilter) -> (String, Vec<Value>) {
 }
 
 pub fn cards(conn: &Connection, filter: &PostFilter) -> Result<Vec<PostCard>> {
-    let (where_sql, values) = filter_sql(filter);
+    cards_before(conn, filter, None)
+}
+
+pub fn cards_before(
+    conn: &Connection,
+    filter: &PostFilter,
+    cursor: Option<(String, i64)>,
+) -> Result<Vec<PostCard>> {
+    let (mut where_sql, mut values) = filter_sql(filter);
+    if let Some((imported_at, id)) = cursor {
+        where_sql.push_str(if where_sql.is_empty() {
+            " WHERE "
+        } else {
+            " AND "
+        });
+        where_sql.push_str("(p.imported_at, p.id) < (?, ?)");
+        values.extend([Value::Text(imported_at), Value::Integer(id)]);
+    }
     let limit = if filter.limit > 0 { filter.limit } else { 60 };
     let sql = format!(
         "{}{where_sql} ORDER BY p.imported_at DESC, p.id DESC LIMIT {limit} OFFSET {}",
@@ -586,6 +611,14 @@ pub fn cards(conn: &Connection, filter: &PostFilter) -> Result<Vec<PostCard>> {
         out.push(row?);
     }
     Ok(out)
+}
+
+pub fn card_cursor(conn: &Connection, id: i64) -> Result<String> {
+    let imported_at: String =
+        conn.query_row("SELECT imported_at FROM posts WHERE id = ?1", [id], |row| {
+            row.get(0)
+        })?;
+    Ok(format!("{imported_at}|{id}"))
 }
 
 /// How many posts match the filter (the pager total); `limit`/`offset` are ignored.
