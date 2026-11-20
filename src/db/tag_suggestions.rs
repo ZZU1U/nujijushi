@@ -220,6 +220,7 @@ pub fn finish(
     }
     let filter = TagFilter::load(&tx, post_id)?;
     let mut added = HashSet::new();
+    let mut added_ids = HashSet::new();
     let mut characters = 0;
     let mut franchises = 0;
     for candidate in candidates {
@@ -231,12 +232,16 @@ pub fn finish(
             SuggestionKind::Franchise => (&mut franchises, 3),
         };
         if *count >= limit
+            || candidate
+                .character_tag_id
+                .is_some_and(|id| added_ids.contains(&id))
             || !filter
                 .available(&candidate.tag)
                 .is_some_and(|tag| added.insert(tag))
         {
             continue;
         }
+        added_ids.extend(candidate.character_tag_id);
         tx.execute(
             "INSERT INTO post_tag_suggestions (job_id, kind, tag, character_tag_id, evidence, wiki_title)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -353,17 +358,57 @@ pub fn cache_lookup(conn: &Connection, id: i64, matched: Option<(&str, &str)>) -
     Ok(())
 }
 
-pub fn set_mapping(conn: &Connection, id: i64, raw: &str) -> Result<()> {
+/// A result of `Some(None)` is a recent definitive miss.
+pub fn character_id(conn: &Connection, name: &str) -> Result<Option<Option<i64>>> {
+    let cutoff = (Utc::now() - chrono::Duration::days(7)).timestamp();
+    Ok(conn
+        .query_row(
+            "SELECT character_tag_id FROM tag_character_names
+             WHERE name = ?1 AND (character_tag_id IS NOT NULL OR checked_at > ?2)",
+            params![name, cutoff],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
+pub fn cache_character_id(conn: &Connection, name: &str, id: Option<i64>) -> Result<()> {
+    conn.execute(
+        "INSERT INTO tag_character_names (name, character_tag_id, checked_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT (name) DO UPDATE SET
+            character_tag_id = excluded.character_tag_id, checked_at = excluded.checked_at
+         WHERE tag_character_names.character_tag_id IS NULL OR
+            (excluded.character_tag_id IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM tag_franchise_associations
+                WHERE character_tag_id = tag_character_names.character_tag_id AND origin = 'manual'
+            ))",
+        params![name, id, Utc::now().timestamp()],
+    )?;
+    Ok(())
+}
+
+pub fn set_mapping(conn: &mut Connection, id: i64, raw: &str, name: Option<&str>) -> Result<()> {
     if id <= 0 {
         return Err(Error::invalid("character ID must be positive"));
     }
     let tag = tags::normalize(raw).ok_or_else(|| Error::invalid("invalid franchise tag"))?;
-    conn.execute(
+    let tx = conn.transaction()?;
+    if let Some(name) = name.map(str::trim) {
+        if name.is_empty() || name.len() > 256 || name.chars().any(char::is_control) {
+            return Err(Error::invalid("invalid character label"));
+        }
+        tx.execute(
+            "INSERT INTO tag_character_names (name, character_tag_id) VALUES (?1, ?2)
+             ON CONFLICT (name) DO UPDATE SET character_tag_id = excluded.character_tag_id",
+            params![name, id],
+        )?;
+    }
+    tx.execute(
         "INSERT INTO tag_franchise_associations (character_tag_id, origin, franchise)
          VALUES (?1, 'manual', ?2)
          ON CONFLICT (character_tag_id, origin) DO UPDATE SET franchise = excluded.franchise",
         params![id, tag],
     )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -400,7 +445,10 @@ mod tests {
                 franchise(conn, 3861)?.unwrap().franchise.as_deref(),
                 Some("pokemon")
             );
-            set_mapping(conn, 3861, "New Name")?;
+            set_mapping(conn, 3861, "New Name", Some("old_pikachu_label"))?;
+            assert_eq!(character_id(conn, "old_pikachu_label")?, Some(Some(3861)));
+            cache_character_id(conn, "old_pikachu_label", None)?;
+            assert_eq!(character_id(conn, "old_pikachu_label")?, Some(Some(3861)));
             assert_eq!(
                 franchise(conn, 3861)?.unwrap().franchise.as_deref(),
                 Some("new_name")

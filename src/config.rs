@@ -479,7 +479,7 @@ timeout_secs = {timeout}
 max_concurrent = 2
 
 [tag_suggestions]
-# Start the standalone WD Tagger companion before enabling this.
+# Start a local FoidFinder server before enabling this.
 enabled = false
 tagger_port = 8790
 online_fallback = false

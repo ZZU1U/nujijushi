@@ -21,6 +21,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0014_post_grid_reads.sql"),
     include_str!("../../migrations/0015_media_merges.sql"),
     include_str!("../../migrations/0016_media_compressions.sql"),
+    include_str!("../../migrations/0017_tagger_character_names.sql"),
 ];
 
 pub fn schema_version(conn: &Connection) -> Result<i64> {
@@ -94,6 +95,7 @@ mod tests {
             "media_compressions",
             "media_merge_sources",
             "media_merges",
+            "tag_character_names",
             "post_tag_removals",
             "post_tag_suggestion_batches",
             "post_tag_suggestion_images",
@@ -161,8 +163,9 @@ mod tests {
         conn.execute_batch(MIGRATIONS[12]).unwrap();
         conn.pragma_update(None, "user_version", 12).unwrap();
         conn.execute(
-            "INSERT INTO tag_franchise_associations (character_tag_id, origin, franchise)
-             VALUES (42, 'manual', 'custom_franchise')",
+            "INSERT INTO tag_franchise_associations (character_tag_id, origin, franchise, wiki_title)
+             VALUES (42, 'manual', 'custom_franchise', NULL),
+                    (42, 'lookup', 'old_franchise', 'previously_resolved_name')",
             [],
         )
         .unwrap();
@@ -172,12 +175,16 @@ mod tests {
         assert_eq!(schema_version(&conn).unwrap(), MIGRATIONS.len() as i64);
         let franchise: String = conn
             .query_row(
-                "SELECT franchise FROM tag_franchise_associations WHERE character_tag_id = 42",
+                "SELECT franchise FROM tag_franchise_associations
+                 WHERE character_tag_id = 42 AND origin = 'manual'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
         assert_eq!(franchise, "custom_franchise");
+        let character_id =
+            super::super::tag_suggestions::character_id(&conn, "previously_resolved_name").unwrap();
+        assert_eq!(character_id, Some(Some(42)));
     }
 
     #[test]

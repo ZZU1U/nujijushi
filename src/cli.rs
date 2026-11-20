@@ -259,6 +259,9 @@ pub enum TaggerCmd {
         #[arg(value_parser = clap::value_parser!(i64).range(1..))]
         character_id: i64,
         franchise: String,
+        /// Bind the exact character label returned by FoidFinder for offline use.
+        #[arg(long)]
+        name: Option<String>,
     },
     /// Remove an operator override and use the catalog or cache again.
     Unmap {
@@ -927,7 +930,7 @@ async fn cmd_doctor(cfg: Config, strict: bool, offline: bool) -> Result<()> {
     };
     checks.push(Check {
         level,
-        label: "WD Tagger".into(),
+        label: "FoidFinder".into(),
         detail,
     });
 
@@ -1716,10 +1719,11 @@ fn cmd_tagger(state: &AppState, cmd: TaggerCmd) -> Result<()> {
         TaggerCmd::Map {
             character_id,
             franchise,
+            name,
         } => {
-            state
-                .db
-                .with(|conn| tag_suggestions::set_mapping(conn, character_id, &franchise))?;
+            state.db.with(|conn| {
+                tag_suggestions::set_mapping(conn, character_id, &franchise, name.as_deref())
+            })?;
             println!("saved franchise override for character {character_id}");
         }
         TaggerCmd::Unmap { character_id } => {
@@ -2886,6 +2890,12 @@ mod parse_tests {
             Command::Tagger {
                 cmd: TaggerCmd::Unmap { character_id: 3861 }
             },
+        ));
+        assert!(matches!(
+            parse(&["tagger", "map", "3861", "pokemon", "--name", "pikachu"]).cmd,
+            Command::Tagger {
+                cmd: TaggerCmd::Map { name: Some(name), .. }
+            } if name == "pikachu"
         ));
         assert!(matches!(
             parse(&["tagger", "mappings"]).cmd,

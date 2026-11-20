@@ -24,7 +24,7 @@ max_concurrent = 2
 public_telegram_fallback = true
 
 [tag_suggestions]
-# Optional WD Tagger companion listening on 127.0.0.1.
+# Optional FoidFinder server listening on 127.0.0.1.
 enabled = false
 tagger_port = 8790
 # Allow catalog-only Danbooru queries for unresolved character-to-franchise matches.

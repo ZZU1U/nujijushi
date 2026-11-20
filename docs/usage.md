@@ -26,7 +26,7 @@
 | `nujijushi users ls\|grant\|ban` | who may talk to the bot, and their roles |
 | `nujijushi rule add <tag> block\|nsfw` · `rule ls` · `rule rm` | content rules |
 | `nujijushi alias set <from> <to>` | tag aliasing for future imports and new manual tags |
-| `nujijushi tagger map <character-id> <franchise>` | set a local character-to-franchise override |
+| `nujijushi tagger map <character-id> <franchise> [--name LABEL]` | set a local override and optionally bind the FoidFinder label for offline lookups |
 | `nujijushi tagger unmap <character-id>` | remove your override and use the catalog or cache again |
 | `nujijushi tagger mappings` | list effective mappings, IDs, and their origins |
 | `nujijushi log [--limit N]` | send audit log |

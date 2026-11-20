@@ -19,10 +19,10 @@ pub(super) struct Match {
     pub wiki_title: String,
 }
 
-#[derive(Deserialize)]
-struct Tag {
-    id: i64,
-    name: String,
+#[derive(Debug, Deserialize)]
+pub(super) struct Tag {
+    pub id: i64,
+    pub name: String,
     category: u8,
     is_deprecated: bool,
 }
@@ -84,22 +84,27 @@ impl Catalog {
             .map_err(|_| Error::other("Invalid Danbooru lookup response"))
     }
 
-    pub async fn lookup(&self, id: i64, label: &str) -> Result<Option<Match>> {
-        let tag = self
-            .get::<Tag>(&["tags", &format!("{id}.json")], &[])
-            .await?;
-        let name = match tag {
-            Some(tag) if tag.id == id && tag.category == 4 && !tag.is_deprecated => tag.name,
-            _ => {
-                let Some(name) = self.active_alias(label).await? else {
-                    return Ok(None);
-                };
-                let Some(tag) = self.exact_tag(&name, 4).await? else {
-                    return Ok(None);
-                };
-                tag.name
-            }
-        };
+    pub async fn identify(&self, id: Option<i64>, label: &str) -> Result<Option<Tag>> {
+        if let Some(id) = id
+            && let Some(tag) = self
+                .get::<Tag>(&["tags", &format!("{id}.json")], &[])
+                .await?
+            && tag.id == id
+            && tag.category == 4
+            && !tag.is_deprecated
+        {
+            return Ok(Some(tag));
+        }
+        if let Some(tag) = self.exact_tag(label, 4).await? {
+            return Ok(Some(tag));
+        }
+        match self.active_alias(label).await? {
+            Some(name) => self.exact_tag(&name, 4).await,
+            None => Ok(None),
+        }
+    }
+
+    pub async fn lookup(&self, name: &str) -> Result<Option<Match>> {
         let Some(wiki) = self
             .get::<Wiki>(&["wiki_pages", &format!("{name}.json")], &[])
             .await?
@@ -156,7 +161,9 @@ impl Catalog {
             .await?
             .unwrap_or_default()
             .into_iter()
-            .filter(|tag| tag.name == name && tag.category == category && !tag.is_deprecated);
+            .filter(|tag| {
+                tag.id > 0 && tag.name == name && tag.category == category && !tag.is_deprecated
+            });
         let first = matches.next();
         Ok(first.filter(|_| matches.next().is_none()))
     }
@@ -245,7 +252,6 @@ mod tests {
                 "id": id, "name": name, "category": category, "is_deprecated": false,
             });
             let data = match uri.path() {
-                "/tags/18.json" => return StatusCode::NOT_FOUND.into_response(),
                 "/tags/19.json" => tag(19, "unclear_name", 4),
                 "/tags/20.json" => return StatusCode::TOO_MANY_REQUESTS.into_response(),
                 "/tag_aliases.json" => match query.get("search[antecedent_name]").map(|name| name.as_ref()) {
@@ -255,6 +261,7 @@ mod tests {
                 },
                 "/tags.json" => match query.get("search[name]").map(|name| name.as_ref()) {
                     Some("new_spelling") => json!([tag(33, "new_spelling", 4)]),
+                    Some("old_spelling") => json!([]),
                     Some("series_old_title") => json!([]),
                     Some("series") => json!([tag(34, "series", 3)]),
                     _ => panic!("unexpected tag query"),
@@ -276,7 +283,13 @@ mod tests {
             client: crate::http::loopback_client().unwrap(),
             base,
         };
-        let matched = catalog.lookup(18, "old_spelling").await.unwrap().unwrap();
+        let renamed = catalog
+            .identify(None, "old_spelling")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(renamed.id, 33);
+        let matched = catalog.lookup(&renamed.name).await.unwrap().unwrap();
         assert_eq!(
             matched,
             Match {
@@ -284,10 +297,15 @@ mod tests {
                 wiki_title: "new_spelling".into()
             }
         );
-        assert!(catalog.lookup(19, "unclear_name").await.unwrap().is_none());
+        let unclear = catalog
+            .identify(Some(19), "unclear_name")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(catalog.lookup(&unclear.name).await.unwrap().is_none());
         assert!(
             catalog
-                .lookup(20, "rate_limited")
+                .identify(Some(20), "rate_limited")
                 .await
                 .unwrap_err()
                 .to_string()
@@ -295,13 +313,23 @@ mod tests {
         );
         let db = Db::open_in_memory().unwrap();
         db.with(|conn| {
-            tag_suggestions::cache_lookup(conn, 18, Some((&matched.franchise, &matched.wiki_title)))
+            tag_suggestions::cache_character_id(conn, "old_spelling", Some(renamed.id))?;
+            tag_suggestions::cache_lookup(
+                conn,
+                renamed.id,
+                Some((&matched.franchise, &matched.wiki_title)),
+            )
         })
         .unwrap();
         server.abort();
         let _ = server.await;
         let local = db
-            .with(|conn| tag_suggestions::franchise(conn, 18))
+            .with(|conn| {
+                let id = tag_suggestions::character_id(conn, "old_spelling")?
+                    .flatten()
+                    .unwrap();
+                tag_suggestions::franchise(conn, id)
+            })
             .unwrap()
             .unwrap();
         assert_eq!(local.franchise.as_deref(), Some("series"));

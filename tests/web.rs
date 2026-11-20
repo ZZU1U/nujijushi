@@ -1628,6 +1628,22 @@ fn tagger_harness(port: u16) -> Harness {
     h
 }
 
+fn foidfinder_reply(
+    strong: &[(&str, f32)],
+    guesses: &[(&str, f32)],
+    series: &[(&str, f32)],
+) -> axum::Json<serde_json::Value> {
+    let entries = |hits: &[(&str, f32)]| {
+        hits.iter()
+            .map(|(tag, score)| serde_json::json!({"tag": tag, "score": score}))
+            .collect::<Vec<_>>()
+    };
+    axum::Json(serde_json::json!({
+        "tags": { "character": entries(strong), "copyright": entries(series) },
+        "candidates": { "character": entries(guesses) }
+    }))
+}
+
 async fn add_tagger_post(h: &Harness, source_id: &str) -> i64 {
     let mut post = NormalizedPost::new("local", source_id);
     post.tags = vec!["hidden_source".into(), "original".into()];
@@ -1694,8 +1710,24 @@ async fn tag_suggestions_review_is_explicit_and_preserves_existing_tags_and_remo
             async move {
                 requests.fetch_add(1, Ordering::Relaxed);
                 match body.as_ref() {
-                    b"still-one" => "3861\tpikachu\t0.96\n3901\thidden_source\t0.93\n3902\tunknown_character\t0.92\n3903\tweak_character\t0.7\n3904\tother_guess\t0.8\n3905\tpikachu_alias\t0.89\n3906\toriginal\t0.88\n".into_response(),
-                    b"still-two" => "3861\tpikachu\t0.97\n3902\tunknown_character\t0.85\n3903\tweak_character\t0.84\n".into_response(),
+                    b"still-one" => foidfinder_reply(
+                        &[
+                            ("pikachu", 0.96),
+                            ("hidden_source", 0.39),
+                            ("unknown_character", 0.38),
+                            ("pikachu_alias", 0.36),
+                            ("original", 0.35),
+                        ],
+                        &[("weak_character", 0.18), ("other_guess", 0.2)],
+                        &[("model_series", 0.55)],
+                    )
+                    .into_response(),
+                    b"still-two" => foidfinder_reply(
+                        &[("pikachu", 0.97)],
+                        &[("unknown_character", 0.26), ("weak_character", 0.24)],
+                        &[("model_series", 0.77)],
+                    )
+                    .into_response(),
                     b"animated" => StatusCode::UNPROCESSABLE_ENTITY.into_response(),
                     _ => panic!("unexpected image request"),
                 }
@@ -1703,7 +1735,7 @@ async fn tag_suggestions_review_is_explicit_and_preserves_existing_tags_and_remo
         }
     };
     let server = tokio::spawn(async move {
-        axum::serve(companion, Router::new().route("/v1/predict", post(handler)))
+        axum::serve(companion, Router::new().route("/api/tag", post(handler)))
             .await
             .unwrap()
     });
@@ -1806,12 +1838,16 @@ async fn tag_suggestions_review_is_explicit_and_preserves_existing_tags_and_remo
             "unknown_character",
             "weak_character",
             "source_series",
-            "pokemon"
+            "pokemon",
+            "model_series"
         ]
     );
     assert_eq!(review.suggestions[0].images, [1, 3]);
+    assert_eq!(review.suggestions[0].character_tag_id, Some(3861));
     assert_eq!(review.suggestions[1].images, [1]);
     assert_eq!(review.suggestions[2].images, [3]);
+    assert_eq!(review.suggestions[5].images, [1, 3]);
+    assert!(review.suggestions[5].evidence.contains("FoidFinder"));
     let resolve = |id, action, input| {
         format!(
             "csrf={}&job_id={}&suggestion_id={id}&action={action}&tag={input}",
@@ -1848,7 +1884,7 @@ async fn tag_suggestions_review_is_explicit_and_preserves_existing_tags_and_remo
             );
             assert_eq!(tags::removals(conn, post_id)?[0].name, "hidden_source");
             let review = tag_suggestions::review(conn, &posts::get(conn, post_id)?)?.unwrap();
-            assert_eq!(review.suggestions.len(), 3);
+            assert_eq!(review.suggestions.len(), 4);
             let mut updated = NormalizedPost::new("local", "tagged01");
             updated.tags = vec!["hidden_source".into(), "original".into()];
             updated.raw_json = Some("{}".into());
@@ -1881,9 +1917,17 @@ async fn weak_character_guesses_fill_three_slots_and_use_no_franchise_lookup() {
     config.tag_suggestions.online_fallback = true;
     config.proxy_url = Some(format!("http://{}", proxy.local_addr().unwrap()));
     let router = Router::new().route(
-        "/v1/predict",
+        "/api/tag",
         post(|| async {
-            "3861\tpikachu\t0.85\n3902\tsecond_guess\t0.61\n3903\tthird_guess\t0.5\n3904\tfourth_guess\t0.4\n"
+            foidfinder_reply(
+                &[],
+                &[
+                    ("pikachu", 0.25),
+                    ("second_guess", 0.2),
+                    ("third_guess", 0.1),
+                ],
+                &[],
+            )
         }),
     );
     let server = tokio::spawn(async move { axum::serve(companion, router).await.unwrap() });
@@ -1967,12 +2011,12 @@ async fn a_slow_tagger_keeps_its_archive_lock_and_does_not_delay_publishing() {
                     started.notify_one();
                     release.notified().await;
                 }
-                ""
+                foidfinder_reply(&[], &[], &[])
             }
         }
     };
     let server = tokio::spawn(async move {
-        let router = axum::Router::new().route("/v1/predict", axum::routing::post(handler));
+        let router = axum::Router::new().route("/api/tag", axum::routing::post(handler));
         axum::serve(listener, router).await.unwrap();
     });
     let post = add_tagger_post(&h, "slowtag01").await;

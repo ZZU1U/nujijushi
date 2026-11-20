@@ -70,7 +70,7 @@ Install `gallery-dl` for gallery-site imports and `ffmpeg` if you want video thu
 
 ## Optional artwork tag suggestions
 
-Install and start the [standalone WD Tagger companion](contrib/wd-tagger/README.md) on the machine running `nujijushi`. Add this section to `config.toml` and restart `nujijushi`.
+Install and start [FoidFinder](contrib/foidfinder/README.md) on the machine running `nujijushi`. Add this section to `config.toml` and restart `nujijushi`.
 
 ```toml
 [tag_suggestions]
@@ -79,9 +79,9 @@ tagger_port = 8790
 online_fallback = false
 ```
 
-Open a post and choose **Suggest tags**. Review the character and franchise tags, then save or discard each one. Images go to the companion over loopback. The review fills to three character suggestions when enough eligible guesses are available and labels weaker guesses **Low confidence**.
+Open a post and choose **Suggest tags**. Review the character and franchise suggestions, then save or discard each one. FoidFinder runs locally and supplies both character and series tags. The review fills to three characters when enough eligible guesses are available and labels guesses below the model's threshold **Low confidence**.
 
-The online fallback is a Danbooru catalog lookup for franchises. With `online_fallback = true`, nujijushi first checks local mappings and the cache, then sends catalog IDs and names for up to three unresolved strong character matches. It verifies a single franchise from the character wiki's introduction. Images stay on the machine. Successful matches can be reused offline, and definitive misses are cached for seven days.
+The optional online fallback checks local mappings and the cache, then queries Danbooru using the names or known IDs of up to three unresolved strong character matches. It verifies a single franchise from the character wiki's introduction. Images stay on the machine. Successful matches can be reused offline, and definitive misses are cached for seven days.
 
 ## Documentation
 
