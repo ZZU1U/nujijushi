@@ -376,7 +376,9 @@ async fn post_detail_shows_tag_provenance_and_can_undo_a_source_removal() {
     assert!(html.contains("<span class=\"badge\">manual</span>"));
     assert!(html.contains("name=\"tags\" value=\"original, favorite\""));
     assert!(html.contains("<details class=\"panel post-disclosure\">\n      <summary>Tags"));
-    assert!(html.contains("<details class=\"panel post-disclosure\">\n      <summary>Media tools"));
+    assert!(html.contains(
+        "<details id=\"media-tools\" class=\"panel post-disclosure\">\n      <summary>Media tools"
+    ));
     assert!(
         html.contains("<details class=\"panel post-disclosure\" open>\n      <summary>Review post")
     );
@@ -2219,7 +2221,7 @@ async fn gallery_merges_keep_the_post_and_can_restore_source_panels_after_reopen
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
-        h.send(h.post(&path, &form(&originals.media, &[0, 2])))
+        h.send(h.post(&path, &form(&originals.media, &[0])))
             .await
             .status(),
         StatusCode::BAD_REQUEST
@@ -2457,25 +2459,44 @@ async fn gallery_merges_keep_the_post_and_can_restore_source_panels_after_reopen
         )
         .await
         .unwrap()
+        .is_some()
     );
     assert_eq!(worker.drain().await.unwrap(), 1);
+    let merged = h.state.db.with(|conn| posts::get(conn, id)).unwrap();
+    h.state
+        .db
+        .with(|conn| {
+            let version = media_merges::edit_version(conn, id, &merged.media)?;
+            media_merges::set_hidden(conn, id, merged.media[1].id, &version, true)
+        })
+        .unwrap();
     imported.files.swap(0, 1);
-    let refreshed = jobs::import_posts(&h.state, vec![imported], None, None)
+    imported.files.swap(2, 3);
+    let refreshed = jobs::import_posts(&h.state, vec![imported.clone()], None, None)
         .await
         .unwrap();
     assert_eq!(refreshed.post_ids, [id]);
+    assert_eq!(refreshed.gallery_edits_reset, 0);
+    h.state
+        .db
+        .with(|conn| {
+            let post = posts::get(conn, id)?;
+            assert_eq!(post.media.len(), 4);
+            assert_eq!(post.media[0].blob_hash, merged.media[0].blob_hash);
+            assert_eq!(media_merges::hidden_positions(conn, id, &post.media)?, [2]);
+            Ok(())
+        })
+        .unwrap();
+
+    imported.files.remove(0);
+    let refreshed = jobs::import_posts(&h.state, vec![imported], None, None)
+        .await
+        .unwrap();
     assert_eq!(refreshed.gallery_edits_reset, 1);
     assert!(refreshed.summary().contains("source gallery changed"));
     let refreshed = h.state.db.with(|conn| posts::get(conn, id)).unwrap();
-    assert_eq!(refreshed.media.len(), 5);
-    assert_eq!(refreshed.media[0].blob_hash, originals.media[1].blob_hash);
-    assert!(
-        h.state
-            .db
-            .with(|conn| media_merges::undo_ids(conn, id))
-            .unwrap()
-            .is_empty()
-    );
+    assert_eq!(refreshed.media.len(), 4);
+    assert_eq!(refreshed.media[0].blob_hash, originals.media[0].blob_hash);
 }
 
 #[tokio::test]
@@ -2514,12 +2535,12 @@ async fn invalid_and_stale_merge_jobs_leave_the_current_gallery_intact() {
     };
     let original = get();
     let worker = JobWorker::new(h.state.clone());
-    assert!(enqueue(original.clone()).await.unwrap());
+    assert!(enqueue(original.clone()).await.unwrap().is_some());
     assert_eq!(worker.drain().await.unwrap(), 1);
     assert_eq!(latest_job().state, "failed");
     assert!(latest_job().message.unwrap().contains("same height"));
     assert_eq!(get().media, original.media);
-    assert!(enqueue(original).await.unwrap());
+    assert!(enqueue(original).await.unwrap().is_some());
     assert_eq!(
         archive_test_images(
             &h.state,
@@ -2969,4 +2990,197 @@ async fn post_page_deletion_requires_confirmation_and_waits_for_an_active_send()
     assert_eq!(h.send(h.get(&path)).await.status(), StatusCode::NOT_FOUND);
     assert!(h.state.db.with(|conn| queue::get(conn, queue_id)).is_err());
     assert!(h.state.db.with(|conn| posts::get(conn, other)).is_ok());
+}
+
+#[tokio::test]
+async fn gapped_merge_visibility_and_outgoing_copies_use_the_same_gallery() {
+    use nujijushi::db::{media_merges as gallery, posts, queue};
+    use nujijushi::jobs::{self, worker::JobWorker};
+    use nujijushi::tg::publish::{PublishOutcome, publish_item};
+
+    let h = harness();
+    let channel = h.add_channel().await;
+    let panels: Vec<_> = (1..=4_u8)
+        .map(|n| {
+            encode_image(
+                image::RgbImage::from_pixel(8, 8, image::Rgb([n, 50, 30])),
+                image::ImageFormat::Png,
+            )
+        })
+        .collect();
+    let files: Vec<_> = panels
+        .iter()
+        .map(|bytes| (bytes.as_slice(), "png"))
+        .collect();
+    let id = archive_test_images(&h.state, "local", "gapped", &files);
+    let load = || h.state.db.with(|conn| posts::get(conn, id)).unwrap();
+    let version = || {
+        h.state
+            .db
+            .with(|conn| gallery::edit_version(conn, id, &posts::get(conn, id)?.media))
+            .unwrap()
+    };
+    let original = load();
+    let ids = [0, 1, 3].map(|index| original.media[index].id);
+    let path = format!("/api/v1/posts/{id}/media");
+    let mut form = format!(
+        "csrf={}&action=merge&gallery_version={}",
+        h.ws.csrf,
+        version()
+    );
+    for media in ids {
+        form.push_str(&format!("&sel_{media}=on"));
+    }
+    let response = h.send(h.post(&path, &form)).await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let body: serde_json::Value = serde_json::from_str(&body_text(response).await).unwrap();
+    let job = body["job_id"].as_i64().unwrap();
+    assert_eq!(JobWorker::new(h.state.clone()).drain().await.unwrap(), 1);
+    let status: serde_json::Value = serde_json::from_str(
+        &body_text(h.send(h.get(&format!("/api/v1/jobs/{job}/status"))).await).await,
+    )
+    .unwrap();
+    assert_eq!(status["state"], "done");
+    let merged = load();
+    assert_eq!(merged.media[0].width, Some(24));
+    assert_eq!(merged.media[1].blob_hash, original.media[2].blob_hash);
+    let merge_id = h
+        .state
+        .db
+        .with(|conn| Ok(gallery::undo_ids(conn, id)?[0].1))
+        .unwrap();
+    let previous_version = version();
+    h.state
+        .db
+        .with(|conn| gallery::undo(conn, id, merge_id, &previous_version))
+        .unwrap();
+    assert_eq!(
+        load()
+            .media
+            .iter()
+            .map(|item| &item.blob_hash)
+            .collect::<Vec<_>>(),
+        original
+            .media
+            .iter()
+            .map(|item| &item.blob_hash)
+            .collect::<Vec<_>>()
+    );
+
+    let queue_id = h
+        .state
+        .db
+        .with(|conn| Ok(queue::enqueue_new(conn, id, channel.id, 0)?.unwrap()))
+        .unwrap();
+    let before = load();
+    let publish_revision = version();
+    let set_hidden = |media_id, hidden| {
+        let edit = version();
+        h.state
+            .db
+            .with(|conn| gallery::set_hidden(conn, id, media_id, &edit, hidden))
+            .unwrap()
+    };
+    set_hidden(before.media[2].id, true);
+    assert!(
+        nujijushi::queue::lease::acquire_for_gallery(
+            &h.state,
+            queue_id,
+            channel.tg_id.clone(),
+            before.id,
+            publish_revision
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    let trimmed = h
+        .state
+        .db
+        .with(|conn| gallery::outgoing_post(conn, id))
+        .unwrap();
+    assert_eq!(
+        trimmed
+            .media
+            .iter()
+            .map(|item| item.ordinal)
+            .collect::<Vec<_>>(),
+        [0, 1, 3]
+    );
+    let mirror = nujijushi::storage::plan(&h.state, &trimmed).unwrap();
+    assert!(
+        !mirror
+            .files
+            .iter()
+            .any(|file| file.relative.ends_with("/02.png"))
+    );
+    let parent = tempfile::tempdir().unwrap();
+    let exported = parent.path().join("share");
+    assert_eq!(
+        nujijushi::storage::share(&h.state, &exported)
+            .await
+            .unwrap(),
+        (1, 0)
+    );
+    assert!(!exported.join(&mirror.dir).join("02.png").exists());
+    assert!(exported.join(mirror.meta_name()).exists());
+    assert!(
+        matches!(publish_item(&h.state, queue_id, true).await.unwrap(), PublishOutcome::DryRun(plan) if plan.media_count() == 3)
+    );
+    let mut mirrored = h.state.clone();
+    let root = parent.path().join("mirror");
+    std::sync::Arc::make_mut(&mut mirrored.cfg).storage.local =
+        Some(nujijushi::config::LocalSinkConfig { path: root.clone() });
+    assert_eq!(
+        nujijushi::storage::enqueue(&mirrored, &[id]).await.unwrap(),
+        1
+    );
+    assert_eq!(nujijushi::storage::drain(&mirrored, 10).await.unwrap(), 1);
+    assert!(!root.join(&mirror.dir).join("02.png").exists());
+    assert!(root.join(mirror.meta_name()).exists());
+    assert!(matches!(
+        publish_item(&h.state, queue_id, false).await.unwrap(),
+        PublishOutcome::Published { .. }
+    ));
+    let sent = h.mock.sends();
+    assert_eq!(sent.iter().map(|batch| batch.media.len()).sum::<usize>(), 3);
+    let hidden_path = h.state.blobs.path_for(&before.media[2].blob_hash, "png");
+    assert!(
+        sent.iter()
+            .flat_map(|batch| &batch.media)
+            .all(|media| media.path != hidden_path)
+    );
+
+    let rejected = jobs::create_merge_media_job(
+        &h.state,
+        id,
+        before.media[..3].iter().map(|m| m.id).collect(),
+        version(),
+        None,
+    )
+    .await;
+    assert!(
+        rejected
+            .unwrap_err()
+            .to_string()
+            .contains("Restore hidden images")
+    );
+    set_hidden(before.media[2].id, false);
+    let restored = parent.path().join("restored");
+    assert_eq!(
+        nujijushi::storage::share(&h.state, &restored)
+            .await
+            .unwrap(),
+        (1, 0)
+    );
+    assert!(restored.join(&mirror.dir).join("02.png").exists());
+    assert_eq!(
+        h.state
+            .db
+            .with(|conn| gallery::outgoing_post(conn, id))
+            .unwrap()
+            .media
+            .len(),
+        4
+    );
 }

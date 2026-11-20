@@ -11,7 +11,7 @@ use super::fmt_ts;
 pub struct Mirror {
     pub post_id: i64,
     pub sink: String,
-    /// pending | done | failed
+    /// pending | done | failed | blocked
     pub state: String,
     pub external_id: Option<String>,
     pub bytes: i64,
@@ -103,6 +103,32 @@ pub fn mark_failed(conn: &Connection, post_id: i64, sink: &str, error: &str) -> 
         "UPDATE mirrors SET state = 'failed', error = ?1, attempts = attempts + 1, updated_at = ?2
          WHERE post_id = ?3 AND sink = ?4",
         params![error, fmt_ts(Utc::now()), post_id, sink],
+    )?;
+    Ok(())
+}
+
+pub fn block_empty(conn: &Connection, post_id: i64, sink: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE mirrors SET state = 'blocked', error = 'No outgoing media', updated_at = ?3
+         WHERE post_id = ?1 AND sink = ?2 AND state != 'done'",
+        params![post_id, sink, fmt_ts(Utc::now())],
+    )?;
+    Ok(())
+}
+
+pub fn has_blocked(conn: &Connection, post_id: i64) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM mirrors WHERE post_id = ?1 AND state = 'blocked')",
+        [post_id],
+        |row| row.get(0),
+    )?)
+}
+
+pub fn unblock(conn: &Connection, post_id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE mirrors SET state = 'pending', error = NULL, updated_at = ?2
+         WHERE post_id = ?1 AND state = 'blocked'",
+        params![post_id, fmt_ts(Utc::now())],
     )?;
     Ok(())
 }

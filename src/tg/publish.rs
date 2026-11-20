@@ -6,7 +6,7 @@ use rand::Rng;
 use super::audit;
 use super::policy::RetryPolicy;
 use super::transport::{MediaKind, OutgoingMedia, SendOptions, TgError, Transport};
-use crate::db::{posts as post_db, queue as queue_db, tags as tag_db};
+use crate::db::{queue as queue_db, tags as tag_db};
 use crate::error::Result;
 use crate::media::{MessageShape, plan_messages};
 use crate::model::{Channel, Post, QueueState};
@@ -272,7 +272,7 @@ pub async fn publish_channel(
 
     let rules = state.db.call(|conn| tag_db::TagRules::load(conn)).await?;
     let want = channel.posts_per_slot.max(1) as usize;
-    let mut candidates: Vec<(crate::model::QueueItem, Post, Decision)> = Vec::new();
+    let mut candidates: Vec<(crate::model::QueueItem, Post, Decision, String)> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
     let mut saw_queued = false;
 
@@ -294,8 +294,12 @@ pub async fn publish_channel(
         let mut progressed = false;
         for item in page {
             let post_id = item.post_id;
-            let post = match state.db.call(move |conn| post_db::get(conn, post_id)).await {
-                Ok(post) => post,
+            let (post, revision) = match state
+                .db
+                .call(move |conn| crate::db::media_merges::publish_snapshot(conn, post_id))
+                .await
+            {
+                Ok(snapshot) => snapshot,
                 Err(err) => {
                     tracing::warn!(post = post_id, "cannot load queued post: {err}");
                     continue;
@@ -323,7 +327,7 @@ pub async fn publish_channel(
                 progressed = true;
                 continue;
             }
-            candidates.push((item, post, decision));
+            candidates.push((item, post, decision, revision));
             progressed = true;
             if candidates.len() >= want {
                 break;
@@ -361,7 +365,7 @@ pub async fn publish_channel(
 
     let snapshot: Vec<Candidate> = candidates
         .iter()
-        .map(|(item, post, _)| Candidate {
+        .map(|(item, post, _, _)| Candidate {
             queue_id: item.id,
             post_id: item.post_id,
             author_id: post.author.as_ref().map(|a| a.id),
@@ -380,10 +384,10 @@ pub async fn publish_channel(
     let Some(index) = index else {
         return Ok(PublishOutcome::EmptyQueue);
     };
-    let (item, post, decision) = candidates.swap_remove(index);
+    let (item, post, decision, revision) = candidates.swap_remove(index);
 
     let plan = build_plan(state, channel, &post, item.id, decision)?;
-    execute_plan(state, channel, item.id, item.post_id, plan, dry_run).await
+    execute_plan(state, plan, revision, dry_run).await
 }
 
 /// Publish one specific queue item, ignoring the channel's schedule.
@@ -412,9 +416,12 @@ pub async fn publish_item(
             .call(move |conn| crate::db::channels::get(conn, id))
             .await?
     };
-    let post = {
+    let (post, revision) = {
         let id = item.post_id;
-        state.db.call(move |conn| post_db::get(conn, id)).await?
+        state
+            .db
+            .call(move |conn| crate::db::media_merges::publish_snapshot(conn, id))
+            .await?
     };
     if post.state == crate::model::PostState::Rejected {
         return Ok(PublishOutcome::AllSkipped(vec![format!(
@@ -435,26 +442,34 @@ pub async fn publish_item(
     }
 
     let plan = build_plan(state, &channel, &post, queue_id, decision)?;
-    execute_plan(state, &channel, queue_id, post.id, plan, dry_run).await
+    execute_plan(state, plan, revision, dry_run).await
 }
 
 /// Lease a queue item, send its planned messages and record the outcome.
 async fn execute_plan(
     state: &AppState,
-    channel: &Channel,
-    queue_id: i64,
-    post_id: i64,
     plan: PublishPlan,
+    revision: String,
     dry_run: bool,
 ) -> Result<PublishOutcome> {
     if dry_run {
         return Ok(PublishOutcome::DryRun(Box::new(plan)));
     }
+    let channel = &plan.channel;
+    let queue_id = plan.queue_id;
+    let post_id = plan.post.id;
     let transport = state.require_transport()?;
-    let Some(_token) = crate::queue::lease::acquire(state, queue_id, channel.tg_id.clone()).await?
+    let Some(_token) = crate::queue::lease::acquire_for_gallery(
+        state,
+        queue_id,
+        channel.tg_id.clone(),
+        post_id,
+        revision,
+    )
+    .await?
     else {
         return Ok(PublishOutcome::NotDue(
-            "someone else holds the lease for this item".to_string(),
+            "item is no longer queued or its outgoing gallery changed".to_string(),
         ));
     };
 
@@ -630,7 +645,11 @@ async fn plan_ahead(
     let mut candidates: Vec<(crate::model::QueueItem, Post, Decision)> = Vec::new();
     for item in items {
         let post_id = item.post_id;
-        let Ok(post) = state.db.call(move |conn| post_db::get(conn, post_id)).await else {
+        let Ok(post) = state
+            .db
+            .call(move |conn| crate::db::media_merges::outgoing_post(conn, post_id))
+            .await
+        else {
             continue;
         };
         let decision = nsfw::evaluate(&post, channel, &rules);

@@ -43,6 +43,11 @@
       }
       const button =
         event.submitter || form.querySelector('button[type="submit"], button:not([type])');
+      const confirmation = (button && button.dataset.confirm) || form.dataset.confirm;
+      if (confirmation && !window.confirm(confirmation)) {
+        event.preventDefault();
+        return;
+      }
       form.dataset.submitting = '1';
       form.setAttribute('aria-busy', 'true');
       if (button) {

@@ -36,6 +36,13 @@ jobs:
           toolchain: "1.95.0"
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - run: npm ci --prefix webui
+      - run: npm run build --prefix webui
       - run: cargo clippy --all-targets --locked -- -D warnings
 
   test:
@@ -53,4 +60,31 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # the suite is hermetic: external tools (gallery-dl, ffmpeg) are faked by
       # the mock transport, so no extra setup is needed here
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - run: npm ci --prefix webui
+      - run: npm run build --prefix webui
       - run: cargo test --locked
+
+  browser:
+    name: admin browser tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - run: npm ci --prefix webui
+      - run: npm run build --prefix webui
+      - run: NUJIJUSHI_REQUIRE_WEBUI=1 cargo build --locked
+      - run: npx --prefix webui playwright install --with-deps chromium
+      - run: npm test --prefix webui

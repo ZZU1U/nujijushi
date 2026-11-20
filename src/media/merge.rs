@@ -76,7 +76,7 @@ pub fn stitch(
     mut on_panel: impl FnMut(usize) -> Result<()>,
 ) -> Result<Vec<u8>> {
     if paths.len() < 2 {
-        return Err(Error::invalid("Select at least two consecutive images"));
+        return Err(Error::invalid("Select at least two images"));
     }
     let fit = compression.is_some_and(Compression::fits_telegram);
     let max_edge = (!fit).then_some(MAX_PHOTO_EDGES);

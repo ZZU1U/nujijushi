@@ -6,7 +6,7 @@
 {% block body %}
 <header class="post-heading">
   <div>
-    <a href="/posts" class="hint">← Posts</a>
+    <a href="/posts" class="hint" data-return-to-posts>← Posts</a>
     <h1>{{ post.title or ('Post #' ~ post.id) }}</h1>
     <div class="hint">#{{ post.id }} · {{ post.source }} / {{ post.source_id }}
       <span class="badge state-{{ post.state }}">{{ post.state }}</span>
@@ -18,6 +18,7 @@
 <div class="detail">
   <div>
     <section class="panel">
+      {% if not outgoing_count %}<p class="hint">No outgoing media</p>{% endif %}
       <h2>Artwork <span class="hint">{{ media | length }} item(s) · {{ media_total }}</span></h2>
       {% if media %}
       <div class="media-grid">
@@ -28,6 +29,7 @@
           {% else %}
           <a href="/media/{{ m.hash }}" target="_blank"><img loading="lazy" src="/media/{{ m.hash }}" alt=""></a>
           {% endif %}
+          {% if m.hidden %}<span class="badge amber">Hidden from outgoing copies</span>{% endif %}
           <figcaption class="hint">{{ m.ext }} {{ m.width }}×{{ m.height }} · {{ m.kib }} KiB</figcaption>
           {% if m.over_photo_limit %}<p class="hint">Exceeds the photo upload limits</p>{% endif %}
         </figure>
@@ -57,16 +59,21 @@
     {% endif %}
 
     {% if has_media_tools %}
-    <details class="panel post-disclosure"{% if open_section == 'media' %} open{% endif %}>
+    <details id="media-tools" class="panel post-disclosure"{% if open_section == 'media' %} open{% endif %}>
       <summary>Media tools</summary>
       <div class="post-disclosure-body">
         {% if merge_job.active %}
         <p class="hint">A gallery edit is in progress.</p>
         {% else %}
         {% for m in media %}
-          {% if m.can_compress or m.compressed or m.undo_id %}
           <div class="post-tool-row">
-            <a class="post-image-link" href="#media-{{ loop.index }}">Image {{ loop.index }}</a>
+            <a class="post-image-link" href="#media-{{ loop.index }}"><span>Image {{ loop.index }}</span></a>
+            <form method="post" action="/posts/{{ post.id }}/media" class="inline">
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <input type="hidden" name="gallery_version" value="{{ gallery_version }}">
+              <input type="hidden" name="media_id" value="{{ m.id }}">
+              <button type="submit" name="action" value="{{ 'restore' if m.hidden else 'hide' }}" class="small ghost">{{ 'Restore' if m.hidden else 'Hide from outgoing copies' }}</button>
+            </form>
             {% if m.can_select %}
             <label class="check">
               <input type="checkbox" name="sel_{{ m.id }}" value="on" form="merge-gallery" aria-label="Include image {{ loop.index }} in merge">
@@ -108,14 +115,13 @@
             </form>
             {% endif %}
           </div>
-          {% endif %}
         {% endfor %}
         {% if can_merge %}
         <form method="post" action="/posts/{{ post.id }}/media" id="merge-gallery" class="post-tool-row">
           <input type="hidden" name="csrf" value="{{ csrf }}">
           <input type="hidden" name="gallery_version" value="{{ gallery_version }}">
           <button type="submit" name="action" value="merge" class="small">Merge side by side</button>
-          <span class="hint">Select consecutive images of the same height.</span>
+          <span class="hint">Select any still images of the same height. They merge in gallery order.</span>
           <details class="post-inline-options">
             <summary>Merge output options</summary>
             <label>Output
@@ -137,6 +143,19 @@
   </div>
 
   <aside>
+    {% if channels %}
+    <section class="panel">
+      <h2>Add to queue</h2>
+      <form method="post" action="/posts/{{ post.id }}/queue" class="post-buttons">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <label>Destination <select name="channel" required>
+          <option value="">Choose a channel</option>
+          {% for c in channels %}<option value="{{ c.id }}">{{ c.title }}</option>{% endfor %}
+        </select></label>
+        <button type="submit" class="small"{% if not outgoing_count %} disabled{% endif %}>Add to queue</button>
+      </form>
+    </section>
+    {% endif %}
     <details class="panel post-disclosure">
       <summary>Edit post details</summary>
       <form class="post-disclosure-body" method="post" action="/posts/{{ post.id }}">

@@ -12,7 +12,7 @@ use super::WebState;
 use super::forms::empty_as_none;
 use super::routes::{WebResult, check_csrf, flash_redirect};
 use crate::config::Config;
-use crate::db::{channels, posts, queue, tags::TagRules};
+use crate::db::{channels, queue, tags::TagRules};
 use crate::error::{Error, Result};
 use crate::model::{Channel, PostState, QueueState};
 use crate::queue::{EnqueueOutcome, hold_for_preview};
@@ -143,8 +143,14 @@ pub(super) async fn held_preview(app: &AppState, channel: &Channel) -> Result<Op
         .db
         .call(move |conn| {
             let item = queue::list(conn, id, &[QueueState::Held], 1)?.pop();
-            item.map(|item| Ok((posts::get(conn, item.post_id)?, TagRules::load(conn)?, item)))
-                .transpose()
+            item.map(|item| {
+                Ok((
+                    crate::db::media_merges::outgoing_post(conn, item.post_id)?,
+                    TagRules::load(conn)?,
+                    item,
+                ))
+            })
+            .transpose()
         })
         .await?;
     let Some((post, rules, item)) = preview else {
@@ -205,7 +211,7 @@ pub(super) async fn start_scheduling(
                     "the queue changed. Open the preview again before enabling scheduling.",
                 ));
             }
-            let post = posts::get(&tx, item.post_id)?;
+            let post = crate::db::media_merges::outgoing_post(&tx, item.post_id)?;
             let rules = TagRules::load(&tx)?;
             if post.state == PostState::Rejected
                 || post.media.is_empty()

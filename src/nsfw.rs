@@ -86,6 +86,13 @@ pub fn evaluate(post: &Post, channel: &Channel, rules: &TagRules) -> Decision {
     }
 
     // 3. media gate
+    if post.media.is_empty() {
+        return Decision {
+            verdict: Verdict::Reject("No outgoing media".into()),
+            nsfw: post.rating.is_nsfw(),
+            reason: "No outgoing media".into(),
+        };
+    }
     if (post.media.len() as i64) < channel.min_media {
         return Decision {
             verdict: Verdict::Reject(format!(

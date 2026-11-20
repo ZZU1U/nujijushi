@@ -1,6 +1,6 @@
 //! HTTP handlers.
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -49,7 +49,16 @@ impl IntoResponse for WebError {
              <p><a style=\"color:#7dd3fc\" href=\"/\">back</a></p>",
             htmlescape::encode_minimal(&self.0.to_string())
         );
-        (status, Html(body)).into_response()
+        let mut response = (status, Html(body)).into_response();
+        let message = if status.is_server_error() {
+            "The server could not complete this request".to_string()
+        } else {
+            self.0.to_string()
+        };
+        response
+            .extensions_mut()
+            .insert(super::admin::ClientError(message));
+        response
     }
 }
 
@@ -65,6 +74,7 @@ pub fn router(ws: Arc<WebState>) -> Router {
             get(post_delete_page).post(post_delete),
         )
         .route("/posts/{id}/tags", post(post_tag_action))
+        .route("/posts/{id}/queue", post(post_queue))
         .route("/posts/{id}/media", post(super::media_merges::action))
         .route(
             "/posts/{id}/tag-suggestions",
@@ -85,6 +95,7 @@ pub fn router(ws: Arc<WebState>) -> Router {
             get(channel_edit_page).post(channel_update),
         )
         .route("/channels/{id}/queue", get(queue_page))
+        .route("/channels/{id}/schedule", post(channel_schedule))
         .route(
             "/channels/{id}/preview",
             get(preview_page).post(super::setup::start_scheduling),
@@ -98,10 +109,18 @@ pub fn router(ws: Arc<WebState>) -> Router {
         .route("/api/status", get(api_status))
         .route("/import", get(import_page).post(import_submit))
         .route("/users", get(users_page).post(users_action))
-        .route("/logout", post(logout))
-        .with_state(ws.clone());
+        .route("/logout", post(logout));
+
+    let api = protected
+        .clone()
+        .route("/login", get(login_page).post(login_submit))
+        .route("/dashboard", get(dashboard))
+        .route("/jobs/{id}/status", get(super::admin::job))
+        .layer(middleware::from_fn(super::admin::api_response));
 
     Router::new()
+        .nest("/api/v1", api)
+        .route("/admin-assets/assets/{name}", get(super::admin::asset))
         .route("/login", get(login_page).post(login_submit))
         .route("/static/app.css", get(css))
         .route("/metrics", get(metrics_endpoint))
@@ -114,50 +133,30 @@ pub fn router(ws: Arc<WebState>) -> Router {
             ws.clone(),
             auth::require_session,
         ))
+        .layer(middleware::from_fn(super::admin::navigation))
         .with_state(ws)
 }
 
 pub(super) fn flash_redirect(path: &str, message: &str) -> Response {
-    let encoded: String = message
-        .chars()
-        .map(|c| match c {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' | ' ' => {
-                if c == ' ' {
-                    "+".to_string()
-                } else {
-                    c.to_string()
-                }
-            }
-            other => format!("%{:02X}", other as u32 & 0xff),
-        })
-        .collect();
+    let encoded = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("flash", message)
+        .finish();
     let separator = if path.contains('?') { '&' } else { '?' };
-    Redirect::to(&format!("{path}{separator}flash={encoded}")).into_response()
+    Redirect::to(&format!("{path}{separator}{encoded}")).into_response()
 }
 
 fn decode_flash(raw: &Option<String>) -> Option<String> {
-    let raw = raw.as_deref()?;
-    let bytes = raw.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'%' if index + 2 < bytes.len() => {
-                let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).ok()?;
-                out.push(u8::from_str_radix(hex, 16).ok()?);
-                index += 3;
-            }
-            b'+' => {
-                out.push(b' ');
-                index += 1;
-            }
-            byte => {
-                out.push(byte);
-                index += 1;
-            }
-        }
+    // Query extraction already decoded form URL encoding.
+    raw.clone()
+}
+
+pub(super) fn with_job(mut response: Response, id: Option<i64>) -> Response {
+    if let Some(id) = id {
+        response
+            .extensions_mut()
+            .insert(super::admin::AcceptedJob(id));
     }
-    String::from_utf8(out).ok()
+    response
 }
 
 pub(super) fn check_csrf(ws: &WebState, provided: &str) -> WebResult<()> {
@@ -180,7 +179,7 @@ async fn login_page(
             "page": "login",
             "csrf": ws.csrf,
             "flash": decode_flash(&query.flash),
-            "next": "/",
+            "next": query.next.as_deref().filter(|path| auth::local_page(path).is_some()).unwrap_or("/"),
             "home": ws.app.cfg.home.display().to_string(),
         }),
     )?;
@@ -190,23 +189,29 @@ async fn login_page(
 async fn login_submit(State(ws): State<Arc<WebState>>, Form(form): Form<LoginForm>) -> Response {
     let expected = ws.app.cfg.ui_token.clone().unwrap_or_default();
     if auth::constant_time_eq(form.token.trim(), expected.trim()) {
-        let mut response = Redirect::to("/").into_response();
+        let target = form
+            .next
+            .as_deref()
+            .filter(|path| auth::local_page(path).is_some())
+            .unwrap_or("/");
+        let mut response = Redirect::to(target).into_response();
         response.headers_mut().insert(
             header::SET_COOKIE,
             auth::session_cookie(&ws.session).parse().unwrap(),
         );
         response
     } else {
-        flash_redirect("/login", "wrong token")
+        WebError(Error::invalid("Wrong UI token")).into_response()
     }
 }
 
-async fn logout(State(_ws): State<Arc<WebState>>) -> Response {
+async fn logout(State(ws): State<Arc<WebState>>, Form(form): Form<FormMap>) -> WebResult<Response> {
+    check_csrf(&ws, forms::field(&form, "csrf").unwrap_or_default())?;
     let mut response = Redirect::to("/login").into_response();
     response
         .headers_mut()
         .insert(header::SET_COOKIE, auth::clear_cookie().parse().unwrap());
-    response
+    Ok(response)
 }
 
 async fn css() -> Response {
@@ -449,6 +454,7 @@ async fn dashboard(
             "done": get("done"),
             "pending": get("pending"),
             "failed": get("failed"),
+            "blocked": get("blocked"),
         }));
     }
 
@@ -457,27 +463,7 @@ async fn dashboard(
 
     let unknown = app
         .db
-        .call(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT q.id, q.channel_id, q.post_id, q.last_error, c.title
-                 FROM queue q JOIN channels c ON c.id = q.channel_id
-                 WHERE q.state = 'unknown' ORDER BY q.id",
-            )?;
-            let rows = stmt.query_map([], |row| {
-                Ok(json!({
-                    "id": row.get::<_, i64>(0)?,
-                    "channel_id": row.get::<_, i64>(1)?,
-                    "post_id": row.get::<_, i64>(2)?,
-                    "error": row.get::<_, Option<String>>(3)?,
-                    "channel": row.get::<_, String>(4)?,
-                }))
-            })?;
-            let mut out = Vec::new();
-            for row in rows {
-                out.push(row?);
-            }
-            Ok(out)
-        })
+        .call(|conn| queue_db::unconfirmed(conn, None))
         .await?;
 
     let scheduler = scheduler_view(app, now).await?;
@@ -552,7 +538,7 @@ async fn posts_page(
         limit: per_page,
         offset: 0,
     };
-    let (cards, total, page, page_count) = app
+    let (cards, mut queue_badges, total, page, page_count) = app
         .db
         .call(move |conn| {
             let tx = conn.transaction()?;
@@ -564,8 +550,17 @@ async fn posts_page(
                 ..filter
             };
             let cards = post_db::cards(&tx, &filter)?;
+            let ids: Vec<i64> = cards.iter().map(|card| card.id).collect();
+            let mut queue_badges: HashMap<i64, Vec<Value>> = HashMap::new();
+            for (post, channel, state) in queue_db::card_states(&tx, &ids)? {
+                queue_badges.entry(post).or_default().push(json!({
+                    "class": state.as_str(),
+                    "label": queue_state_label(state),
+                    "channel": channel
+                }));
+            }
             tx.commit()?;
-            Ok((cards, total, page, page_count))
+            Ok((cards, queue_badges, total, page, page_count))
         })
         .await?;
     let sources = app.db.call(|conn| post_db::sources(conn)).await?;
@@ -591,6 +586,7 @@ async fn posts_page(
                 "pushed": card.pushed,
                 "delivered": card.delivered,
                 "channels": card.channels,
+                "queue_badges": queue_badges.remove(&card.id).unwrap_or_default(),
                 "imported": card.imported_at.with_timezone(&chrono::Local).format("%m-%d %H:%M").to_string(),
             })
         })
@@ -608,6 +604,7 @@ async fn posts_page(
             "page_count": page_count,
             "per_page": per_page,
             "page_sizes": POST_PAGE_SIZES,
+            "grid_url": query.page_url(page, per_page),
             "previous_page": (page > 1).then(|| query.page_url(page - 1, per_page)),
             "next_page": (page < page_count).then(|| query.page_url(page + 1, per_page)),
             "filters": {
@@ -641,9 +638,12 @@ async fn posts_bulk(
     Form(form): Form<FormMap>,
 ) -> WebResult<Response> {
     check_csrf(&ws, forms::field(&form, "csrf").unwrap_or_default())?;
+    let back = forms::field(&form, "back")
+        .filter(|path| super::auth::local_page(path).is_some_and(|uri| uri.path() == "/posts"))
+        .unwrap_or("/posts");
     let ids = forms::selected_ids(&form);
     if ids.is_empty() {
-        return Ok(flash_redirect("/posts", "no posts selected"));
+        return Ok(flash_redirect(back, "no posts selected"));
     }
     let action = forms::field(&form, "action")
         .unwrap_or_default()
@@ -693,7 +693,7 @@ async fn posts_bulk(
         }
         "queue" => {
             let Some(channel_id) = channel_id else {
-                return Ok(flash_redirect("/posts", "choose a channel first"));
+                return Ok(flash_redirect(back, "choose a channel first"));
             };
             let channel = app
                 .db
@@ -712,19 +712,25 @@ async fn posts_bulk(
             let ids_for_db = ids.clone();
             app.db
                 .call(move |conn| {
-                    crate::db::transaction(conn, |conn| {
-                        for id in &ids_for_db {
-                            post_db::delete(conn, *id)?;
+                    let tx =
+                        conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                    for id in &ids_for_db {
+                        if post_is_sending(&tx, *id)? {
+                            return Err(Error::invalid(
+                                "Wait for active sends before deleting these posts",
+                            ));
                         }
-                        Ok(())
-                    })
+                        post_db::delete(&tx, *id)?;
+                    }
+                    tx.commit()?;
+                    Ok(())
                 })
                 .await?;
             format!("{} post(s) deleted", ids.len())
         }
         other => format!("unknown action {other}"),
     };
-    Ok(flash_redirect("/posts", &note))
+    Ok(flash_redirect(back, &note))
 }
 
 async fn post_page(
@@ -734,7 +740,18 @@ async fn post_page(
 ) -> WebResult<Html<String>> {
     let app = &ws.app;
     let suggestions_enabled = app.cfg.tag_suggestions.enabled;
-    let (post, tags, removals, tag_review, merge_undo, compressed, merge_job) = app
+    let (
+        post,
+        tags,
+        removals,
+        tag_review,
+        merge_undo,
+        compressed,
+        merge_job,
+        hidden,
+        gallery_version,
+        outgoing,
+    ) = app
         .db
         .call(move |conn| {
             let post = post_db::get(conn, id)?;
@@ -744,13 +761,16 @@ async fn post_page(
                 None
             };
             Ok((
-                post,
+                post.clone(),
                 tag_db::provenance(conn, id)?,
                 tag_db::removals(conn, id)?,
                 tag_review,
                 crate::db::media_merges::undo_ids(conn, id)?,
                 crate::db::media_merges::compressed_positions(conn, id)?,
                 crate::db::media_merges::latest_job(conn, id)?,
+                crate::db::media_merges::hidden_positions(conn, id, &post.media)?,
+                crate::db::media_merges::edit_version(conn, id, &post.media)?,
+                crate::db::media_merges::outgoing(conn, post.clone())?,
             ))
         })
         .await?;
@@ -780,9 +800,9 @@ async fn post_page(
     let tag_review = tag_review.map(|review| super::tag_suggestions::review_view(review, now));
     let mut captions = Vec::new();
     for channel in &channels {
-        let decision = crate::nsfw::evaluate(&post, channel, &rules);
+        let decision = crate::nsfw::evaluate(&outgoing, channel, &rules);
         let mut preview =
-            match crate::tg::publish::build_plan(app, channel, &post, 0, decision.clone()) {
+            match crate::tg::publish::build_plan(app, channel, &outgoing, 0, decision.clone()) {
                 Ok(plan) => json!({
                     "channel": channel.title,
                     "tg_id": channel.tg_id,
@@ -816,13 +836,14 @@ async fn post_page(
 
     let merge_undo: std::collections::HashMap<_, _> = merge_undo.into_iter().collect();
     let photo_limit = crate::media::compress::photo_limit(app.cfg.max_upload_bytes);
-    let can_merge = post
+    let can_merge = outgoing
         .media
-        .windows(2)
-        .any(|items| items.iter().all(crate::media::merge::supports));
-    let has_media_tools = post.media.iter().any(crate::media::merge::supports)
-        || !merge_undo.is_empty()
-        || !compressed.is_empty();
+        .iter()
+        .filter(|item| crate::media::merge::supports(item))
+        .take(2)
+        .count()
+        == 2;
+    let has_media_tools = !post.media.is_empty();
     let media: Vec<Value> = post
         .media
         .iter()
@@ -838,7 +859,8 @@ async fn post_page(
                 "width": item.width,
                 "height": item.height,
                 "kib": (item.bytes as f64 / 1024.0).round(),
-                "can_select": can_merge && editable,
+                "hidden": hidden.binary_search(&position).is_ok(),
+                "can_select": can_merge && editable && hidden.binary_search(&position).is_err(),
                 "can_compress": editable,
                 "compressed": compressed.contains(&position),
                 "over_photo_limit": editable && (item.bytes > photo_limit as i64
@@ -891,7 +913,8 @@ async fn post_page(
             "can_merge": can_merge,
             "has_media_tools": has_media_tools,
             "merge_job": merge_job.as_ref().map(|job| job_view(job, now)),
-            "gallery_version": crate::db::media_merges::gallery_version(&post.media),
+            "gallery_version": gallery_version,
+            "outgoing_count": outgoing.media.len(),
             "tag_review": tag_review,
             "can_suggest_tags": suggestions_enabled && post.media.iter().any(|media| !media.is_video),
             "captions": captions,
@@ -901,6 +924,30 @@ async fn post_page(
         }),
     )?;
     Ok(Html(html))
+}
+
+async fn post_queue(
+    State(ws): State<Arc<WebState>>,
+    Path(id): Path<i64>,
+    Form(form): Form<FormMap>,
+) -> WebResult<Response> {
+    check_csrf(&ws, forms::field(&form, "csrf").unwrap_or_default())?;
+    let channel_id = forms::field(&form, "channel")
+        .and_then(|raw| raw.parse().ok())
+        .ok_or_else(|| Error::invalid("Choose a destination channel"))?;
+    let app = &ws.app;
+    let channel = app
+        .db
+        .call(move |conn| channel_db::get(conn, channel_id))
+        .await?;
+    let outcome = crate::queue::enqueue_checked(app, &channel, id, 0).await?;
+    if let crate::queue::EnqueueOutcome::Skipped(reason) = &outcome {
+        return Err(Error::invalid(reason.clone()).into());
+    }
+    Ok(flash_redirect(
+        &format!("/posts/{id}"),
+        &format!("{} · {}", outcome.describe(), channel.title),
+    ))
 }
 
 async fn post_update(
@@ -1303,6 +1350,55 @@ async fn channel_update(
     Ok(flash_redirect(&format!("/channels/{id}/edit"), "saved"))
 }
 
+fn queue_state_label(state: QueueState) -> &'static str {
+    match state {
+        QueueState::Sent => "Sent",
+        QueueState::Sending => "Sending",
+        QueueState::Unknown => "Delivery unconfirmed",
+        QueueState::Queued => "Queued",
+        QueueState::Held => "Awaiting preview",
+        QueueState::Failed => "Failed",
+        QueueState::Skipped => "Skipped",
+    }
+}
+
+async fn channel_schedule(
+    State(ws): State<Arc<WebState>>,
+    Path(id): Path<i64>,
+    Form(form): Form<FormMap>,
+) -> WebResult<Response> {
+    check_csrf(&ws, forms::field(&form, "csrf").unwrap_or_default())?;
+    let paused = match forms::field(&form, "action") {
+        Some("pause") => true,
+        Some("resume") => false,
+        _ => return Err(Error::invalid("Unknown schedule action").into()),
+    };
+    ws.app
+        .db
+        .call(move |conn| {
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let channel = channel_db::get(&tx, id)?;
+            if !channel.enabled {
+                return Err(Error::invalid(
+                    "Confirm a preview to start scheduling for this channel",
+                ));
+            }
+            channel_db::set_paused(&tx, id, paused)?;
+            tx.commit()?;
+            Ok(())
+        })
+        .await?;
+    let back = format!("/channels/{id}/queue");
+    Ok(flash_redirect(
+        &back,
+        if paused {
+            "Schedule paused"
+        } else {
+            "Schedule resumed"
+        },
+    ))
+}
+
 async fn queue_page(
     State(ws): State<Arc<WebState>>,
     Path(id): Path<i64>,
@@ -1310,10 +1406,10 @@ async fn queue_page(
     let app = &ws.app;
     let channel = app.db.call(move |conn| channel_db::get(conn, id)).await?;
     let channel_id = channel.id;
-    let entries = app
+    let (entries, unresolved) = app
         .db
         .call(move |conn| {
-            queue_db::entries(
+            let entries = queue_db::entries(
                 conn,
                 channel_id,
                 &[
@@ -1321,10 +1417,16 @@ async fn queue_page(
                     QueueState::Held,
                     QueueState::Unknown,
                     QueueState::Failed,
+                    QueueState::Skipped,
                     QueueState::Sending,
                 ],
                 200,
-            )
+            )?;
+            let unresolved: HashMap<_, _> = queue_db::unconfirmed(conn, Some(channel_id))?
+                .into_iter()
+                .map(|item| (item.id, item))
+                .collect();
+            Ok((entries, unresolved))
         })
         .await?;
     // nothing to load here any more: `card.nsfw` already carries the override
@@ -1348,6 +1450,8 @@ async fn queue_page(
                 "id": entry.item.id,
                 "post_id": post,
                 "state": entry.item.state.as_str(),
+                "state_label": queue_state_label(entry.item.state),
+                "delivery": unresolved.get(&entry.item.id),
                 "priority": entry.item.priority,
                 "pinned": entry.item.pinned,
                 "attempts": entry.item.attempts,
@@ -1374,12 +1478,32 @@ async fn queue_page(
             "page": "channels",
             "csrf": ws.csrf,
             "flash": Value::Null,
-            "channel": {"id": channel.id, "title": channel.title, "tg_id": channel.tg_id},
+            "channel": {"id": channel.id, "title": channel.title, "tg_id": channel.tg_id,
+                "enabled": channel.enabled, "paused": channel.paused},
             "items": items,
             "eta_hint": eta_hint,
         }),
     )?;
     Ok(Html(html))
+}
+
+fn guarded_queue_edit(
+    conn: &mut rusqlite::Connection,
+    id: i64,
+    allowed: impl FnOnce(QueueState) -> bool,
+    action: impl FnOnce(&rusqlite::Connection) -> crate::error::Result<()>,
+) -> crate::error::Result<()> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let item = queue_db::get(&tx, id)?;
+    if !allowed(item.state) {
+        return Err(Error::invalid(format!(
+            "This action is unavailable while the item is {}",
+            item.state
+        )));
+    }
+    action(&tx)?;
+    tx.commit()?;
+    Ok(())
 }
 
 async fn queue_action(
@@ -1392,7 +1516,16 @@ async fn queue_action(
     let channel_id = form.channel;
     let note = match form.action.as_str() {
         "skip" => {
-            app.db.call(move |conn| queue_db::skip(conn, id)).await?;
+            app.db
+                .call(move |conn| {
+                    guarded_queue_edit(
+                        conn,
+                        id,
+                        |state| matches!(state, QueueState::Queued | QueueState::Failed),
+                        |tx| queue_db::skip(tx, id).map(|_| ()),
+                    )
+                })
+                .await?;
             "skipped".to_string()
         }
         "pin" | "unpin" => {
@@ -1403,11 +1536,37 @@ async fn queue_action(
             (if pinned { "pinned" } else { "unpinned" }).to_string()
         }
         "reset" => {
-            app.db.call(move |conn| queue_db::requeue(conn, id)).await?;
+            app.db
+                .call(move |conn| {
+                    guarded_queue_edit(
+                        conn,
+                        id,
+                        |state| matches!(state, QueueState::Failed | QueueState::Skipped),
+                        |tx| queue_db::requeue(tx, id).map(|_| ()),
+                    )
+                })
+                .await?;
             "back in the queue".to_string()
         }
         "remove" => {
-            app.db.call(move |conn| queue_db::delete(conn, id)).await?;
+            app.db
+                .call(move |conn| {
+                    guarded_queue_edit(
+                        conn,
+                        id,
+                        |state| {
+                            matches!(
+                                state,
+                                QueueState::Held
+                                    | QueueState::Queued
+                                    | QueueState::Failed
+                                    | QueueState::Skipped
+                            )
+                        },
+                        |tx| queue_db::delete(tx, id).map(|_| ()),
+                    )
+                })
+                .await?;
             "removed".to_string()
         }
         "delivered" => {
@@ -1506,12 +1665,12 @@ async fn storage_drain(
     Form(form): Form<FormMap>,
 ) -> WebResult<Response> {
     check_csrf(&ws, forms::field(&form, "csrf").unwrap_or_default())?;
-    let note = match crate::jobs::create_drain_job(&ws.app, 25).await {
-        Ok(Some(id)) => format!("upload queued as job #{id} - watch the jobs panel"),
-        Ok(None) => "an upload is already queued".to_string(),
-        Err(err) => format!("cannot queue the upload: {err}"),
+    let job = crate::jobs::create_drain_job(&ws.app, 25).await?;
+    let note = match job {
+        Some(id) => format!("upload queued as job #{id} - watch the jobs panel"),
+        None => "an upload is already queued".to_string(),
     };
-    Ok(flash_redirect("/", &note))
+    Ok(with_job(flash_redirect("/", &note), job))
 }
 
 // ---------------------------------------------------------------- publish
@@ -1550,7 +1709,7 @@ async fn publish_action(
     check_csrf(&ws, forms::field(&form, "csrf").unwrap_or_default())?;
     let app = &ws.app;
     let back = forms::field(&form, "back")
-        .filter(|path| path.starts_with('/'))
+        .filter(|path| auth::local_page(path).is_some())
         .unwrap_or("/")
         .to_string();
     let queue_id = forms::field(&form, "queue_id").and_then(|raw| raw.parse::<i64>().ok());
@@ -1564,12 +1723,18 @@ async fn publish_action(
         return Ok(flash_redirect(&back, "nothing selected to publish"));
     };
 
-    let note = match queued {
+    let note = match &queued {
         Ok(Some(id)) => format!("publish queued as job #{id} - the jobs panel shows it finish"),
         Ok(None) => "a publish for this is already queued or running".to_string(),
         Err(err) => format!("cannot queue the publish: {err}"),
     };
-    Ok(flash_redirect(&back, &note))
+    let mut response = flash_redirect(&back, &note);
+    if let Ok(Some(id)) = queued {
+        response
+            .extensions_mut()
+            .insert(super::admin::AcceptedJob(id));
+    }
+    Ok(response)
 }
 /// Is the scheduler alive? Read by the dashboard banner and `/api/status`, so a
 /// queue that is not moving can be explained instead of guessed at.
@@ -1689,9 +1854,14 @@ async fn jobs_retry(
     Form(form): Form<FormMap>,
 ) -> WebResult<Response> {
     check_csrf(&ws, forms::field(&form, "csrf").unwrap_or_default())?;
+    let back = if forms::field(&form, "back") == Some("/import") {
+        "/import"
+    } else {
+        "/jobs"
+    };
     let app = &ws.app;
     let Some(id) = forms::field(&form, "id").and_then(|raw| raw.parse::<i64>().ok()) else {
-        return Ok(flash_redirect("/jobs", "no job selected"));
+        return Ok(flash_redirect(back, "no job selected"));
     };
     let job = app
         .db
@@ -1700,25 +1870,25 @@ async fn jobs_retry(
         .ok_or_else(|| Error::NotFound(format!("job {id}")))?;
     if job.kind != crate::jobs::KIND_IMPORT {
         return Ok(flash_redirect(
-            "/jobs",
+            back,
             "only imports can be retried - publishing has its own button",
         ));
     }
     // only a settled failure may be retried: a pending or running import would
     // otherwise be started twice for the same target
     if job.state != "failed" {
-        return Ok(flash_redirect("/jobs", "only failed jobs can be retried"));
+        return Ok(flash_redirect(back, "only failed jobs can be retried"));
     }
     let target = job.payload.clone().unwrap_or_default();
     if target.trim().is_empty() {
-        return Ok(flash_redirect("/jobs", "that job has no target to retry"));
+        return Ok(flash_redirect(back, "that job has no target to retry"));
     }
-    let note = match crate::jobs::create_import_job_unique(app, &target).await {
-        Ok(Some(new_id)) => format!("job #{id} re-queued as #{new_id}"),
-        Ok(None) => format!("job #{id} is already queued or running"),
-        Err(err) => format!("cannot retry job #{id}: {err}"),
+    let job = crate::jobs::create_import_job_unique(app, &target).await?;
+    let note = match job {
+        Some(new_id) => format!("job #{id} re-queued as #{new_id}"),
+        None => format!("job #{id} is already queued or running"),
     };
-    Ok(flash_redirect("/jobs", &note))
+    Ok(with_job(flash_redirect(back, &note), job))
 }
 
 // ---------------------------------------------------------------- status API
@@ -1836,7 +2006,6 @@ async fn import_page(
         .db
         .call(|conn| job_db::count_pending(conn, crate::jobs::KIND_IMPORT))
         .await?;
-    let channels = app.db.call(|conn| channel_db::list(conn)).await?;
     let html = ws.pages.render(
         "import.html",
         &json!({
@@ -1846,7 +2015,6 @@ async fn import_page(
             "jobs": jobs.iter().map(|job| job_view(job, now)).collect::<Vec<_>>(),
             "parallel": app.cfg.max_concurrent_imports,
             "waiting": waiting,
-            "channels": channels.iter().map(|c| json!({"id": c.id, "title": c.title})).collect::<Vec<_>>(),
             "cookies": app.cfg.cookies_dir().display().to_string(),
         }),
     )?;
@@ -1863,27 +2031,19 @@ async fn import_submit(
         return Ok(flash_redirect("/import", "no targets given"));
     }
     let app = &ws.app;
-    let mut created = 0;
+    let mut jobs = Vec::new();
     for target in &targets {
-        crate::jobs::create_job(app, target).await?;
-        created += 1;
+        jobs.push(crate::jobs::create_job(app, target).await?);
     }
-    let channel = match form.channel {
-        Some(channel_id) if channel_id > 0 => app
-            .db
-            .call(move |conn| channel_db::get(conn, channel_id))
-            .await
-            .ok(),
-        _ => None,
-    };
-    let note = match channel {
-        Some(channel) => format!(
-            "{created} import job(s) queued - after they finish, queue posts from /posts into {}",
-            channel.title
-        ),
-        None => format!("{created} import job(s) queued - the worker picks them up within 2s"),
-    };
-    Ok(flash_redirect("/import", &note))
+    let note = format!(
+        "{} import job(s) queued. Open the results to review and queue artwork.",
+        jobs.len()
+    );
+    let mut response = flash_redirect("/import", &note);
+    response
+        .extensions_mut()
+        .insert(super::admin::AcceptedJobs(jobs));
+    Ok(response)
 }
 
 // ---------------------------------------------------------------- users

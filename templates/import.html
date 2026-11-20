@@ -12,12 +12,6 @@
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <textarea name="targets" rows="6" spellcheck="false" placeholder="https://www.pixiv.net/artworks/123456&#10;https://x.com/someone/status/1234567890&#10;/Users/me/Pictures/dump/set-01"></textarea>
     <div class="fieldrow">
-      <label>after import queue into
-        <select name="channel">
-          <option value="">don't queue</option>
-          {% for c in channels %}<option value="{{ c.id }}">{{ c.title }}</option>{% endfor %}
-        </select>
-      </label>
       <button type="submit">start import</button>
       <span class="hint">the worker picks jobs up within a couple of seconds</span>
     </div>
@@ -50,7 +44,15 @@
         <span class="hint" data-role="counts">{{ j.progress }}/{{ j.total }}</span>
         {% else %}<span class="hint">—</span>{% endif %}
       </td>
-      <td class="hint" data-role="message">{{ j.message }}</td>
+      <td class="hint"><span data-role="message">{{ j.message }}</span>
+        {% if j.post_id %}<a href="/posts/{{ j.post_id }}">Open post</a>{% endif %}
+        {% if j.retryable %}<form method="post" action="/jobs/retry">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="id" value="{{ j.id }}">
+          <input type="hidden" name="back" value="/import">
+          <button type="submit" class="small">Retry import</button>
+        </form>{% endif %}
+      </td>
       <td class="hint">{{ j.created }}</td>
     </tr>
     {% endfor %}

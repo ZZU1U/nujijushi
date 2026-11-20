@@ -72,7 +72,7 @@ async fn enqueue(
         .call(move |conn| {
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let rules = crate::db::tags::TagRules::load(&tx)?;
-            let post = crate::db::posts::get(&tx, post_id)?;
+            let post = crate::db::media_merges::outgoing_post(&tx, post_id)?;
             let decision = crate::nsfw::evaluate(&post, &channel, &rules);
             if let crate::nsfw::Verdict::Reject(reason) = decision.verdict {
                 return Ok(EnqueueOutcome::Skipped(reason));

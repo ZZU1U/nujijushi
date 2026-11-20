@@ -421,7 +421,7 @@ pub async fn create_merge_media_job(
     selected: Vec<i64>,
     version: String,
     compression: Option<crate::media::compress::Compression>,
-) -> Result<bool> {
+) -> Result<Option<i64>> {
     state
         .db
         .call(move |conn| {
@@ -436,7 +436,7 @@ pub async fn create_compress_media_job(
     media_id: i64,
     version: String,
     settings: crate::media::compress::Compression,
-) -> Result<bool> {
+) -> Result<Option<i64>> {
     state
         .db
         .call(move |conn| {

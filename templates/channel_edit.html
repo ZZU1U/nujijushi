@@ -22,14 +22,18 @@
           <input name="tz" list="tz-zones" value="{{ channel.tz }}" placeholder="Europe/Berlin" autocomplete="off" spellcheck="false" aria-describedby="tz-hint">
           <span class="field-hint" id="tz-hint">IANA zone name (e.g. <code>Europe/Berlin</code>) — it sets the clock the active hours and daily cap run on.</span>
         </label>
-        <label>daily cap (0 = off)<input name="daily_cap" type="number" min="0" value="{{ channel.daily_cap }}"></label>
-        <label>jitter (seconds)<input name="jitter_secs" type="number" min="0" value="{{ channel.jitter_secs }}"></label>
-        <label>artist cooldown<input name="artist_cooldown" type="number" min="0" value="{{ channel.artist_cooldown }}"></label>
         <label>nsfw policy
           <select name="nsfw_policy">
             {% for p in policies %}<option value="{{ p }}" {{ 'selected' if channel.nsfw_policy == p else '' }}>{{ p }}</option>{% endfor %}
           </select>
         </label>
+      </div>
+      <details class="panel inset">
+        <summary>Advanced channel settings</summary>
+        <div class="grid-form">
+        <label>daily cap (0 = off)<input name="daily_cap" type="number" min="0" value="{{ channel.daily_cap }}"></label>
+        <label>jitter (seconds)<input name="jitter_secs" type="number" min="0" value="{{ channel.jitter_secs }}"></label>
+        <label>artist cooldown<input name="artist_cooldown" type="number" min="0" value="{{ channel.artist_cooldown }}"></label>
         <label>min media<input name="min_media" type="number" min="0" value="{{ channel.min_media }}"></label>
         <label>tag style
           <select name="tag_style">
@@ -164,6 +168,7 @@
         Filters: <code>truncate_words(n)</code>, <code>hashtags</code>, <code>one_line</code>.
       </p>
 
+      </details>
       <div class="checks">
         <label class="check"><input type="checkbox" name="enabled" {{ 'checked' if channel.enabled else '' }}> enabled</label>
         <label class="check"><input type="checkbox" name="include_source_tag" {{ 'checked' if channel.include_source_tag else '' }}> source hashtag</label>

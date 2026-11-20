@@ -13,13 +13,17 @@ nujijushi is a local artwork archive that publishes curated posts to Telegram ch
 
 Download and extract the binary for your Linux or macOS architecture from [GitHub Releases](https://github.com/ZZU1U/nujijushi/releases), then put it on your `PATH`.
 
-To install from a checkout with Rust 1.95:
+To install from a checkout with Rust 1.95 and Node.js 24 LTS:
 
 ```bash
-cargo install --path . --locked
+npm ci --prefix webui
+npm run build --prefix webui
+NUJIJUSHI_REQUIRE_WEBUI=1 cargo install --path . --locked
 ```
 
 Install `gallery-dl` for gallery-site imports and `ffmpeg` if you want video thumbnails. Importing a folder of images only needs nujijushi.
+
+Release binaries embed the frontend and run with the usual `nujijushi run` or `nujijushi serve` command. Stop older processes and back up your archive before upgrading a database used by an older binary.
 
 ## Quick start
 

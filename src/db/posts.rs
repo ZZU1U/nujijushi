@@ -692,6 +692,13 @@ pub fn edit_text(
     Ok(())
 }
 
+pub fn ids(conn: &Connection) -> Result<Vec<i64>> {
+    let mut query = conn.prepare("SELECT id FROM posts ORDER BY id")?;
+    Ok(query
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
 pub fn delete(conn: &Connection, id: i64) -> Result<bool> {
     Ok(conn.execute("DELETE FROM posts WHERE id = ?1", [id])? > 0)
 }

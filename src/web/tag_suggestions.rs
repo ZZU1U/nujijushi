@@ -61,9 +61,11 @@ pub(super) async fn action(
     if !ws.app.cfg.tag_suggestions.enabled {
         return Err(Error::invalid("Tag suggestions are disabled").into());
     }
+    let mut active_job = None;
     let message = match form.action.as_str() {
         "generate" => {
-            let (_, queued) = crate::jobs::create_tag_suggestions_job(&ws.app, post_id).await?;
+            let (job, queued) = crate::jobs::create_tag_suggestions_job(&ws.app, post_id).await?;
+            active_job = Some(job);
             if queued {
                 "Tag suggestions queued"
             } else {
@@ -98,8 +100,8 @@ pub(super) async fn action(
         }
         _ => return Err(Error::invalid("Unknown suggestion action").into()),
     };
-    Ok(flash_redirect(
-        &format!("/posts/{post_id}?section=suggestions"),
-        message,
+    Ok(super::routes::with_job(
+        flash_redirect(&format!("/posts/{post_id}?section=suggestions"), message),
+        active_job,
     ))
 }

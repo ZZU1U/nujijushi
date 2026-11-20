@@ -123,6 +123,8 @@ lines collapse to one, and a body longer than 1000 characters is cut with `…`.
 token (`[web] token`) exchanged for an HttpOnly cookie; forms carry a CSRF token.
 Binding to a non-loopback address is possible but logs a warning.
 
+Before upgrading an existing archive, stop older nujijushi workers and take a full backup with `nujijushi export --with-media --out <backup-directory>`. The new binary applies the gallery migration when it opens the archive.
+
 Pages: dashboard (queue depth, next slot per channel, unconfirmed sends, recent sends,
 recent jobs) · posts grid with filters + bulk approve/reject/NSFW/queue/delete (sent and
 rejected posts are hidden by default; `?sent=all` and `?state=all` bring them back;
@@ -138,9 +140,11 @@ On the post page, open **Edit post details** to change the title or description.
 
 The post detail page shows whether a tag came from the source, a manual edit, or both. Removing a source tag keeps it hidden on that post after re-import. Undo restores it if the most recent import still supplied it. Edit manual tags in the separate **Save tags** form.
 
-Select consecutive still images of the same height and choose **Merge side by side** to replace them with a single PNG. Watch the job on the post page and refresh the gallery when it finishes. **Undo merge** restores its source panels. Re-importing the same panels in the same order keeps the merge. A changed source gallery replaces the edited gallery. The active gallery is used by new previews and deliveries. Completed mirrors and Telegram messages are delivery snapshots.
+Select any still images of the same height and choose **Merge side by side** to replace them with a single PNG. The gallery updates in place when the job finishes. **Undo merge** restores its source panels. Re-imports keep a merge when every selected source image is still present, and keep visibility settings for matching images. The active gallery is used by new previews and deliveries. Hide individual images from future sends, mirrors, and shareable exports with **Hide from outgoing copies**. Use **Restore** to include them again. Completed mirrors and Telegram messages keep the gallery that was sent.
 
-Open **Compress image** on a gallery item or **Merge output options** when stitching panels. **Use exact JPEG quality** keeps the pixel dimensions and uses the quality you enter. **Fit to Telegram** uses that quality as a maximum, then lowers it or reduces the dimensions to fit the photo limits. It may add white borders to very wide or tall images. JPEG fills transparency with white. **Undo compression** restores the original image or merged PNG, and a changed source gallery resets saved edits when re-imported.
+Use `nujijushi export --share --out <new-directory>` to copy outgoing images and their `post.json` files. The regular backup retains all original images and the visibility settings.
+
+Open **Compress image** on a gallery item or **Merge output options** when stitching panels. **Use exact JPEG quality** keeps the pixel dimensions and uses the quality you enter. **Fit to Telegram** uses that quality as a maximum, then lowers it or reduces the dimensions to fit the photo limits. It may add white borders to very wide or tall images. JPEG fills transparency with white. **Undo compression** restores the original image or merged PNG.
 
 `GET /metrics` answers in the Prometheus text format (posts by state and nsfw, channels by
 enabled, queue depth per channel/state, import jobs, storage mirrors). It sits outside the

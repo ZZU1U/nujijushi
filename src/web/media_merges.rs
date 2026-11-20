@@ -26,21 +26,22 @@ pub(super) async fn action(
     let version = forms::field(&form, "gallery_version")
         .ok_or_else(|| Error::invalid("Missing gallery version. Reload the post."))?
         .to_owned();
+    let mut job_id = None;
     let message = match forms::field(&form, "action") {
         Some("merge") => {
             let compression = match forms::field(&form, "output") {
                 None | Some("lossless") => None,
                 Some(mode) => Some(compression_settings(&form, mode)?),
             };
-            if crate::jobs::create_merge_media_job(
+            job_id = crate::jobs::create_merge_media_job(
                 &ws.app,
                 post_id,
                 forms::selected_ids(&form),
                 version,
                 compression,
             )
-            .await?
-            {
+            .await?;
+            if job_id.is_some() {
                 "Image merge queued"
             } else {
                 "A gallery edit is already queued for this post"
@@ -49,18 +50,33 @@ pub(super) async fn action(
         Some("compress") => {
             let mode = forms::field(&form, "output").unwrap_or("fit");
             let settings = compression_settings(&form, mode)?;
-            if crate::jobs::create_compress_media_job(
+            job_id = crate::jobs::create_compress_media_job(
                 &ws.app,
                 post_id,
                 media_id(&form)?,
                 version,
                 settings,
             )
-            .await?
-            {
+            .await?;
+            if job_id.is_some() {
                 "Image compression queued"
             } else {
                 "A gallery edit is already queued for this post"
+            }
+        }
+        Some(action @ ("hide" | "restore")) => {
+            let media_id = media_id(&form)?;
+            let hidden = action == "hide";
+            ws.app
+                .db
+                .call(move |conn| {
+                    crate::db::media_merges::set_hidden(conn, post_id, media_id, &version, hidden)
+                })
+                .await?;
+            if hidden {
+                "Image hidden from outgoing copies"
+            } else {
+                "Image restored to outgoing copies"
             }
         }
         Some("undo_compression") => {
@@ -85,10 +101,13 @@ pub(super) async fn action(
         }
         _ => return Err(Error::invalid("Unknown gallery action").into()),
     };
-    Ok(flash_redirect(
-        &format!("/posts/{post_id}?section=media"),
-        message,
-    ))
+    let mut response = flash_redirect(&format!("/posts/{post_id}?section=media"), message);
+    if let Some(id) = job_id {
+        response
+            .extensions_mut()
+            .insert(super::admin::AcceptedJob(id));
+    }
+    Ok(response)
 }
 
 fn compression_settings(form: &FormMap, mode: &str) -> WebResult<Compression> {

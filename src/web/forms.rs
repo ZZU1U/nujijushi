@@ -32,6 +32,7 @@ pub struct PostFilter {
     pub per_page: Option<String>,
     #[serde(default)]
     pub flash: Option<String>,
+    pub next: Option<String>,
 }
 
 pub const POST_PAGE_SIZES: [i64; 3] = [24, 48, 96];

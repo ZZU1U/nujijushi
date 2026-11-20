@@ -23,6 +23,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0016_media_compressions.sql"),
     include_str!("../../migrations/0017_tagger_character_names.sql"),
     include_str!("../../migrations/0018_post_text_edits.sql"),
+    include_str!("../../migrations/0019_gallery_visibility.sql"),
 ];
 
 pub fn schema_version(conn: &Connection) -> Result<i64> {
@@ -94,6 +95,8 @@ mod tests {
             "jobs",
             "media",
             "media_compressions",
+            "media_hidden_sources",
+            "media_merge_members",
             "media_merge_sources",
             "media_merges",
             "tag_character_names",
@@ -147,6 +150,37 @@ mod tests {
             )
             .unwrap();
         assert_eq!(edit_columns, 2);
+    }
+
+    #[test]
+    fn upgrades_existing_contiguous_merges_to_explicit_membership() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..18] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 18).unwrap();
+        conn.execute_batch(
+            "INSERT INTO posts (id, source, source_id, imported_at, updated_at)
+             VALUES (1, 'local', 'sample', '2026-01-01', '2026-01-01');
+             INSERT INTO blobs (hash, ext, bytes, created_at)
+             VALUES ('source', 'png', 1, '2026-01-01'), ('merged', 'png', 1, '2026-01-01');
+             INSERT INTO media_merge_sources (post_id, ordinal, blob_hash, is_video, sensitive)
+             VALUES (1, 0, 'source', 0, 0), (1, 1, 'source', 0, 0), (1, 2, 'source', 0, 0),
+                    (1, 3, 'source', 0, 0);
+             INSERT INTO media_merges (id, post_id, first_ordinal, last_ordinal, blob_hash, width, height)
+             VALUES (9, 1, 1, 3, 'merged', 3, 1);",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+        let members = conn
+            .prepare("SELECT source_ordinal FROM media_merge_members WHERE merge_id = 9 ORDER BY source_ordinal")
+            .unwrap()
+            .query_map([], |row| row.get::<_, i64>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(members, [1, 2, 3]);
     }
 
     #[test]

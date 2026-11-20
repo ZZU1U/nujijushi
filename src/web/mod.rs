@@ -1,5 +1,6 @@
 //! Embedded admin UI: server-rendered pages over the same services as the CLI.
 
+mod admin;
 pub mod auth;
 mod curation;
 pub mod forms;

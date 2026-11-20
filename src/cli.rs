@@ -226,6 +226,9 @@ pub enum Command {
         /// Also copy the blob store
         #[arg(long)]
         with_media: bool,
+        /// Export only outgoing artwork and its storage metadata
+        #[arg(long, conflicts_with = "with_media", requires = "out")]
+        share: bool,
     },
 
     /// Tag aliases and content rules
@@ -612,7 +615,24 @@ pub async fn run() -> Result<()> {
             }
         }
         Command::Gc { dry_run } => cmd_gc(cfg, dry_run),
-        Command::Export { out, with_media } => cmd_export(cfg, out, with_media).await,
+        Command::Export {
+            out,
+            with_media,
+            share,
+        } => {
+            if share {
+                let dir = out.ok_or_else(|| Error::invalid("--share requires --out"))?;
+                let state = open_state(cfg)?;
+                let (written, skipped) = crate::storage::share(&state, &dir).await?;
+                println!(
+                    "Exported {written} post(s) to {} · {skipped} without outgoing media",
+                    dir.display()
+                );
+                Ok(())
+            } else {
+                cmd_export(cfg, out, with_media).await
+            }
+        }
         Command::Alias { cmd } => {
             let state = open_state(cfg)?;
             cmd_alias(&state, cmd).await
@@ -1685,6 +1705,10 @@ async fn cmd_show(state: &AppState, id: i64, channel: Option<String>, raw: bool)
         let rules = state
             .db
             .call(|conn| crate::db::tags::TagRules::load(conn))
+            .await?;
+        let post = state
+            .db
+            .call(move |conn| crate::db::media_merges::outgoing_post(conn, id))
             .await?;
         let decision = crate::nsfw::evaluate(&post, &channel, &rules);
         let plan = crate::tg::publish::build_plan(state, &channel, &post, 0, decision.clone())?;

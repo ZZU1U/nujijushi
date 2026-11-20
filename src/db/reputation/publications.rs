@@ -216,7 +216,7 @@ pub(super) fn publication(conn: &Connection, subject: i64) -> Result<Option<Opti
     Ok(found.then_some(None))
 }
 
-fn message_link(chat: Option<i64>, username: Option<&str>, id: i32) -> Option<String> {
+pub(crate) fn message_link(chat: Option<i64>, username: Option<&str>, id: i32) -> Option<String> {
     if let Some(username) = username.filter(|name| {
         !name.is_empty() && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
     }) {

@@ -7,6 +7,14 @@
     <a href="/channels/{{ channel.id }}/edit">settings</a> ·
     <a href="/channels/{{ channel.id }}/preview">preview next slots</a>
   </p>
+  {% if channel.enabled %}
+  <form method="post" action="/channels/{{ channel.id }}/schedule" class="inline">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button class="small ghost" name="action" value="{{ 'resume' if channel.paused else 'pause' }}">{{ 'Resume schedule' if channel.paused else 'Pause schedule' }}</button>
+  </form>
+  {% else %}
+  <p class="hint">Scheduling is off. <a href="/channels/{{ channel.id }}/preview">Review the preview to start</a>.</p>
+  {% endif %}
   {% if items %}
   <table>
     <tr><th>#</th><th></th><th>post</th><th>state</th><th>prio</th><th>attempts</th><th>added</th><th title="when it would go out if nobody interferes">est.</th><th></th></tr>
@@ -24,7 +32,7 @@
         <div class="hint">{{ i.artist }} — {{ i.snippet }}</div>
         {% if i.error %}<div class="hint err">{{ i.error }}</div>{% endif %}
       </td>
-      <td><span class="badge {{ 'red' if i.state == 'unknown' or i.state == 'failed' else '' }}">{{ i.state }}</span></td>
+      <td><span class="badge {{ 'red' if i.state == 'unknown' or i.state == 'failed' else '' }}">{{ i.state_label }}</span></td>
       <td>{{ i.priority }}</td>
       <td>{{ i.attempts }}</td>
       <td class="hint">{{ i.added }}</td>
@@ -32,7 +40,7 @@
       <td class="actions">
         {% if i.state == 'queued' %}
         <form method="post" action="/publish" class="inline"
-              onsubmit="return confirm('Queue post #{{ i.post_id }} for {{ channel.title }}? The worker sends it in the background; this returns immediately.')">
+              data-confirm="Queue post #{{ i.post_id }} for {{ channel.title }}? The worker sends it in the background; this returns immediately.">
           <input type="hidden" name="csrf" value="{{ csrf }}">
           <input type="hidden" name="queue_id" value="{{ i.id }}">
           <input type="hidden" name="back" value="/channels/{{ channel.id }}/queue">
@@ -44,21 +52,26 @@
           <input type="hidden" name="id" value="{{ i.id }}">
           <input type="hidden" name="channel" value="{{ channel.id }}">
           {% if i.state == 'unknown' %}
+            <p class="hint">Check the Telegram channel before confirming delivery or sending again.</p>
+            {% for message in i.delivery.messages %}<a href="{{ message }}" target="_blank" rel="noopener">Telegram message {{ loop.index }}</a>{% endfor %}
+            {% if i.delivery.public_channel %}<a href="{{ i.delivery.public_channel }}" target="_blank" rel="noopener">Open Telegram channel</a>{% endif %}
             <input type="number" name="message_id" min="1" aria-label="Telegram message ID (optional)" placeholder="Message ID">
-            <button name="action" value="delivered" class="small">delivered</button>
-            <button name="action" value="not_delivered" class="small ghost">not delivered</button>
+            <button name="action" value="delivered" class="small">Confirm delivered</button>
+            <button name="action" value="not_delivered" class="small ghost" data-confirm="Check Telegram first. This queues the entire post for another send.">Requeue entire post</button>
           {% elif i.state == 'held' %}
             <a class="button small" href="/channels/{{ channel.id }}/preview">review preview</a>
-            <button name="action" value="remove" class="small danger">remove</button>
+            <button name="action" value="remove" class="small danger" data-confirm="Remove this entry from the queue? The post stays in the archive.">Remove</button>
+          {% elif i.state == 'sending' %}
+            <span class="hint">Send in progress</span>
           {% else %}
             {% if i.pinned %}
               <button name="action" value="unpin" class="small ghost">unpin</button>
             {% else %}
               <button name="action" value="pin" class="small ghost">pin</button>
             {% endif %}
-            <button name="action" value="skip" class="small ghost">skip</button>
-            <button name="action" value="reset" class="small ghost">requeue</button>
-            <button name="action" value="remove" class="small danger">remove</button>
+            {% if i.state != 'skipped' %}<button name="action" value="skip" class="small ghost">Skip</button>{% endif %}
+            {% if i.state != 'queued' %}<button name="action" value="reset" class="small ghost">Requeue</button>{% endif %}
+            <button name="action" value="remove" class="small danger" data-confirm="Remove this entry from the queue? The post stays in the archive.">Remove</button>
           {% endif %}
         </form>
       </td>

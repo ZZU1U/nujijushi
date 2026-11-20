@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 
-use crate::db::{mirrors as mirror_db, posts as post_db};
+use crate::db::mirrors as mirror_db;
 use crate::error::{Error, Result};
 use crate::model::{Post, path_slug};
 use crate::state::AppState;
@@ -103,6 +103,32 @@ pub fn plan(state: &AppState, post: &Post) -> Result<MirrorPost> {
         files,
         meta,
     })
+}
+
+/// Copy the outgoing gallery into a newly created directory using the mirror layout.
+pub async fn share(state: &AppState, dir: &std::path::Path) -> Result<(usize, usize)> {
+    std::fs::create_dir(dir)?;
+    let ids = state.db.call(|conn| crate::db::posts::ids(conn)).await?;
+    let mut written = 0;
+    let mut skipped = 0;
+    for id in ids {
+        let post = state
+            .db
+            .call(move |conn| crate::db::media_merges::outgoing_post(conn, id))
+            .await?;
+        if post.media.is_empty() {
+            skipped += 1;
+            continue;
+        }
+        let item = plan(state, &post)?;
+        std::fs::create_dir_all(dir.join(&item.dir))?;
+        for file in &item.files {
+            std::fs::copy(&file.path, dir.join(&file.relative))?;
+        }
+        std::fs::write(dir.join(item.meta_name()), &item.meta)?;
+        written += 1;
+    }
+    Ok((written, skipped))
 }
 
 #[async_trait]
@@ -201,20 +227,28 @@ pub async fn drain(state: &AppState, limit: i64) -> Result<usize> {
             continue;
         };
         let post_id = mirror.post_id;
-        let post = match state.db.call(move |conn| post_db::get(conn, post_id)).await {
+        let sink_name = mirror.sink.clone();
+        let post = state
+            .db
+            .call(move |conn| {
+                let tx =
+                    conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                let post = crate::db::media_merges::outgoing_post(&tx, post_id)?;
+                if post.media.is_empty() {
+                    mirror_db::block_empty(&tx, post_id, &sink_name)?;
+                }
+                tx.commit()?;
+                Ok(post)
+            })
+            .await;
+        let post = match post {
             Ok(post) => post,
-            Err(err) => {
-                let reason = err.to_string();
-                state
-                    .db
-                    .call({
-                        let sink_name = mirror.sink.clone();
-                        move |conn| mirror_db::mark_failed(conn, post_id, &sink_name, &reason)
-                    })
-                    .await?;
-                continue;
-            }
+            Err(crate::error::Error::NotFound(_)) => continue,
+            Err(err) => return Err(err),
         };
+        if post.media.is_empty() {
+            continue;
+        }
 
         match plan(state, &post) {
             Ok(item) => match sink.put(&item).await {

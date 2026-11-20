@@ -16,27 +16,26 @@ pub(super) async fn run(state: &AppState, job: &Job) -> Result<JobReport> {
         .ok_or_else(|| Error::invalid("Missing merge post ID"))?;
     let job_id = job.id;
     let payload = job.payload.clone().unwrap_or_default();
-    let (intent, compression) = parse(post_id, &payload)?;
-    let first_id = intent.first_id;
-    let last_id = intent.last_id;
-    let version = intent.version.to_owned();
+    let (_, _, _, _, compression) = parse(&payload)?;
     let panels = state
         .db
-        .call(move |conn| {
-            media_merges::panels(
-                conn,
-                &Intent {
-                    post_id,
-                    first_id,
-                    last_id,
-                    version: &version,
-                },
-            )
+        .call({
+            let payload = payload.clone();
+            move |conn| {
+                let (first_id, last_id, version, selected, _) = parse(&payload)?;
+                media_merges::panels(
+                    conn,
+                    &Intent {
+                        post_id,
+                        first_id,
+                        last_id,
+                        version,
+                        selected: selected.as_deref(),
+                    },
+                )
+            }
         })
         .await?;
-    if !panels.iter().all(crate::media::merge::supports) {
-        return Err(Error::invalid("Select still JPEG, PNG or WebP images"));
-    }
     let paths = panels
         .iter()
         .map(|panel| state.blobs.path_for(&panel.blob_hash, &panel.ext))
@@ -52,10 +51,10 @@ pub(super) async fn run(state: &AppState, job: &Job) -> Result<JobReport> {
     })
     .await??;
     let store = state.blobs.clone();
-    let version = intent.version.to_owned();
     let message = state
         .db
         .call(move |conn| {
+            let (first_id, last_id, version, selected, _) = parse(&payload)?;
             media_merges::finish(
                 conn,
                 &store,
@@ -64,7 +63,8 @@ pub(super) async fn run(state: &AppState, job: &Job) -> Result<JobReport> {
                     post_id,
                     first_id,
                     last_id,
-                    version: &version,
+                    version,
+                    selected: selected.as_deref(),
                 },
                 Rendition {
                     bytes: &bytes,
@@ -122,6 +122,7 @@ pub(super) async fn compress(state: &AppState, job: &Job) -> Result<JobReport> {
                     first_id: media_id,
                     last_id: media_id,
                     version: &version,
+                    selected: None,
                 },
                 Rendition {
                     bytes: &bytes,
@@ -143,17 +144,29 @@ fn with_thumbnail(bytes: Vec<u8>) -> Result<(Vec<u8>, Vec<u8>)> {
     Ok((bytes, thumbnail))
 }
 
-fn parse(post_id: i64, payload: &str) -> Result<(Intent<'_>, Option<Compression>)> {
+type ParsedMerge<'a> = (i64, i64, &'a str, Option<Vec<i64>>, Option<Compression>);
+
+fn parse(payload: &str) -> Result<ParsedMerge<'_>> {
     let invalid = || Error::invalid("Invalid media merge request");
     let mut parts = payload.split(':').peekable();
-    let first_id = parts
-        .next()
-        .and_then(|part| part.parse().ok())
-        .ok_or_else(invalid)?;
-    let last_id = parts
-        .next()
-        .and_then(|part| part.parse().ok())
-        .ok_or_else(invalid)?;
+    let selection = parts.next().ok_or_else(invalid)?;
+    let (first_id, last_id, selected) = if selection.contains(',') {
+        let ids = selection
+            .split(',')
+            .map(str::parse::<i64>)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|_| invalid())?;
+        (0, 0, Some(ids))
+    } else {
+        (
+            selection.parse().map_err(|_| invalid())?,
+            parts
+                .next()
+                .and_then(|part| part.parse().ok())
+                .ok_or_else(invalid)?,
+            None,
+        )
+    };
     let version = parts
         .next()
         .filter(|part| part.len() == 64)
@@ -163,15 +176,7 @@ fn parse(post_id: i64, payload: &str) -> Result<(Intent<'_>, Option<Compression>
         .is_some()
         .then(|| parse_compression(parts))
         .transpose()?;
-    Ok((
-        Intent {
-            post_id,
-            first_id,
-            last_id,
-            version,
-        },
-        compression,
-    ))
+    Ok((first_id, last_id, version, selected, compression))
 }
 
 fn parse_compression<'a>(mut parts: impl Iterator<Item = &'a str>) -> Result<Compression> {

@@ -1,18 +1,6 @@
 {% extends "base.html" %}
 {% block title %}dashboard{% endblock %}
 {% block body %}
-{% if scheduler is defined and scheduler.stale %}
-<section class="panel alert">
-  <h2>nothing is publishing on a schedule</h2>
-  <p class="hint">
-    {% if scheduler.last_tick %}The scheduler last ran {{ scheduler.age }} ago.{% else %}The scheduler has never run in this data directory.{% endif %}
-    Scheduler slots are driven by <code>nujijushi run</code>; <code>nujijushi serve</code> only
-    serves this UI. The queue, imports and the publish buttons keep working, but no post goes
-    out on its own until that process runs. If it is running, check it is still alive.
-  </p>
-</section>
-{% endif %}
-
 {% if setup is defined and setup %}
 <section class="panel setup">
   <div class="setup-heading">
@@ -50,6 +38,18 @@
 </section>
 {% endif %}
 
+{% if scheduler is defined and scheduler.stale %}
+<section class="panel alert">
+  <h2>nothing is publishing on a schedule</h2>
+  <p class="hint">
+    {% if scheduler.last_tick %}The scheduler last ran {{ scheduler.age }} ago.{% else %}The scheduler has never run in this data directory.{% endif %}
+    Scheduler slots are driven by <code>nujijushi run</code>; <code>nujijushi serve</code> only
+    serves this UI. The queue, imports and the publish buttons keep working, but no post goes
+    out on its own until that process runs. If it is running, check it is still alive.
+  </p>
+</section>
+{% endif %}
+
 <section class="stats">
   <div class="stat"><span class="num">{{ stats.posts }}</span><span class="lbl">posts</span></div>
   <div class="stat"><span class="num">{{ stats.approved }}</span><span class="lbl">approved</span></div>
@@ -67,7 +67,11 @@
     {% for item in recent_unknown %}
     <tr>
       <td>#{{ item.id }}</td>
-      <td>{{ item.channel }}</td>
+      <td>
+        {% if item.public_channel %}<a href="{{ item.public_channel }}" target="_blank" rel="noopener">{{ item.channel }}</a>
+        {% else %}{{ item.channel }}{% endif %}
+        {% for message in item.messages %}<div><a href="{{ message }}" target="_blank" rel="noopener">Telegram message {{ loop.index }}</a></div>{% endfor %}
+      </td>
       <td><a href="/posts/{{ item.post_id }}">#{{ item.post_id }}</a></td>
       <td class="hint">{{ item.error }}</td>
       <td class="actions">
@@ -76,8 +80,8 @@
           <input type="hidden" name="id" value="{{ item.id }}">
           <input type="hidden" name="channel" value="{{ item.channel_id }}">
           <input type="number" name="message_id" min="1" aria-label="Telegram message ID (optional)" placeholder="Message ID">
-          <button name="action" value="delivered" class="small">delivered</button>
-          <button name="action" value="not_delivered" class="small ghost">not delivered</button>
+          <button name="action" value="delivered" class="small">Confirm delivered</button>
+          <button name="action" value="not_delivered" class="small ghost" data-confirm="Check Telegram first. This queues the entire post for another send.">Requeue entire post</button>
         </form>
       </td>
     </tr>
@@ -108,7 +112,7 @@
         <a class="button small" href="/channels/{{ c.id }}/queue">queue</a>
         <a class="button small ghost" href="/channels/{{ c.id }}/preview">preview</a>
         <form method="post" action="/publish" class="inline"
-              onsubmit="return confirm('Queue a publish of the next post to {{ c.title }}? The worker sends it in the background; this returns immediately.')">
+              data-confirm="Queue a publish of the next post to {{ c.title }}? The worker sends it in the background; this returns immediately.">
           <input type="hidden" name="csrf" value="{{ csrf }}">
           <input type="hidden" name="channel_id" value="{{ c.id }}">
           <input type="hidden" name="back" value="/">
@@ -127,7 +131,7 @@
 <section class="panel">
   <h2>storage mirrors</h2>
   <table class="compact">
-    <tr><th>sink</th><th>where</th><th>done</th><th>pending</th><th>failed</th></tr>
+    <tr><th>sink</th><th>where</th><th>done</th><th>pending</th><th>failed</th><th>No outgoing media</th></tr>
     {% for sink in storage %}
     <tr>
       <td><code>{{ sink.name }}</code></td>
@@ -135,6 +139,7 @@
       <td>{{ sink.done }}</td>
       <td>{{ sink.pending }}</td>
       <td>{% if sink.failed %}<span class="badge red">{{ sink.failed }}</span>{% else %}0{% endif %}</td>
+      <td>{{ sink.blocked }}</td>
     </tr>
     {% endfor %}
   </table>

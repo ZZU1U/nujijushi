@@ -112,14 +112,17 @@ pub async fn check_watch(
     Form(form): Form<CsrfForm>,
 ) -> WebResult<Response> {
     check_csrf(&ws, &form.csrf)?;
-    let (_, queued) = jobs::create_watch_check_job(&ws.app, id).await?;
-    Ok(flash_redirect(
-        "/watches",
-        if queued {
-            "Check queued"
-        } else {
-            "A check is already active"
-        },
+    let (job, queued) = jobs::create_watch_check_job(&ws.app, id).await?;
+    Ok(super::routes::with_job(
+        flash_redirect(
+            "/watches",
+            if queued {
+                "Check queued"
+            } else {
+                "A check is already active"
+            },
+        ),
+        Some(job),
     ))
 }
 

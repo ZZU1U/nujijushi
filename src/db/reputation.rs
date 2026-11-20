@@ -11,8 +11,8 @@ use crate::model::PostState;
 
 use super::{posts, users};
 
-pub(crate) use publications::parse_message_ids;
 pub use publications::{known_message, record_publication};
+pub(crate) use publications::{message_link, parse_message_ids};
 pub use suggestions::{
     MatchedSuggestion, Suggestion, match_suggestion, reattach_known, register_new,
 };

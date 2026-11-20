@@ -1,7 +1,7 @@
 //! Minimal single-user auth: a signed cookie derived from the UI token.
 
 use axum::extract::{Request, State};
-use axum::http::header;
+use axum::http::{Uri, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
 use std::sync::Arc;
@@ -61,7 +61,9 @@ pub async fn require_session(
     // metrics sits outside the session gate on purpose: a scraper has no cookie,
     // and the document only carries counts (never titles, captions or tokens)
     if path == "/login"
+        || path == "/api/v1/login"
         || path.starts_with("/static/")
+        || path.starts_with("/admin-assets/")
         || path == "/metrics"
         || path == crate::bot::WEBHOOK_PATH
     {
@@ -70,22 +72,26 @@ pub async fn require_session(
     if check(&req, &ws) {
         return next.run(req).await;
     }
-    let target = if req.uri().query().is_some() {
-        format!("/login?next={}", encode(&path))
-    } else {
-        "/login".to_string()
-    };
-    Redirect::to(&target).into_response()
+    if path.starts_with("/api/v1/") {
+        return (
+            axum::http::StatusCode::UNAUTHORIZED,
+            [(header::CACHE_CONTROL, "no-store")],
+            axum::Json(serde_json::json!({"error": "Sign in to continue"})),
+        )
+            .into_response();
+    }
+    let target = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("next", &req.uri().to_string())
+        .finish();
+    Redirect::to(&format!("/login?{target}")).into_response()
 }
 
-fn encode(value: &str) -> String {
-    value
-        .chars()
-        .map(|c| match c {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '/' | '.' => c.to_string(),
-            other => format!("%{:02X}", other as u32 & 0xff),
-        })
-        .collect()
+pub(super) fn local_page(value: &str) -> Option<Uri> {
+    if !value.starts_with('/') || value.starts_with("//") || value.contains('\\') {
+        return None;
+    }
+    let uri = value.parse::<Uri>().ok()?;
+    (uri.scheme().is_none() && uri.authority().is_none()).then_some(uri)
 }
 
 /// `Set-Cookie` header for a successful login.

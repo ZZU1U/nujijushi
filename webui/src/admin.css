@@ -1,0 +1,21 @@
+.admin-shell { min-width: 0; width: 100%; }
+body.login-body .admin-shell { display: grid; justify-items: center; }
+.navigation-progress { height: 2px; background: var(--accent); position: fixed; inset: 0 0 auto; z-index: 20; }
+.admin-notice {
+  position: fixed; bottom: 1rem; right: 1rem; max-width: min(32rem, calc(100vw - 2rem));
+  padding: .7rem .85rem; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel-2); display: flex; align-items: center; gap: .75rem; z-index: 20;
+}
+.action-feedback:not([hidden]) { display: block; color: var(--muted); margin: .35rem 0; overflow-wrap: anywhere; }
+.action-feedback.action-error, .admin-notice.action-error { color: var(--err); }
+.responsive-table { max-width: 100%; overflow-x: auto; }
+.responsive-table .actions { white-space: normal; }
+.responsive-table .actions form { flex-wrap: wrap; }
+.post-disclosure-body [aria-busy="true"] button[type="submit"] { opacity: .65; }
+@media (max-width: 720px) {
+  .top nav { min-width: 0; }
+  .setup-steps { grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr)); }
+  .setup-heading { flex-wrap: wrap; }
+  .responsive-table td, main code { overflow-wrap: anywhere; }
+  main .panel, .cols > * { min-width: 0; }
+}

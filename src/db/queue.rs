@@ -204,6 +204,75 @@ pub fn for_post(conn: &Connection, post_id: i64) -> Result<Vec<(i64, i64, QueueS
     Ok(out)
 }
 
+#[derive(serde::Serialize)]
+pub struct UnconfirmedDelivery {
+    pub id: i64,
+    pub channel_id: i64,
+    pub post_id: i64,
+    pub error: Option<String>,
+    pub channel: String,
+    pub messages: Vec<String>,
+    pub public_channel: Option<String>,
+}
+
+pub fn unconfirmed(conn: &Connection, channel_id: Option<i64>) -> Result<Vec<UnconfirmedDelivery>> {
+    let mut stmt = conn.prepare(
+        "SELECT q.id, q.channel_id, q.post_id, q.last_error, c.title, q.tg_message_ids,
+                COALESCE(q.delivery_target, c.tg_id), q.delivery_chat_id, q.delivery_username
+         FROM queue q JOIN channels c ON c.id = q.channel_id
+         WHERE q.state = 'unknown' AND (?1 IS NULL OR q.channel_id = ?1) ORDER BY q.id DESC LIMIT 200",
+    )?;
+    Ok(stmt
+        .query_map([channel_id], |row| {
+            let target: String = row.get(6)?;
+            let chat: Option<i64> = row.get(7)?;
+            let username: Option<String> = row.get(8)?;
+            let username = username
+                .as_deref()
+                .or_else(|| target.strip_prefix('@'))
+                .filter(|name| {
+                    !name.is_empty() && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+                });
+            let chat = chat.or_else(|| target.parse().ok());
+            let ids: Option<String> = row.get(5)?;
+            let messages = super::reputation::parse_message_ids(ids.as_deref().unwrap_or_default())
+                .into_iter()
+                .filter_map(|id| super::reputation::message_link(chat, username, id))
+                .collect();
+            Ok(UnconfirmedDelivery {
+                id: row.get(0)?,
+                channel_id: row.get(1)?,
+                post_id: row.get(2)?,
+                error: row.get(3)?,
+                channel: row.get(4)?,
+                messages,
+                public_channel: username.map(|name| format!("https://t.me/{name}")),
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+/// Channel and queue state badges for the posts on the current grid page.
+pub fn card_states(conn: &Connection, ids: &[i64]) -> Result<Vec<(i64, String, QueueState)>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let slots = vec!["?"; ids.len()].join(", ");
+    let mut statement = conn.prepare(&format!(
+        "SELECT q.post_id, c.alias, q.state FROM queue q
+         JOIN channels c ON c.id = q.channel_id WHERE q.post_id IN ({slots}) ORDER BY c.alias"
+    ))?;
+    Ok(statement
+        .query_map(params_from_iter(ids), |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                QueueState::parse(&row.get::<_, String>(2)?),
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
 /// Take the lease for a queue item. False when another worker got there first.
 pub fn acquire(conn: &Connection, id: i64, token: &str) -> Result<bool> {
     acquire_for_target(conn, id, token, None)
@@ -522,7 +591,7 @@ pub fn recent_tags(conn: &Connection, channel_id: i64, limit: i64) -> Result<Vec
 pub fn skip_with_reason(conn: &Connection, id: i64, reason: &str) -> Result<()> {
     conn.execute(
         "UPDATE queue SET state = 'skipped', last_error = ?1, lease_token = NULL, lease_at = NULL
-         WHERE id = ?2",
+         WHERE id = ?2 AND state = 'queued'",
         params![reason, id],
     )?;
     Ok(())
