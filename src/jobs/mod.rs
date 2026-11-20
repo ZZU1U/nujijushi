@@ -23,7 +23,7 @@ pub struct ImportOutcome {
     pub files: usize,
     pub skipped: Vec<(String, String)>,
     pub suggestions: Vec<Suggestion>,
-    pub merges_reset: usize,
+    pub gallery_edits_reset: usize,
 }
 
 impl ImportOutcome {
@@ -33,10 +33,10 @@ impl ImportOutcome {
     /// file(s)" was mostly zeros. What changed is what matters:
     /// `new post · 3 files`, `12 posts (10 new, 2 updated) · 34 files`.
     pub fn summary(&self) -> String {
-        let merges_reset = (self.merges_reset > 0).then(|| {
+        let gallery_edits_reset = (self.gallery_edits_reset > 0).then(|| {
             format!(
-                "Reset image merges on {} after the source gallery changed",
-                plural(self.merges_reset, "post")
+                "Reset gallery edits on {} after the source gallery changed",
+                plural(self.gallery_edits_reset, "post")
             )
         });
         if !self.suggestions.is_empty() {
@@ -50,7 +50,7 @@ impl ImportOutcome {
             if !self.skipped.is_empty() {
                 lines.push(format!("{} skipped", self.skipped.len()));
             }
-            lines.extend(merges_reset);
+            lines.extend(gallery_edits_reset);
             return lines.join("\n");
         }
         let posts = self.post_ids.len();
@@ -70,7 +70,7 @@ impl ImportOutcome {
         if !self.skipped.is_empty() {
             out.push_str(&format!(" · {} skipped", self.skipped.len()));
         }
-        if let Some(note) = merges_reset {
+        if let Some(note) = gallery_edits_reset {
             out.push_str(&format!(" · {note}"));
         }
         out
@@ -221,7 +221,7 @@ pub async fn import_posts(
                     }
                 }
                 outcome.suggestions.extend(stored.suggestion);
-                outcome.merges_reset += usize::from(stored.merges_reset);
+                outcome.gallery_edits_reset += usize::from(stored.gallery_edits_reset);
             }
             Err(err) => outcome
                 .skipped
@@ -353,6 +353,11 @@ pub const KIND_STORAGE_DRAIN: &str = "storage_drain";
 pub const KIND_WATCH_CHECK: &str = "watch_check";
 pub const KIND_TAG_SUGGESTIONS: &str = "suggest_tags";
 pub const KIND_MERGE_MEDIA: &str = "merge_media";
+pub const KIND_COMPRESS_MEDIA: &str = "compress_media";
+
+pub fn is_gallery_edit(kind: &str) -> bool {
+    matches!(kind, KIND_MERGE_MEDIA | KIND_COMPRESS_MEDIA)
+}
 
 /// Create the job row for a target (CLI / web UI).
 pub async fn create_job(state: &AppState, target: &str) -> Result<i64> {
@@ -415,10 +420,30 @@ pub async fn create_merge_media_job(
     post_id: i64,
     selected: Vec<i64>,
     version: String,
+    compression: Option<crate::media::compress::Compression>,
 ) -> Result<bool> {
     state
         .db
-        .call(move |conn| crate::db::media_merges::enqueue(conn, post_id, &selected, &version))
+        .call(move |conn| {
+            crate::db::media_merges::enqueue(conn, post_id, &selected, &version, compression)
+        })
+        .await
+}
+
+pub async fn create_compress_media_job(
+    state: &AppState,
+    post_id: i64,
+    media_id: i64,
+    version: String,
+    settings: crate::media::compress::Compression,
+) -> Result<bool> {
+    state
+        .db
+        .call(move |conn| {
+            crate::db::media_merges::enqueue_compression(
+                conn, post_id, media_id, &version, settings,
+            )
+        })
         .await
 }
 
@@ -498,6 +523,7 @@ pub async fn run_job(state: &AppState, job: &job_db::Job) -> Result<JobReport> {
         KIND_WATCH_CHECK => "scanning source",
         KIND_TAG_SUGGESTIONS => "analyzing artwork",
         KIND_MERGE_MEDIA => "merging images",
+        KIND_COMPRESS_MEDIA => "compressing image",
         KIND_PUBLISH_CHANNEL | KIND_PUBLISH_ITEM => "publishing",
         KIND_STORAGE_DRAIN => "uploading mirrors",
         other => return Err(Error::invalid(format!("unknown job kind: {other}"))),
@@ -506,9 +532,9 @@ pub async fn run_job(state: &AppState, job: &job_db::Job) -> Result<JobReport> {
         .db
         .call({
             let id = job.id;
-            let merge = job.kind == KIND_MERGE_MEDIA;
+            let gallery_edit = is_gallery_edit(&job.kind);
             move |conn| {
-                if merge {
+                if gallery_edit {
                     job_db::label_running(conn, id, label)
                 } else {
                     job_db::set_state(conn, id, "running", Some(label))
@@ -519,7 +545,7 @@ pub async fn run_job(state: &AppState, job: &job_db::Job) -> Result<JobReport> {
 
     let result = run_kind(state, job).await;
     match &result {
-        Ok(_) if matches!(job.kind.as_str(), KIND_TAG_SUGGESTIONS | KIND_MERGE_MEDIA) => {
+        Ok(_) if job.kind == KIND_TAG_SUGGESTIONS || is_gallery_edit(&job.kind) => {
             // The media edit or suggestion batch and its success status commit together.
         }
         Ok(report) => {
@@ -576,6 +602,7 @@ async fn run_kind(state: &AppState, job: &job_db::Job) -> Result<JobReport> {
         KIND_WATCH_CHECK => watch::check(state, payload_i64(job)?, job.id).await,
         KIND_TAG_SUGGESTIONS => tag_suggestions::run(state, payload_i64(job)?, job.id).await,
         KIND_MERGE_MEDIA => media_merge::run(state, job).await,
+        KIND_COMPRESS_MEDIA => media_merge::compress(state, job).await,
         KIND_PUBLISH_CHANNEL => {
             let channel_id = payload_i64(job)?;
             let channel = state
@@ -693,7 +720,7 @@ mod tests {
                 .map(|i| (format!("post-{i}"), "nope".to_string()))
                 .collect(),
             suggestions: Vec::new(),
-            merges_reset: 0,
+            gallery_edits_reset: 0,
         }
     }
 

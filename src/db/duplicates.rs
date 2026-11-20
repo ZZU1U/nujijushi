@@ -166,6 +166,9 @@ const RETAINED_EXACT_MATCHES: &str = "
         WHERE EXISTS (
             SELECT 1 FROM media_merges m WHERE m.post_id = s.post_id
             AND s.ordinal BETWEEN m.first_ordinal AND m.last_ordinal
+        ) OR EXISTS (
+            SELECT 1 FROM media_compressions c WHERE c.post_id = s.post_id
+            AND c.first_ordinal = s.ordinal
         )
     ), source_matches AS (
         SELECT s.post_id AS first_id, m.post_id AS second_id,

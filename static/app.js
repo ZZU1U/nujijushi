@@ -220,7 +220,7 @@
 
     if (wasLive && !isLive(job.state)) {
       setText(row.querySelector('[data-tag-refresh]'), job.state === 'done' ? 'Review suggestions' : 'See details');
-      setText(row.querySelector('[data-merge-refresh]'), job.state === 'done' ? 'See merged gallery' : 'See details');
+      setText(row.querySelector('[data-merge-refresh]'), job.state === 'done' ? 'See updated gallery' : 'See details');
       const label = job.kind_label || job.kind;
       const detail = job.message ? ' — ' + job.message : '';
       toast(label + ' #' + job.id + ' ' + job.state + detail, job.state === 'done' ? 'ok' : 'fail');

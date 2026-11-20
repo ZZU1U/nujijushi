@@ -84,7 +84,7 @@ pub fn label_running(conn: &Connection, id: i64, message: &str) -> Result<()> {
     )?;
     if changed == 0 {
         return Err(crate::error::Error::invalid(
-            "This merge was interrupted. Select the panels again.",
+            "The gallery edit was interrupted. Reload the post and try again.",
         ));
     }
     Ok(())

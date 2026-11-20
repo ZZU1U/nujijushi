@@ -136,6 +136,8 @@ The post detail page shows whether a tag came from the source, a manual edit, or
 
 Select consecutive still images of the same height and choose **Merge side by side** to replace them with a single PNG. Watch the job on the post page and refresh the gallery when it finishes. **Undo merge** restores its source panels. Re-importing the same panels in the same order keeps the merge. A changed source gallery replaces the edited gallery. The active gallery is used by new previews and deliveries. Completed mirrors and Telegram messages are delivery snapshots.
 
+Open **Compress image** on a gallery item or **Merge output options** when stitching panels. **Use exact JPEG quality** keeps the pixel dimensions and uses the quality you enter. **Fit to Telegram** uses that quality as a maximum, then lowers it or reduces the dimensions to fit the photo limits. It may add white borders to very wide or tall images. JPEG fills transparency with white. **Undo compression** restores the original image or merged PNG, and a changed source gallery resets saved edits when re-imported.
+
 `GET /metrics` answers in the Prometheus text format (posts by state and nsfw, channels by
 enabled, queue depth per channel/state, import jobs, storage mirrors). It sits outside the
 cookie gate because a scraper has no session and the document carries counts only — bind the

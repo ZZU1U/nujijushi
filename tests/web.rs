@@ -2220,7 +2220,7 @@ async fn gallery_merges_keep_the_post_and_can_restore_source_panels_after_reopen
     let updated = jobs::import_posts(&h.state, vec![imported.clone()], None, None)
         .await
         .unwrap();
-    assert_eq!(updated.merges_reset, 0);
+    assert_eq!(updated.gallery_edits_reset, 0);
     let kept = get_post();
     assert_eq!(kept.media.len(), 3);
     assert_eq!(kept.media[2].blob_hash, gallery_before_refresh[2].blob_hash);
@@ -2315,7 +2315,8 @@ async fn gallery_merges_keep_the_post_and_can_restore_source_panels_after_reopen
             &h.state,
             id,
             restored.media[..2].iter().map(|item| item.id).collect(),
-            version
+            version,
+            None,
         )
         .await
         .unwrap()
@@ -2326,7 +2327,7 @@ async fn gallery_merges_keep_the_post_and_can_restore_source_panels_after_reopen
         .await
         .unwrap();
     assert_eq!(refreshed.post_ids, [id]);
-    assert_eq!(refreshed.merges_reset, 1);
+    assert_eq!(refreshed.gallery_edits_reset, 1);
     assert!(refreshed.summary().contains("source gallery changed"));
     let refreshed = h.state.db.with(|conn| posts::get(conn, id)).unwrap();
     assert_eq!(refreshed.media.len(), 5);
@@ -2365,7 +2366,7 @@ async fn invalid_and_stale_merge_jobs_leave_the_current_gallery_intact() {
     let enqueue = |post: nujijushi::model::Post| {
         let version = media_merges::gallery_version(&post.media);
         let ids = post.media.iter().map(|item| item.id).collect();
-        jobs::create_merge_media_job(&h.state, id, ids, version)
+        jobs::create_merge_media_job(&h.state, id, ids, version, None)
     };
     let latest_job = || {
         h.state
@@ -2396,4 +2397,125 @@ async fn invalid_and_stale_merge_jobs_leave_the_current_gallery_intact() {
     assert_eq!(latest_job().state, "failed");
     assert!(latest_job().message.unwrap().contains("gallery changed"));
     assert_eq!(get().media, replaced.media);
+}
+
+#[tokio::test]
+async fn fit_photo_is_reversible_and_merge_output_can_use_the_same_settings() {
+    use nujijushi::db::{media_merges, posts};
+    use nujijushi::jobs::worker::JobWorker;
+
+    let mut h = harness();
+    let left = encode_image(
+        image::RgbImage::from_pixel(190, 8, image::Rgb([250, 40, 30])),
+        image::ImageFormat::Png,
+    );
+    let right = encode_image(
+        image::RgbImage::from_pixel(250, 8, image::Rgb([30, 70, 250])),
+        image::ImageFormat::Png,
+    );
+    let inputs = [(left.as_slice(), "png"), (right.as_slice(), "png")];
+    let post_id = archive_test_images(&h.state, "twitter", "panorama", &inputs);
+    let post_url = format!("/posts/{post_id}");
+    let action_url = format!("{post_url}/media");
+    let get = |state: &AppState| state.db.with(|conn| posts::get(conn, post_id)).unwrap();
+    let original = get(&h.state);
+    let first = &original.media[0];
+    let version = media_merges::gallery_version(&original.media);
+    let page = body_text(h.send(h.get(&post_url)).await).await;
+    assert!(page.contains("Compress image"));
+    assert!(page.contains("Exceeds the photo upload limits"));
+    let form = format!(
+        "action=compress&media_id={}&gallery_version={version}&output=fit",
+        first.id
+    );
+    assert_eq!(
+        h.send(h.post(&action_url, &format!("csrf=wrong&{form}")))
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let form = format!("csrf={}&{form}", h.ws.csrf);
+    assert_eq!(
+        h.send(h.post(&action_url, &format!("{form}&quality=101")))
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        h.send(h.post(&action_url, &format!("{form}&quality=85")))
+            .await
+            .status(),
+        StatusCode::SEE_OTHER
+    );
+    let worker = JobWorker::new(h.state.clone());
+    assert_eq!(worker.drain().await.unwrap(), 1);
+    let compressed = get(&h.state);
+    let preview = &compressed.media[0];
+    assert_eq!(
+        (preview.ext.as_str(), preview.width, preview.height),
+        ("jpg", Some(190), Some(10))
+    );
+    assert_eq!(compressed.media[1].blob_hash, original.media[1].blob_hash);
+    let status = body_text(
+        h.send(h.get(&format!("/api/status?merge_post={post_id}")))
+            .await,
+    )
+    .await;
+    let status: serde_json::Value = serde_json::from_str(&status).unwrap();
+    assert_eq!(status["media_merge_job"]["kind"], "compress_media");
+    assert_eq!(status["media_merge_job"]["state"], "done");
+    let page = body_text(h.send(h.get(&post_url)).await).await;
+    assert!(page.contains("Undo compression"));
+
+    assert_eq!(
+        archive_test_images(&h.state, "twitter", "panorama", &inputs),
+        post_id
+    );
+    assert_eq!(get(&h.state).media[0].blob_hash, preview.blob_hash);
+    let reopened = AppState::open((*h.state.cfg).clone(), h.state.transport.clone()).unwrap();
+    reopened.db.with(|conn| reopened.blobs.gc(conn)).unwrap();
+    assert!(
+        reopened
+            .blobs
+            .path_for(&first.blob_hash, &first.ext)
+            .is_file()
+    );
+    let current = get(&reopened);
+    h.ws = WebState::new(reopened).unwrap();
+    let version = media_merges::gallery_version(&current.media);
+    let undo = format!(
+        "csrf={}&action=undo_compression&gallery_version={version}&media_id={}",
+        h.ws.csrf, current.media[0].id
+    );
+    assert_eq!(
+        h.send(h.post(&action_url, &undo)).await.status(),
+        StatusCode::SEE_OTHER
+    );
+    let restored = get(&h.state);
+    assert_eq!(restored.media[0].blob_hash, first.blob_hash);
+    let version = media_merges::gallery_version(&restored.media);
+    let merge_form = format!(
+        "csrf={}&action=merge&output=fit&quality=90&gallery_version={version}&sel_{}=on&sel_{}=on",
+        h.ws.csrf, restored.media[0].id, restored.media[1].id
+    );
+    assert_eq!(
+        h.send(h.post(&action_url, &merge_form)).await.status(),
+        StatusCode::SEE_OTHER
+    );
+    assert_eq!(worker.drain().await.unwrap(), 1);
+    let merged = get(&h.state);
+    assert_eq!(merged.media.len(), 1);
+    assert_eq!(
+        (
+            merged.media[0].ext.as_str(),
+            merged.media[0].width,
+            merged.media[0].height
+        ),
+        ("jpg", Some(440), Some(22))
+    );
+    assert!(
+        body_text(h.send(h.get(&post_url)).await)
+            .await
+            .contains("Undo merge")
+    );
 }

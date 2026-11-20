@@ -1,4 +1,7 @@
 {% extends "base.html" %}
+{% macro compression_quality() %}
+  <label>JPEG quality <input name="quality" type="number" value="85" min="1" max="100" required></label>
+{% endmacro %}
 {% block title %}post #{{ post.id }}{% endblock %}
 {% block body %}
 <div class="detail">
@@ -14,13 +17,40 @@
         <a href="/media/{{ m.hash }}" target="_blank"><img loading="lazy" src="/media/{{ m.hash }}" alt=""></a>
         {% endif %}
         <figcaption class="hint">{{ m.ext }} {{ m.width }}×{{ m.height }} · {{ m.kib }} KiB</figcaption>
+        {% if m.over_photo_limit %}<p class="hint">Exceeds the photo upload limits</p>{% endif %}
         {% if m.can_select and not merge_job.active %}
         <label class="hint">
           <input type="checkbox" name="sel_{{ m.id }}" value="on" form="merge-gallery">
           Select image {{ loop.index }}
         </label>
         {% endif %}
-        {% if m.undo_id %}
+        {% if m.can_compress and not merge_job.active %}
+        <details>
+          <summary>Compress image</summary>
+          <form method="post" action="/posts/{{ post.id }}/media">
+            <input type="hidden" name="csrf" value="{{ csrf }}">
+            <input type="hidden" name="gallery_version" value="{{ gallery_version }}">
+            <input type="hidden" name="media_id" value="{{ m.id }}">
+            <label>Mode
+              <select name="output">
+                <option value="fit">Fit to Telegram</option>
+                <option value="quality">Use exact JPEG quality</option>
+              </select>
+            </label>
+            {{ compression_quality() }}
+            <p class="hint">Fit uses this quality as a maximum and can resize or add borders. JPEG fills transparency with white.</p>
+            <button type="submit" name="action" value="compress" class="small">Compress</button>
+          </form>
+        </details>
+        {% endif %}
+        {% if m.compressed %}
+        <form method="post" action="/posts/{{ post.id }}/media" class="inline">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="gallery_version" value="{{ gallery_version }}">
+          <input type="hidden" name="media_id" value="{{ m.id }}">
+          <button type="submit" name="action" value="undo_compression" class="small ghost">Undo compression</button>
+        </form>
+        {% elif m.undo_id %}
         <form method="post" action="/posts/{{ post.id }}/media" class="inline">
           <input type="hidden" name="csrf" value="{{ csrf }}">
           <input type="hidden" name="gallery_version" value="{{ gallery_version }}">
@@ -38,6 +68,18 @@
       <input type="hidden" name="gallery_version" value="{{ gallery_version }}">
       <button type="submit" name="action" value="merge">Merge side by side</button>
       <span class="hint">Select consecutive images of the same height.</span>
+      <details>
+        <summary>Merge output options</summary>
+        <label>Output
+          <select name="output">
+            <option value="lossless">Lossless PNG</option>
+            <option value="fit">Fit to Telegram</option>
+            <option value="quality">Use exact JPEG quality</option>
+          </select>
+        </label>
+        {{ compression_quality() }}
+        <p class="hint">Fit uses this quality as a maximum and can resize or add borders. JPEG fills transparency with white.</p>
+      </details>
     </form>
     {% endif %}
     {% if merge_job %}

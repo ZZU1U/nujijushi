@@ -1,5 +1,6 @@
-//! The retained source gallery and the spans replaced by active merges.
+//! The retained source gallery and its visible image edits.
 
+use std::collections::HashMap;
 use std::ops::RangeInclusive;
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -8,8 +9,9 @@ use super::{
     jobs,
     posts::{self, NewMedia},
 };
-use crate::blob::BlobStore;
+use crate::blob::{BlobStore, Ingested};
 use crate::error::{Error, Result};
+use crate::media::compress::Compression;
 use crate::model::MediaItem;
 
 struct Merge {
@@ -35,7 +37,14 @@ fn merges(conn: &Connection, post_id: i64) -> Result<Vec<Merge>> {
                     height: row.get(5)?,
                     ext: row.get(6)?,
                     bytes: row.get(7)?,
-                    mime: Some("image/png".into()),
+                    mime: Some(
+                        if row.get_ref(6)?.as_str()? == "jpg" {
+                            "image/jpeg"
+                        } else {
+                            "image/png"
+                        }
+                        .into(),
+                    ),
                     is_video: false,
                     poster_hash: None,
                     sensitive: false,
@@ -115,28 +124,51 @@ fn layout(source_count: usize, merges: &[Merge]) -> Result<Vec<RangeInclusive<us
     Ok(slots)
 }
 
+fn compressions(conn: &Connection, post_id: i64) -> Result<HashMap<usize, NewMedia>> {
+    let mut statement = conn.prepare(
+        "SELECT c.first_ordinal, c.blob_hash, c.width, c.height, b.bytes
+         FROM media_compressions c JOIN blobs b ON b.hash = c.blob_hash WHERE c.post_id = ?1",
+    )?;
+    Ok(statement
+        .query_map([post_id], |row| {
+            Ok((
+                row.get::<_, u32>(0)? as usize,
+                NewMedia {
+                    blob_hash: row.get(1)?,
+                    width: row.get(2)?,
+                    height: row.get(3)?,
+                    bytes: row.get(4)?,
+                    ext: "jpg".into(),
+                    mime: Some("image/jpeg".into()),
+                    is_video: false,
+                    poster_hash: None,
+                    sensitive: false,
+                    meta_json: None,
+                },
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
 fn rebuild(conn: &Connection, post_id: i64, sources: &[NewMedia]) -> Result<()> {
     let merges = merges(conn, post_id)?;
+    let slots = layout(sources.len(), &merges)?;
     let mut merged = merges.into_iter().peekable();
-    let mut active = Vec::new();
-    let mut position = 0;
-    while position < sources.len() {
-        if let Some(merge) = merged.next_if(|merge| *merge.range.start() == position) {
-            let last = *merge.range.end();
-            let mut item = merge.item;
-            let panels = sources
-                .get(merge.range)
-                .ok_or_else(|| Error::other("invalid gallery merge span"))?;
-            item.sensitive = panels.iter().any(|item| item.sensitive);
-            active.push(item);
-            position = last + 1;
-        } else {
-            active.push(sources[position].clone());
-            position += 1;
+    let mut compressed = compressions(conn, post_id)?;
+    let mut active = Vec::with_capacity(slots.len());
+    for range in slots {
+        let start = *range.start();
+        let mut item = match merged.next_if(|merge| *merge.range.start() == start) {
+            Some(merge) => merge.item,
+            None => sources[start].clone(),
+        };
+        item.sensitive = sources[range].iter().any(|item| item.sensitive);
+        if let Some(mut replacement) = compressed.remove(&start) {
+            replacement.sensitive = item.sensitive;
+            replacement.meta_json = item.meta_json;
+            item = replacement;
         }
-    }
-    if merged.peek().is_some() {
-        return Err(Error::other("invalid gallery merge span"));
+        active.push(item);
     }
     let current = posts::media(conn, post_id)?;
     if !current
@@ -169,6 +201,10 @@ pub(super) fn refresh(conn: &Connection, post_id: i64, imported: &[NewMedia]) ->
         return Ok(false);
     }
     conn.execute("DELETE FROM media_merges WHERE post_id = ?1", [post_id])?;
+    conn.execute(
+        "DELETE FROM media_compressions WHERE post_id = ?1",
+        [post_id],
+    )?;
     conn.execute(
         "DELETE FROM media_merge_sources WHERE post_id = ?1",
         [post_id],
@@ -217,25 +253,222 @@ pub fn undo_ids(conn: &Connection, post_id: i64) -> Result<Vec<(usize, i64)>> {
 pub fn undo(conn: &mut Connection, post_id: i64, merge_id: i64, version: &str) -> Result<()> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     verify_gallery(&posts::media(&tx, post_id)?, version)?;
-    if tx.execute(
-        "DELETE FROM media_merges WHERE post_id = ?1 AND id = ?2",
-        params![post_id, merge_id],
-    )? == 0
-    {
-        return Err(Error::NotFound(
-            "This merge is no longer in the gallery".into(),
-        ));
-    }
-    let sources = sources(&tx, post_id)?;
-    rebuild(&tx, post_id, &sources)?;
-    if merges(&tx, post_id)?.is_empty() {
-        tx.execute(
-            "DELETE FROM media_merge_sources WHERE post_id = ?1",
-            [post_id],
-        )?;
-    }
+    let first: i64 = tx
+        .query_row(
+            "DELETE FROM media_merges WHERE post_id = ?1 AND id = ?2 RETURNING first_ordinal",
+            params![post_id, merge_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| Error::NotFound("This merge is no longer in the gallery".into()))?;
+    delete_compressions(&tx, post_id, first, first)?;
+    restore(&tx, post_id)?;
     tx.commit()?;
     Ok(())
+}
+
+fn restore(conn: &Connection, post_id: i64) -> Result<()> {
+    rebuild(conn, post_id, &sources(conn, post_id)?)?;
+    conn.execute(
+        "DELETE FROM media_merge_sources WHERE post_id = ?1
+         AND NOT EXISTS (SELECT 1 FROM media_merges WHERE post_id = ?1)
+         AND NOT EXISTS (SELECT 1 FROM media_compressions WHERE post_id = ?1)",
+        [post_id],
+    )?;
+    Ok(())
+}
+
+fn delete_compressions(conn: &Connection, post_id: i64, first: i64, last: i64) -> Result<usize> {
+    Ok(conn.execute(
+        "DELETE FROM media_compressions WHERE post_id = ?1 AND first_ordinal BETWEEN ?2 AND ?3",
+        params![post_id, first, last],
+    )?)
+}
+
+pub fn compressed_positions(conn: &Connection, post_id: i64) -> Result<Vec<usize>> {
+    let compressed = compressions(conn, post_id)?;
+    if compressed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sources = sources(conn, post_id)?;
+    let slots = layout(sources.len(), &merges(conn, post_id)?)?;
+    Ok(slots
+        .iter()
+        .enumerate()
+        .filter_map(|(position, range)| compressed.contains_key(range.start()).then_some(position))
+        .collect())
+}
+
+fn media_position(media: &[MediaItem], media_id: i64) -> Result<usize> {
+    media
+        .iter()
+        .position(|item| item.id == media_id)
+        .ok_or_else(|| Error::invalid("The image is no longer in the gallery"))
+}
+
+fn source_position(
+    source_count: usize,
+    merges: &[Merge],
+    visible_position: usize,
+) -> Result<usize> {
+    layout(source_count, merges)?
+        .get(visible_position)
+        .map(|range| *range.start())
+        .ok_or_else(|| Error::other("invalid gallery edit layout"))
+}
+
+pub fn enqueue_compression(
+    conn: &mut Connection,
+    post_id: i64,
+    media_id: i64,
+    version: &str,
+    settings: Compression,
+) -> Result<bool> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let media = posts::media(&tx, post_id)?;
+    verify_gallery(&media, version)?;
+    let index = media_position(&media, media_id)?;
+    if !crate::media::merge::supports(&media[index]) {
+        return Err(Error::invalid("Select a still JPEG, PNG or WebP image"));
+    }
+    if latest_job(&tx, post_id)?.is_some_and(|job| job.is_active()) {
+        return Ok(false);
+    }
+    let payload = format!(
+        "{media_id}:{version}:{}:{}",
+        settings.quality(),
+        settings.fits_telegram(),
+    );
+    let job_id = jobs::create(&tx, "compress_media", &payload, 1)?;
+    jobs::attach_post(&tx, job_id, post_id)?;
+    tx.commit()?;
+    Ok(true)
+}
+
+pub fn compression_input(
+    conn: &Connection,
+    post_id: i64,
+    media_id: i64,
+    version: &str,
+) -> Result<NewMedia> {
+    let media = posts::media(conn, post_id)?;
+    verify_gallery(&media, version)?;
+    let index = media_position(&media, media_id)?;
+    let retained = sources(conn, post_id)?;
+    if retained.is_empty() {
+        return Ok(NewMedia::from(&media[index]));
+    }
+    let merges = merges(conn, post_id)?;
+    let source = source_position(retained.len(), &merges, index)?;
+    Ok(merges
+        .into_iter()
+        .find(|merge| *merge.range.start() == source)
+        .map_or_else(|| retained[source].clone(), |merge| merge.item))
+}
+
+pub fn finish_compression(
+    conn: &mut Connection,
+    store: &BlobStore,
+    job_id: i64,
+    intent: &Intent<'_>,
+    rendition: Rendition<'_>,
+) -> Result<String> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_running(&tx, job_id)?;
+    let media = posts::media(&tx, intent.post_id)?;
+    verify_gallery(&media, intent.version)?;
+    let index = media_position(&media, intent.first_id)?;
+    let (output, old_bytes) = (rendition.bytes, media[index].bytes);
+    if &*blake3::hash(output).to_hex() == media[index].blob_hash.as_str() {
+        let message = "The gallery already has this compressed image".to_string();
+        jobs::progress(&tx, job_id, 1, 1)?;
+        jobs::set_state(&tx, job_id, "done", Some(&message))?;
+        tx.commit()?;
+        return Ok(message);
+    }
+    let sources = retain_sources(&tx, intent.post_id, &media)?;
+    let first = source_position(sources.len(), &merges(&tx, intent.post_id)?, index)?;
+    let output = register(&tx, store, rendition)?;
+    tx.execute(
+        "INSERT INTO media_compressions (post_id, first_ordinal, blob_hash, width, height)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT (post_id, first_ordinal) DO UPDATE SET
+            blob_hash = excluded.blob_hash, width = excluded.width, height = excluded.height",
+        params![
+            intent.post_id,
+            first as i64,
+            output.hash,
+            output.width,
+            output.height
+        ],
+    )?;
+    rebuild(&tx, intent.post_id, &sources)?;
+    let message = format!(
+        "Saved {}×{} JPEG · {:.1} → {:.1} KiB",
+        output.width.unwrap_or_default(),
+        output.height.unwrap_or_default(),
+        old_bytes as f64 / 1024.0,
+        output.bytes as f64 / 1024.0,
+    );
+    jobs::progress(&tx, job_id, 1, 1)?;
+    jobs::set_state(&tx, job_id, "done", Some(&message))?;
+    tx.commit()?;
+    Ok(message)
+}
+
+pub fn undo_compression(
+    conn: &mut Connection,
+    post_id: i64,
+    media_id: i64,
+    version: &str,
+) -> Result<()> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let media = posts::media(&tx, post_id)?;
+    verify_gallery(&media, version)?;
+    let index = media_position(&media, media_id)?;
+    let sources = sources(&tx, post_id)?;
+    let missing = || Error::NotFound("This compression is no longer in the gallery".into());
+    if sources.is_empty() {
+        return Err(missing());
+    }
+    let first = source_position(sources.len(), &merges(&tx, post_id)?, index)? as i64;
+    if delete_compressions(&tx, post_id, first, first)? == 0 {
+        return Err(missing());
+    }
+    restore(&tx, post_id)?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub struct Rendition<'a> {
+    pub bytes: &'a [u8],
+    pub ext: &'a str,
+    pub thumbnail: &'a [u8],
+}
+
+fn register(conn: &Connection, store: &BlobStore, rendition: Rendition<'_>) -> Result<Ingested> {
+    let output = store.ingest_bytes(rendition.bytes, rendition.ext)?;
+    store.record(conn, &output)?;
+    store.write_thumb_bytes(&output.hash, rendition.thumbnail)?;
+    Ok(output)
+}
+
+fn verify_running(conn: &Connection, job_id: i64) -> Result<()> {
+    if jobs::get(conn, job_id)?.is_none_or(|job| job.state != "running") {
+        return Err(Error::invalid(
+            "The gallery edit was interrupted. Reload the post and try again.",
+        ));
+    }
+    Ok(())
+}
+
+fn retain_sources(conn: &Connection, post_id: i64, media: &[MediaItem]) -> Result<Vec<NewMedia>> {
+    let mut retained = sources(conn, post_id)?;
+    if retained.is_empty() {
+        retained = media.iter().map(NewMedia::from).collect();
+        save_sources(conn, post_id, &retained)?;
+    }
+    Ok(retained)
 }
 
 fn range(media: &[MediaItem], first_id: i64, last_id: i64) -> Result<RangeInclusive<usize>> {
@@ -248,11 +481,20 @@ fn range(media: &[MediaItem], first_id: i64, last_id: i64) -> Result<RangeInclus
 }
 
 pub fn latest_job(conn: &Connection, post_id: i64) -> Result<Option<jobs::Job>> {
-    let id: Option<i64> = conn.query_row(
+    let last_of_kind = |kind| -> Result<Option<i64>> {
+        Ok(conn
+            .query_row(kind, [post_id], |row| row.get(0))
+            .optional()?)
+    };
+    let merge = last_of_kind(
         "SELECT id FROM jobs WHERE post_id = ?1 AND kind = 'merge_media' ORDER BY id DESC LIMIT 1",
-        [post_id], |row| row.get(0),
-    ).optional()?;
-    id.map(|id| jobs::get(conn, id))
+    )?;
+    let compression = last_of_kind(
+        "SELECT id FROM jobs WHERE post_id = ?1 AND kind = 'compress_media' ORDER BY id DESC LIMIT 1",
+    )?;
+    merge
+        .max(compression)
+        .map(|id| jobs::get(conn, id))
         .transpose()
         .map(Option::flatten)
 }
@@ -262,6 +504,7 @@ pub fn enqueue(
     post_id: i64,
     selected: &[i64],
     version: &str,
+    compression: Option<Compression>,
 ) -> Result<bool> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let media = posts::media(&tx, post_id)?;
@@ -287,7 +530,14 @@ pub fn enqueue(
     if latest_job(&tx, post_id)?.is_some_and(|job| job.is_active()) {
         return Ok(false);
     }
-    let payload = format!("{}:{}:{version}", media[*first].id, media[*last].id);
+    let mut payload = format!("{}:{}:{version}", media[*first].id, media[*last].id);
+    if let Some(settings) = compression {
+        payload.push_str(&format!(
+            ":{}:{}",
+            settings.quality(),
+            settings.fits_telegram(),
+        ));
+    }
     let job_id = jobs::create(&tx, "merge_media", &payload, indices.len() as i64)?;
     jobs::attach_post(&tx, job_id, post_id)?;
     tx.commit()?;
@@ -313,33 +563,23 @@ pub fn finish(
     store: &BlobStore,
     job_id: i64,
     intent: &Intent<'_>,
-    png: &[u8],
-    thumbnail: &[u8],
+    rendition: Rendition<'_>,
 ) -> Result<String> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    if jobs::get(&tx, job_id)?.is_none_or(|job| job.state != "running") {
-        return Err(Error::invalid(
-            "This merge was interrupted. Select the panels again.",
-        ));
-    }
+    verify_running(&tx, job_id)?;
     let post_id = intent.post_id;
     let media = posts::media(&tx, post_id)?;
     verify_gallery(&media, intent.version)?;
     let range = range(&media, intent.first_id, intent.last_id)?;
-    let mut sources = sources(&tx, post_id)?;
-    if sources.is_empty() {
-        sources = media.iter().map(NewMedia::from).collect();
-        save_sources(&tx, post_id, &sources)?;
-    }
+    let sources = retain_sources(&tx, post_id, &media)?;
     let slots = layout(sources.len(), &merges(&tx, post_id)?)?;
     if slots.len() != media.len() {
         return Err(Error::other("invalid gallery merge layout"));
     }
     let first = *slots[*range.start()].start() as i64;
     let last = *slots[*range.end()].end() as i64;
-    let output = store.ingest_bytes(png, "png")?;
-    store.record(&tx, &output)?;
-    store.write_thumb_bytes(&output.hash, thumbnail)?;
+    let output = register(&tx, store, rendition)?;
+    delete_compressions(&tx, post_id, first, last)?;
     tx.execute(
         "DELETE FROM media_merges WHERE post_id = ?1 AND first_ordinal BETWEEN ?2 AND ?3",
         params![post_id, first, last],
@@ -368,7 +608,8 @@ const ORPHAN_BLOBS: &str = "FROM blobs b
            AND NOT EXISTS (SELECT 1 FROM media m WHERE m.poster_hash = b.hash)
            AND NOT EXISTS (SELECT 1 FROM media_merge_sources s WHERE s.blob_hash = b.hash)
            AND NOT EXISTS (SELECT 1 FROM media_merge_sources s WHERE s.poster_hash = b.hash)
-           AND NOT EXISTS (SELECT 1 FROM media_merges m WHERE m.blob_hash = b.hash)";
+           AND NOT EXISTS (SELECT 1 FROM media_merges m WHERE m.blob_hash = b.hash)
+           AND NOT EXISTS (SELECT 1 FROM media_compressions c WHERE c.blob_hash = b.hash)";
 
 pub fn orphan_blobs(conn: &Connection) -> Result<Vec<(String, String, i64)>> {
     let mut statement = conn.prepare(&format!("SELECT b.hash, b.ext, b.bytes {ORPHAN_BLOBS}"))?;

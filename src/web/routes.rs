@@ -689,7 +689,7 @@ async fn post_page(
 ) -> WebResult<Html<String>> {
     let app = &ws.app;
     let suggestions_enabled = app.cfg.tag_suggestions.enabled;
-    let (post, tags, removals, tag_review, merge_undo, merge_job) = app
+    let (post, tags, removals, tag_review, merge_undo, compressed, merge_job) = app
         .db
         .call(move |conn| {
             let post = post_db::get(conn, id)?;
@@ -704,6 +704,7 @@ async fn post_page(
                 tag_db::removals(conn, id)?,
                 tag_review,
                 crate::db::media_merges::undo_ids(conn, id)?,
+                crate::db::media_merges::compressed_positions(conn, id)?,
                 crate::db::media_merges::latest_job(conn, id)?,
             ))
         })
@@ -769,6 +770,7 @@ async fn post_page(
     }
 
     let merge_undo: std::collections::HashMap<_, _> = merge_undo.into_iter().collect();
+    let photo_limit = crate::media::compress::photo_limit(app.cfg.max_upload_bytes);
     let can_merge = post
         .media
         .windows(2)
@@ -778,6 +780,7 @@ async fn post_page(
         .iter()
         .enumerate()
         .map(|(position, item)| {
+            let editable = crate::media::merge::supports(item);
             json!({
                 "id": item.id,
                 "hash": item.blob_hash,
@@ -787,7 +790,12 @@ async fn post_page(
                 "width": item.width,
                 "height": item.height,
                 "kib": (item.bytes as f64 / 1024.0).round(),
-                "can_select": can_merge && crate::media::merge::supports(item),
+                "can_select": can_merge && editable,
+                "can_compress": editable,
+                "compressed": compressed.contains(&position),
+                "over_photo_limit": editable && (item.bytes > photo_limit as i64
+                    || item.width.zip(item.height).is_some_and(|(w, h)|
+                        crate::media::compress::geometry_error(w, h).is_some())),
                 "undo_id": merge_undo.get(&position),
             })
         })
@@ -1451,7 +1459,7 @@ pub fn job_view(job: &job_db::Job, now: chrono::DateTime<chrono::Utc>) -> Value 
         "kind_label": kind_label(&job.kind),
         "watch_id": (job.kind == crate::jobs::KIND_WATCH_CHECK)
             .then(|| job.payload.as_deref()?.parse::<i64>().ok()).flatten(),
-        "payload": if job.kind == crate::jobs::KIND_MERGE_MEDIA {
+        "payload": if crate::jobs::is_gallery_edit(&job.kind) {
             job.post_id.map(|id| format!("post #{id}"))
         } else {
             job.payload.clone()
@@ -1483,6 +1491,7 @@ fn kind_label(kind: &str) -> &str {
         crate::jobs::KIND_WATCH_CHECK => "watch check",
         crate::jobs::KIND_TAG_SUGGESTIONS => "suggest tags",
         crate::jobs::KIND_MERGE_MEDIA => "merge images",
+        crate::jobs::KIND_COMPRESS_MEDIA => "compress image",
         other => other,
     }
 }

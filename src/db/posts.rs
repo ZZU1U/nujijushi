@@ -148,7 +148,7 @@ pub struct StoredImport {
     pub post_id: Option<i64>,
     pub created: bool,
     pub suggestion: Option<super::reputation::Suggestion>,
-    pub merges_reset: bool,
+    pub gallery_edits_reset: bool,
 }
 
 /// Apply archive changes and import-time curation in the same commit. Watched
@@ -169,7 +169,7 @@ pub fn store_import(
             post_id: Some(id),
             created: false,
             suggestion: None,
-            merges_reset: false,
+            gallery_edits_reset: false,
         });
     }
     let guest = match submitted_by {
@@ -192,10 +192,10 @@ pub fn store_import(
             post_id: matched.post_id,
             created: false,
             suggestion: Some(matched.status),
-            merges_reset: false,
+            gallery_edits_reset: false,
         });
     }
-    let (id, created, merges_reset) = upsert_post(&tx, post, media)?;
+    let (id, created, gallery_edits_reset) = upsert_post(&tx, post, media)?;
     if created {
         tx.execute(
             "UPDATE posts SET operator_import = ?1 WHERE id = ?2",
@@ -231,7 +231,7 @@ pub fn store_import(
         post_id: Some(id),
         created,
         suggestion,
-        merges_reset,
+        gallery_edits_reset,
     })
 }
 
@@ -302,8 +302,9 @@ fn upsert_post(
 
     tags::refresh_source(conn, post_id, &np.tags)?;
 
-    let merges_reset = !media.is_empty() && super::media_merges::refresh(conn, post_id, media)?;
-    Ok((post_id, existing.is_none(), merges_reset))
+    let gallery_edits_reset =
+        !media.is_empty() && super::media_merges::refresh(conn, post_id, media)?;
+    Ok((post_id, existing.is_none(), gallery_edits_reset))
 }
 
 pub(super) fn replace_media(conn: &Connection, post_id: i64, media: &[NewMedia]) -> Result<()> {

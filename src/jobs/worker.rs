@@ -17,6 +17,7 @@ const IMPORT_KINDS: &[&str] = &[
     crate::jobs::KIND_IMPORT,
     crate::jobs::KIND_WATCH_CHECK,
     crate::jobs::KIND_MERGE_MEDIA,
+    crate::jobs::KIND_COMPRESS_MEDIA,
 ];
 const TAG_SUGGESTIONS_LOCK: &str = "suggest-tags.lock";
 const QUICK_JOBS: i64 = 4;
