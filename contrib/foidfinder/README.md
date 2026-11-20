@@ -4,11 +4,12 @@
 
 ## Haruka on CPU
 
-Use Python 3.12, `uv`, and a platform with an [ONNX Runtime CPU wheel](https://pypi.org/project/onnxruntime/1.32.0/#files). The launcher uses FoidFinder's server and tag ranking with the official [Haruka ONNX model](https://huggingface.co/KaraKaraWitch/haruka-tagger/tree/a65f3de8a32da3a40eec6b41bd45b47ad1a1e7be). It needs no GPU runtime. Run these commands from `contrib/foidfinder` in the nujijushi checkout:
+Use `uv` and a platform with an [ONNX Runtime CPU wheel](https://pypi.org/project/onnxruntime/1.32.0/#files). The setup uses uv-managed Python 3.12. The launcher uses FoidFinder's server and tag ranking with the official [Haruka ONNX model](https://huggingface.co/KaraKaraWitch/haruka-tagger/tree/a65f3de8a32da3a40eec6b41bd45b47ad1a1e7be). It needs no GPU runtime. Run these commands from `contrib/foidfinder` in the nujijushi checkout.
 
 ```sh
-uv venv --python 3.12
-uv pip install -r requirements-cpu.txt
+uv venv --managed-python --python 3.12
+.venv/bin/python -c 'import ctypes'
+uv pip install --python .venv/bin/python -r requirements-cpu.txt
 .venv/bin/hf download KaraKaraWitch/haruka-tagger \
   haruka-tagger.onnx haruka-tagger_metadata.json \
   --revision a65f3de8a32da3a40eec6b41bd45b47ad1a1e7be --local-dir models/haruka-cpu
@@ -16,6 +17,8 @@ uv pip install -r requirements-cpu.txt
 ```
 
 The download is about 835 MB. After setup the launcher loads the model from disk and can run offline. It listens on `127.0.0.1:8790` and uses up to four CPU threads by default. Use `--threads N` to adjust that or `--port N` to pick a different port. Stop it with Ctrl+C.
+
+If `hf` reports `No module named '_ctypes'`, the Python installation behind `.venv` is missing a standard-library extension. Recreate the Haruka virtual environment with `uv venv --clear --managed-python --python 3.12`, then resume the setup at the `import ctypes` check. The model files live separately under `models/`.
 
 ## Apple Silicon GPU
 
