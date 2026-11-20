@@ -70,7 +70,7 @@ Install `gallery-dl` for gallery-site imports and `ffmpeg` if you want video thu
 
 ## Optional artwork tag suggestions
 
-Install and start [FoidFinder](contrib/foidfinder/README.md) on the machine running `nujijushi`. Add this section to `config.toml` and restart `nujijushi`.
+Set up [FoidFinder](contrib/foidfinder/README.md) on the machine running `nujijushi`. Haruka can run on CPU through ONNX Runtime. Add this section to `config.toml` and restart `nujijushi`.
 
 ```toml
 [tag_suggestions]

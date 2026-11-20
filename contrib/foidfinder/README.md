@@ -1,8 +1,23 @@
 # FoidFinder for tag suggestions
 
-[FoidFinder](https://github.com/AlpinDale/foidfinder/tree/212f92a459115d055795ccddebcb88d4e56d43b2) runs as a separate process. On Apple Silicon it can run Haruka or PixAI through MLX. The NVIDIA service runs PixAI through CUDA. Tag suggestions are optional, and the upstream HTTP server requires one of those GPU backends.
+[FoidFinder](https://github.com/AlpinDale/foidfinder/tree/212f92a459115d055795ccddebcb88d4e56d43b2) runs as a separate process. Choose Haruka on CPU, Haruka or PixAI on Apple Silicon with MLX, or PixAI on NVIDIA with CUDA.
 
-## Apple Silicon
+## Haruka on CPU
+
+Use Python 3.12, `uv`, and a platform with an [ONNX Runtime CPU wheel](https://pypi.org/project/onnxruntime/1.32.0/#files). The launcher uses FoidFinder's server and tag ranking with the official [Haruka ONNX model](https://huggingface.co/KaraKaraWitch/haruka-tagger/tree/a65f3de8a32da3a40eec6b41bd45b47ad1a1e7be). It needs no GPU runtime. Run these commands from `contrib/foidfinder` in the nujijushi checkout:
+
+```sh
+uv venv --python 3.12
+uv pip install -r requirements-cpu.txt
+.venv/bin/hf download KaraKaraWitch/haruka-tagger \
+  haruka-tagger.onnx haruka-tagger_metadata.json \
+  --revision a65f3de8a32da3a40eec6b41bd45b47ad1a1e7be --local-dir models/haruka-cpu
+.venv/bin/python haruka_cpu.py --model-dir models/haruka-cpu
+```
+
+The download is about 835 MB. After setup the launcher loads the model from disk and can run offline. It listens on `127.0.0.1:8790` and uses up to four CPU threads by default. Use `--threads N` to adjust that or `--port N` to pick a different port. Stop it with Ctrl+C.
+
+## Apple Silicon GPU
 
 Install Python 3.12 or newer and `uv`. Clone FoidFinder into its own directory, then install its Apple Silicon dependencies and prepare Haruka.
 

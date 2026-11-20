@@ -1,0 +1,2 @@
+foidfinder @ https://github.com/AlpinDale/foidfinder/archive/212f92a459115d055795ccddebcb88d4e56d43b2.tar.gz
+onnxruntime==1.32.0
