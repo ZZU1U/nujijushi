@@ -18,6 +18,7 @@ use crate::state::AppState;
 const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 const IMAGE_LIMIT: usize = 12;
+const STRONG_CHARACTER_SCORE: f32 = 0.85;
 const INFERENCE_DEADLINE: Duration = Duration::from_secs(120);
 const LOOKUP_DEADLINE: Duration = Duration::from_secs(15);
 
@@ -57,6 +58,12 @@ struct Hit {
     score: f32,
 }
 
+impl Hit {
+    fn is_strong(&self) -> bool {
+        self.score > STRONG_CHARACTER_SCORE
+    }
+}
+
 fn parse_hits(body: &[u8]) -> Result<Vec<Hit>> {
     const CONTENT_ERROR: &str = "WD Tagger returned an invalid prediction response";
     let text = std::str::from_utf8(body).map_err(|_| Error::other(CONTENT_ERROR))?;
@@ -76,13 +83,11 @@ fn parse_hits(body: &[u8]) -> Result<Vec<Hit>> {
         }) else {
             return Err(Error::other(CONTENT_ERROR));
         };
-        if score > 0.85 {
-            hits.push(Hit {
-                id,
-                name: name.to_owned(),
-                score,
-            });
-        }
+        hits.push(Hit {
+            id,
+            name: name.to_owned(),
+            score,
+        });
     }
     Ok(hits)
 }
@@ -123,7 +128,28 @@ async fn predict(
 #[derive(Debug)]
 struct Character {
     hit: Hit,
-    images: Vec<i64>,
+    best_image: i64,
+    strong_images: Vec<i64>,
+}
+
+impl Character {
+    fn into_candidate(self) -> db::Candidate {
+        let low_confidence = !self.hit.is_strong();
+        let (evidence, images) = if low_confidence {
+            ("WD Tagger · Low confidence", vec![self.best_image])
+        } else {
+            ("WD Tagger", self.strong_images)
+        };
+        db::Candidate {
+            kind: SuggestionKind::Character,
+            tag: self.hit.name,
+            character_tag_id: Some(self.hit.id),
+            evidence,
+            low_confidence,
+            wiki_title: None,
+            images,
+        }
+    }
 }
 
 async fn scan(
@@ -163,17 +189,24 @@ async fn scan(
                 match characters.entry(hit.id) {
                     Entry::Occupied(mut entry) => {
                         let entry = entry.get_mut();
-                        if entry.images.last() != Some(&image_number) {
-                            entry.images.push(image_number);
+                        if hit.is_strong() && entry.strong_images.last() != Some(&image_number) {
+                            entry.strong_images.push(image_number);
                         }
                         if hit.score > entry.hit.score {
                             entry.hit = hit;
+                            entry.best_image = image_number;
                         }
                     }
                     Entry::Vacant(entry) => {
+                        let strong_images = hit
+                            .is_strong()
+                            .then_some(image_number)
+                            .into_iter()
+                            .collect();
                         entry.insert(Character {
                             hit,
-                            images: vec![image_number],
+                            best_image: image_number,
+                            strong_images,
                         });
                     }
                 }
@@ -216,6 +249,7 @@ fn franchise_candidate(
         tag,
         character_tag_id: None,
         evidence,
+        low_confidence: false,
         wiki_title,
         images: Vec::new(),
     }
@@ -242,11 +276,16 @@ async fn known_franchises(
     characters: &[Character],
     out: &mut Vec<db::Candidate>,
 ) -> Result<()> {
-    let ids: Vec<_> = characters
+    let strong_hits: Vec<_> = characters
         .iter()
+        .map(|character| &character.hit)
+        .take_while(|hit| hit.is_strong())
         .take(5)
-        .map(|character| character.hit.id)
         .collect();
+    if strong_hits.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<_> = strong_hits.iter().map(|hit| hit.id).collect();
     let associations = state
         .db
         .call(move |conn| {
@@ -256,7 +295,7 @@ async fn known_franchises(
         })
         .await?;
     let mut unresolved = Vec::new();
-    for (character, association) in characters.iter().zip(associations) {
+    for (hit, association) in strong_hits.into_iter().zip(associations) {
         match association {
             Some(association) => {
                 if let Some(franchise) = association.franchise {
@@ -272,7 +311,7 @@ async fn known_franchises(
                     ));
                 }
             }
-            None => unresolved.push(&character.hit),
+            None => unresolved.push(hit),
         }
     }
     if state.cfg.tag_suggestions.online_fallback && !unresolved.is_empty() {
@@ -335,14 +374,7 @@ pub(super) async fn run(state: &AppState, post_id: i64, job_id: i64) -> Result<s
     known_franchises(state, &characters, &mut franchises).await?;
     let candidates: Vec<_> = characters
         .into_iter()
-        .map(|character| db::Candidate {
-            kind: SuggestionKind::Character,
-            tag: character.hit.name,
-            character_tag_id: Some(character.hit.id),
-            evidence: "WD Tagger",
-            wiki_title: None,
-            images: character.images,
-        })
+        .map(Character::into_candidate)
         .chain(franchises)
         .collect();
     let message = state
@@ -404,8 +436,10 @@ mod tests {
             |body: &'static [u8]| predict(&client, &url, body.to_vec(), Duration::from_secs(2));
         health(port).await.unwrap();
         let hits = predict_body(b"image").await.unwrap().unwrap();
-        assert_eq!(hits.len(), 1);
+        assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].id, 3861);
+        assert!(hits[0].is_strong());
+        assert!(!hits[1].is_strong());
         assert!(predict_body(b"no match").await.unwrap().unwrap().is_empty());
         assert!(predict_body(b"unsupported").await.unwrap().is_none());
         assert!(predict_body(b"malformed").await.is_err());

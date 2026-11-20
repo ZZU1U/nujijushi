@@ -22,7 +22,6 @@ import uvicorn
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_PIXELS = 40_000_000
 MAX_EDGE = 8192
-CHARACTER_THRESHOLD = 0.85
 IMAGE_FORMATS = ("JPEG", "PNG", "WEBP", "GIF", "BMP", "AVIF")
 
 
@@ -83,7 +82,7 @@ class Tagger:
         hits = [
             (tag_id, name, float(scores[index]))
             for index, tag_id, name in self.characters
-            if scores[index] > CHARACTER_THRESHOLD
+            if 0.0 <= scores[index] <= 1.0
         ]
         hits.sort(key=lambda row: (-row[2], row[0]))
         return "".join(f"{tag_id}\t{name}\t{score}\n" for tag_id, name, score in hits[:20])

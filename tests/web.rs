@@ -1694,7 +1694,8 @@ async fn tag_suggestions_review_is_explicit_and_preserves_existing_tags_and_remo
             async move {
                 requests.fetch_add(1, Ordering::Relaxed);
                 match body.as_ref() {
-                    b"still-one" | b"still-two" => "3861\tpikachu\t0.96\n3901\thidden_source\t0.93\n3902\tunknown_character\t0.92\n3903\tlow_confidence\t0.7\n".into_response(),
+                    b"still-one" => "3861\tpikachu\t0.96\n3901\thidden_source\t0.93\n3902\tunknown_character\t0.92\n3903\tweak_character\t0.7\n3904\tother_guess\t0.8\n3905\tpikachu_alias\t0.89\n3906\toriginal\t0.88\n".into_response(),
+                    b"still-two" => "3861\tpikachu\t0.97\n3902\tunknown_character\t0.85\n3903\tweak_character\t0.84\n".into_response(),
                     b"animated" => StatusCode::UNPROCESSABLE_ENTITY.into_response(),
                     _ => panic!("unexpected image request"),
                 }
@@ -1715,6 +1716,7 @@ async fn tag_suggestions_review_is_explicit_and_preserves_existing_tags_and_remo
                 .find(|tag| tag.name == "hidden_source")
                 .unwrap();
             assert!(tags::suppress_source(conn, post_id, source.id)?);
+            tags::set_alias(conn, "pikachu_alias", "pikachu")?;
             tags::set_alias(conn, "variant_spelling", "fixed_character")
         })
         .unwrap();
@@ -1784,6 +1786,7 @@ async fn tag_suggestions_review_is_explicit_and_preserves_existing_tags_and_remo
     assert!(html.contains("href=\"#media-1\">Image 1"), "{html}");
     assert!(html.contains("href=\"#media-3\">Image 3"));
     assert!(!html.contains("href=\"#media-2\">Image 2"));
+    assert!(html.contains("Low confidence"));
     let review = h
         .state
         .db
@@ -1798,9 +1801,17 @@ async fn tag_suggestions_review_is_explicit_and_preserves_existing_tags_and_remo
             .iter()
             .map(|item| item.tag.as_str())
             .collect::<Vec<_>>(),
-        ["pikachu", "unknown_character", "source_series", "pokemon"]
+        [
+            "pikachu",
+            "unknown_character",
+            "weak_character",
+            "source_series",
+            "pokemon"
+        ]
     );
     assert_eq!(review.suggestions[0].images, [1, 3]);
+    assert_eq!(review.suggestions[1].images, [1]);
+    assert_eq!(review.suggestions[2].images, [3]);
     let resolve = |id, action, input| {
         format!(
             "csrf={}&job_id={}&suggestion_id={id}&action={action}&tag={input}",
@@ -1824,7 +1835,7 @@ async fn tag_suggestions_review_is_explicit_and_preserves_existing_tags_and_remo
     let discarded = h
         .send(h.post(
             &path,
-            &resolve(review.suggestions[3].id, "discard", "pokemon"),
+            &resolve(review.suggestions[4].id, "discard", "pokemon"),
         ))
         .await;
     assert_eq!(discarded.status(), StatusCode::SEE_OTHER);
@@ -1837,7 +1848,7 @@ async fn tag_suggestions_review_is_explicit_and_preserves_existing_tags_and_remo
             );
             assert_eq!(tags::removals(conn, post_id)?[0].name, "hidden_source");
             let review = tag_suggestions::review(conn, &posts::get(conn, post_id)?)?.unwrap();
-            assert_eq!(review.suggestions.len(), 2);
+            assert_eq!(review.suggestions.len(), 3);
             let mut updated = NormalizedPost::new("local", "tagged01");
             updated.tags = vec!["hidden_source".into(), "original".into()];
             updated.raw_json = Some("{}".into());
@@ -1854,6 +1865,58 @@ async fn tag_suggestions_review_is_explicit_and_preserves_existing_tags_and_remo
         .send(h.post(&path, &resolve(review.suggestions[2].id, "accept", "stale")))
         .await;
     assert_eq!(stale.status(), StatusCode::BAD_REQUEST);
+    server.abort();
+}
+
+#[tokio::test]
+async fn weak_character_guesses_fill_three_slots_and_use_no_franchise_lookup() {
+    use axum::{Router, routing::post};
+    use nujijushi::db::{posts, tag_suggestions};
+    use nujijushi::jobs::worker::JobWorker;
+
+    let companion = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut h = tagger_harness(companion.local_addr().unwrap().port());
+    let config = Arc::make_mut(&mut h.state.cfg);
+    config.tag_suggestions.online_fallback = true;
+    config.proxy_url = Some(format!("http://{}", proxy.local_addr().unwrap()));
+    let router = Router::new().route(
+        "/v1/predict",
+        post(|| async {
+            "3861\tpikachu\t0.85\n3902\tsecond_guess\t0.61\n3903\tthird_guess\t0.5\n3904\tfourth_guess\t0.4\n"
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(companion, router).await.unwrap() });
+    let post_id = add_tagger_post(&h, "weak-guesses").await;
+    nujijushi::jobs::create_tag_suggestions_job(&h.state, post_id)
+        .await
+        .unwrap();
+    assert_eq!(JobWorker::new(h.state.clone()).drain().await.unwrap(), 1);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(40), proxy.accept())
+            .await
+            .is_err()
+    );
+    h.state
+        .db
+        .with(|conn| {
+            let review = tag_suggestions::review(conn, &posts::get(conn, post_id)?)?.unwrap();
+            assert_eq!(review.job.state, "done");
+            assert_eq!(
+                review
+                    .suggestions
+                    .iter()
+                    .map(|item| item.tag.as_str())
+                    .collect::<Vec<_>>(),
+                ["pikachu", "second_guess", "third_guess", "source_series"],
+            );
+            for item in &review.suggestions[..3] {
+                assert!(item.evidence.contains("Low confidence"));
+                assert_eq!(item.images, [1]);
+            }
+            Ok(())
+        })
+        .unwrap();
     server.abort();
 }
 

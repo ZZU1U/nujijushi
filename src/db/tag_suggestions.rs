@@ -91,6 +91,7 @@ pub struct Candidate {
     pub tag: String,
     pub character_tag_id: Option<i64>,
     pub evidence: &'static str,
+    pub low_confidence: bool,
     pub wiki_title: Option<String>,
     pub images: Vec<i64>,
 }
@@ -223,7 +224,10 @@ pub fn finish(
     let mut franchises = 0;
     for candidate in candidates {
         let (count, limit) = match candidate.kind {
-            SuggestionKind::Character => (&mut characters, 5),
+            SuggestionKind::Character => {
+                let limit = if candidate.low_confidence { 3 } else { 5 };
+                (&mut characters, limit)
+            }
             SuggestionKind::Franchise => (&mut franchises, 3),
         };
         if *count >= limit

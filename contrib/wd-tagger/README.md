@@ -22,9 +22,11 @@ Start it in a separate terminal. Stop it with `Ctrl-C`.
 
 The default address is `127.0.0.1:8790`. If the port is in use, pass `--port` and set `[tag_suggestions] tagger_port` in `nujijushi` to the same value. Enable tag suggestions in the [app configuration](../../README.md#optional-artwork-tag-suggestions) and run `nujijushi doctor --offline` to check readiness. The service is intended for a single host and binds only to loopback. It processes image bytes in memory.
 
+Restart the companion after updating `server.py` so nujijushi can receive lower-scoring character guesses.
+
 ## Local HTTP protocol
 
 - `GET /v1/health` returns `204` once the model and labels are loaded.
 - `POST /v1/predict` accepts a single raw still image with `Content-Type: application/octet-stream`. The service accepts JPEG, PNG, WebP, GIF, BMP, and AVIF. The input limits are 20 MiB, 40 megapixels, and 8,192 pixels on either edge.
-- A `200` response contains UTF-8 tab-separated rows with no header. Columns are the model's numeric Danbooru character tag ID, tag name, and score. Up to 20 character hits above `0.85` are ordered by descending score, then ID. A successful empty body means no match.
+- A `200` response contains UTF-8 tab-separated rows with no header. Columns are the model's numeric Danbooru character tag ID, tag name, and score. The top 20 valid character scores are ordered by descending score, then ID. A successful empty body means no valid character scores were returned.
 - The service returns `413` for an oversized body, `422` for an unsupported or unreadable image, and `503` when another image is being analyzed.

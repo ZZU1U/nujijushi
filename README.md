@@ -79,7 +79,9 @@ tagger_port = 8790
 online_fallback = false
 ```
 
-Open a post and choose **Suggest tags**. Review the character and franchise tags, then save or discard each one. Images go to the companion over loopback. If enabled, the online fallback sends recognized catalog IDs and names to Danbooru for unresolved franchise matches.
+Open a post and choose **Suggest tags**. Review the character and franchise tags, then save or discard each one. Images go to the companion over loopback. The review fills to three character suggestions when enough eligible guesses are available and labels weaker guesses **Low confidence**.
+
+The online fallback is a Danbooru catalog lookup for franchises. With `online_fallback = true`, nujijushi first checks local mappings and the cache, then sends catalog IDs and names for up to three unresolved strong character matches. It verifies a single franchise from the character wiki's introduction. Images stay on the machine. Successful matches can be reused offline, and definitive misses are cached for seven days.
 
 ## Documentation
 
