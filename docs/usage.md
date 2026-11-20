@@ -37,6 +37,8 @@ Global: `--home DIR` (or `$NUJIJUSHI_HOME`), `-v/-vv` for more logging.
 
 When pasting a batch of import links, `%0A` and `%0D%0A` between URLs work as line separators in the admin UI, Telegram bot, and CLI.
 
+New posts imported directly through the CLI, the admin UI, or by a Telegram admin start **Approved**. Guest submissions and watched-source discoveries start **New**. A hard-blocked tag takes priority and sets the post to **Rejected**.
+
 ## Channel discovery
 
 When the running bot becomes a channel admin, nujijushi registers the channel as disabled and assigns it an alias. List discovered channels with `nujijushi channel discover`, then enable one with `nujijushi channel enable <alias>`.

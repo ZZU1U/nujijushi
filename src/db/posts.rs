@@ -187,6 +187,15 @@ pub fn store_import(
     if let Some(hit) = rules.blocked_hit(&post_tags) {
         set_state(&tx, id, PostState::Rejected)?;
         set_notes(&tx, id, Some(&format!("auto-rejected: blocked tag {hit}")))?;
+    } else if created
+        && !insert_only
+        && guest.is_none()
+        && match submitted_by {
+            None => true,
+            Some(user) => super::users::is_admin(&tx, &config.access, user)?,
+        }
+    {
+        set_state(&tx, id, PostState::Approved)?;
     }
     let suggestion = if let Some(user) = rated_guest {
         Some(reputation::register_new(&tx, id, user)?)
@@ -680,6 +689,60 @@ pub fn next_unenqueued(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_direct_admin_imports_are_approved_after_the_block_check() {
+        use crate::db::{Db, users};
+        use crate::model::TagRuleAction;
+
+        let home = tempfile::tempdir().unwrap();
+        let mut config = crate::config::Config::load_from_home(home.path().to_owned()).unwrap();
+        config.access.admins = vec![1];
+        config.access.guests = vec![3, 4];
+        config.access.public = false;
+        for scoring in [false, true] {
+            config.guest_reputation = scoring;
+            let db = Db::open_in_memory().unwrap();
+            db.with(|conn| {
+                users::set_role(conn, 1, "guest")?;
+                users::set_role(conn, 2, "admin")?;
+                users::set_role(conn, 4, "banned")?;
+                tags::set_rule(conn, "blocked_tag", TagRuleAction::Block)?;
+                let cases = [
+                    ("cli-or-web", None, false, PostState::Approved),
+                    ("config-admin", Some(1), false, PostState::Approved),
+                    ("promoted-admin", Some(2), false, PostState::Approved),
+                    ("guest", Some(3), false, PostState::New),
+                    ("banned", Some(4), false, PostState::New),
+                    ("unknown", Some(5), false, PostState::New),
+                    ("watched", None, true, PostState::New),
+                    ("blocked", None, false, PostState::Rejected),
+                ];
+                for (source_id, user, watched, expected) in cases {
+                    let mut post = NormalizedPost::new("local", source_id);
+                    if source_id == "blocked" {
+                        post.tags.push("blocked_tag".into());
+                    }
+                    let stored = store_import(conn, &post, &[], user, watched, &config)?;
+                    assert!(stored.created);
+                    assert_eq!(
+                        get(conn, stored.post_id.unwrap())?.state,
+                        expected,
+                        "{source_id}"
+                    );
+                }
+                for state in [PostState::New, PostState::Rejected, PostState::Archived] {
+                    let post = NormalizedPost::new("local", "cli-or-web");
+                    let id = find_by_source_id(conn, &post.source, &post.source_id)?.unwrap();
+                    set_state(conn, id, state)?;
+                    assert!(!store_import(conn, &post, &[], None, false, &config)?.created);
+                    assert_eq!(get(conn, id)?.state, state);
+                }
+                Ok(())
+            })
+            .unwrap();
+        }
+    }
 
     #[test]
     fn filter_sql_feeds_both_cards_and_count() {

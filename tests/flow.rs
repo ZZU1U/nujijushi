@@ -610,6 +610,7 @@ async fn import_from_disk_then_publish() {
         .await
         .unwrap();
     assert_eq!(post.media.len(), 2);
+    assert_eq!(post.state, PostState::Approved);
     for media in &post.media {
         assert!(
             harness

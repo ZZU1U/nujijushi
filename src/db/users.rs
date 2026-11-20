@@ -3,6 +3,7 @@
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::config::AccessConfig;
 use crate::error::Result;
 
 use super::fmt_ts;
@@ -49,6 +50,11 @@ pub fn get(conn: &Connection, tg_id: i64) -> Result<Option<User>> {
             from_row,
         )
         .optional()?)
+}
+
+pub(super) fn is_admin(conn: &Connection, access: &AccessConfig, tg_id: i64) -> Result<bool> {
+    Ok(access.is_admin(tg_id)
+        || get(conn, tg_id)?.is_some_and(|user| user.role.trim().eq_ignore_ascii_case("admin")))
 }
 
 /// Record a sighting without changing the role.

@@ -291,11 +291,7 @@ fn operator_added(conn: &Connection, access: &AccessConfig, id: i64) -> Result<b
     Ok(match (operator, submitter) {
         (Some(flag), _) => flag,
         (None, None) => true,
-        (None, Some(user)) => {
-            access.is_admin(user)
-                || users::get(conn, user)?
-                    .is_some_and(|row| row.role.trim().eq_ignore_ascii_case("admin"))
-        }
+        (None, Some(user)) => users::is_admin(conn, access, user)?,
     })
 }
 

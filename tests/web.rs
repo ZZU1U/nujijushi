@@ -236,6 +236,31 @@ async fn importing_pasted_encoded_newlines_queues_each_link() {
     assert_eq!(targets, [first, second]);
 }
 
+#[tokio::test]
+async fn direct_web_import_is_approved_when_the_job_creates_it() {
+    let h = harness();
+    let artwork = tempfile::tempdir().unwrap();
+    image::RgbImage::new(8, 8)
+        .save(artwork.path().join("sample.png"))
+        .unwrap();
+    let form = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("csrf", &h.ws.csrf)
+        .append_pair("targets", artwork.path().to_str().unwrap())
+        .finish();
+    assert_eq!(
+        h.send(h.post("/import", &form)).await.status(),
+        StatusCode::SEE_OTHER
+    );
+    let reports = h.run_worker_once().await;
+    let post_id = reports[0].post_ids()[0];
+    let post = h
+        .state
+        .db
+        .with(|conn| nujijushi::db::posts::get(conn, post_id))
+        .unwrap();
+    assert_eq!(post.state, PostState::Approved);
+}
+
 /// One job row of a rendered page, so a test can assert about *that* job.
 fn job_row(html: &str, id: i64) -> &str {
     let start = html

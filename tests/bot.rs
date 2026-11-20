@@ -804,45 +804,50 @@ async fn enabling_a_discovered_channel_makes_it_schedulable() {
 
 #[tokio::test]
 async fn forwarded_posts_are_imported_inline() {
-    let harness = harness(MockTransport::new(), OPEN_CONFIG);
-    let mut message = private_message(GUEST, 1, "");
-    message.text = None;
-    message.caption = Some("from a channel #landscape".into());
-    message.files = vec![photo("fw1"), photo("fw2")];
-    message.forward_from_chat_id = Some(-100555);
-    message.forward_from_chat_title = Some("Source Channel".into());
+    use nujijushi::model::PostState;
 
-    harness.send(message).await;
-    assert!(
-        harness.last_text().contains("Archived"),
-        "got: {}",
-        harness.last_text()
-    );
+    for (user, expected) in [(GUEST, PostState::New), (ADMIN, PostState::Approved)] {
+        let harness = harness(MockTransport::new(), OPEN_CONFIG);
+        let mut message = private_message(user, 1, "");
+        message.text = None;
+        message.caption = Some("from a channel #landscape".into());
+        message.files = vec![photo("fw1"), photo("fw2")];
+        message.forward_from_chat_id = Some(-100555);
+        message.forward_from_chat_title = Some("Source Channel".into());
 
-    let post = harness
-        .state
-        .db
-        .call(|conn| nujijushi::db::posts::cards(conn, &Default::default()))
-        .await
-        .unwrap()
-        .pop()
-        .expect("a post exists");
-    let full = harness
-        .state
-        .db
-        .call({
-            let id = post.id;
-            move |conn| nujijushi::db::posts::get(conn, id)
-        })
-        .await
-        .unwrap();
-    assert_eq!(full.source, "telegram_forward");
-    assert_eq!(full.media.len(), 2);
-    assert_eq!(
-        full.author.as_ref().and_then(|a| a.name.clone()).as_deref(),
-        Some("Source Channel")
-    );
-    assert!(full.tags.contains(&"landscape".to_string()));
+        harness.send(message).await;
+        assert!(
+            harness.last_text().contains("Archived"),
+            "got: {}",
+            harness.last_text()
+        );
+
+        let post = harness
+            .state
+            .db
+            .call(|conn| nujijushi::db::posts::cards(conn, &Default::default()))
+            .await
+            .unwrap()
+            .pop()
+            .expect("a post exists");
+        let full = harness
+            .state
+            .db
+            .call({
+                let id = post.id;
+                move |conn| nujijushi::db::posts::get(conn, id)
+            })
+            .await
+            .unwrap();
+        assert_eq!(full.source, "telegram_forward");
+        assert_eq!(full.state, expected);
+        assert_eq!(full.media.len(), 2);
+        assert_eq!(
+            full.author.as_ref().and_then(|a| a.name.clone()).as_deref(),
+            Some("Source Channel")
+        );
+        assert!(full.tags.contains(&"landscape".to_string()));
+    }
 }
 
 #[tokio::test]
