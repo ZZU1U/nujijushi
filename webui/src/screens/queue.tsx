@@ -4,31 +4,32 @@ import { DataTable, type Column } from '../components/DataTable'
 import { DeliveryActions } from '../components/DeliveryActions'
 import { ActionForm } from '../ui'
 import { Thumbnail } from '../components/Thumbnail'
+import { channelPath, postPath } from '../routes'
 
 export function Queue({ data }: { data: QueuePage }) {
   const { channel, activity, items, eta_hint } = data
   const attempt = activity.latest_attempt
-  const channelPath = '/channels/' + channel.id
+  const channelRoot = channelPath(channel.id)
   const flushing = activity.jobs.some((job) => job.kind === 'flush_channel'
     && (job.state === 'pending' || job.state === 'running'))
   return <section className="panel" data-queue-revision={activity.revision}>
     <h2>queue · {channel.title} <span className="hint">{channel.tg_id}</span></h2>
     <p className="hint">
-      <a href={channelPath + '/edit'}>settings</a> · <a href={channelPath + '/preview'}>preview next slots</a>
+      <a href={channelRoot + '/edit'}>settings</a> · <a href={channelRoot + '/preview'}>preview next slots</a>
     </p>
     {channel.enabled
-      ? <ActionForm action={channelPath + '/schedule'} className="inline">
+      ? <ActionForm action={channelRoot + '/schedule'} className="inline">
         <button className="small ghost" name="action" value={channel.paused ? 'resume' : 'pause'}>
           {channel.paused ? 'Resume schedule' : 'Pause schedule'}
         </button>
       </ActionForm>
-      : <p className="hint">Scheduling is off. <a href={channelPath + '/preview'}>Review the preview to start</a>.</p>}
-    <ActionForm action={channelPath + '/flush'} className="inline"
+      : <p className="hint">Scheduling is off. <a href={channelRoot + '/preview'}>Review the preview to start</a>.</p>}
+    <ActionForm action={channelRoot + '/flush'} className="inline"
       data-confirm={`Publish all queued posts to ${channel.title} (${channel.tg_id}) now? This ignores the schedule and daily cap.`}>
       <button className="small" type="submit" disabled={activity.queued === 0 || flushing}>Flush queue</button>
     </ActionForm>
     {attempt && <p className="queue-attempt">
-      Latest send attempt{attempt.post_id && <> for <a href={'/posts/' + attempt.post_id}>post #{attempt.post_id}</a></>}
+      Latest send attempt{attempt.post_id && <> for <a href={postPath(attempt.post_id)}>post #{attempt.post_id}</a></>}
       {' '}<Badge tone={attempt.state === 'Sent' ? 'green' : 'red'}>{attempt.state}</Badge>
       {attempt.error && <span className="hint">{attempt.error}</span>}
     </p>}
@@ -67,7 +68,7 @@ function QueueTable({ channel, activity, items }: Pick<QueuePage, 'channel' | 'a
     {
       label: 'post',
       cell: (item) => <>
-        <a href={'/posts/' + item.post_id}>#{item.post_id}</a>
+        <a href={postPath(item.post_id)}>#{item.post_id}</a>
         {item.pinned && <Badge>pinned</Badge>}
         <Badge tone="accent" data-role="publishing" hidden={item.state !== 'sending' && !publishing.has(item.id)}>
           publishing…
@@ -101,12 +102,12 @@ function QueueTable({ channel, activity, items }: Pick<QueuePage, 'channel' | 'a
 }
 
 function QueueActions({ item, channel }: { item: QueueRow; channel: QueuePage['channel'] }) {
-  const channelPath = '/channels/' + channel.id
+  const channelRoot = channelPath(channel.id)
   if (item.state === 'sending') return <span className="hint">Send in progress</span>
 
   return <>
     {item.state === 'queued' && <ActionForm action="/publish" className="inline"
-      fields={{ queue_id: item.id, back: channelPath + '/queue' }}
+      fields={{ queue_id: item.id, back: channelRoot + '/queue' }}
       data-confirm={`Queue post #${item.post_id} for ${channel.title}? The worker sends it in the background; this returns immediately.`}>
       <button className="small" type="submit" title="publish this item now, ignoring the schedule">publish</button>
     </ActionForm>}
@@ -125,7 +126,7 @@ function QueueActions({ item, channel }: { item: QueueRow; channel: QueuePage['c
         </>
         : <>
           {item.state === 'held'
-            ? <a className="button small" href={channelPath + '/preview'}>review preview</a>
+            ? <a className="button small" href={channelRoot + '/preview'}>review preview</a>
             : <>
               <button name="action" value={item.pinned ? 'unpin' : 'pin'} className="small ghost">
                 {item.pinned ? 'unpin' : 'pin'}
