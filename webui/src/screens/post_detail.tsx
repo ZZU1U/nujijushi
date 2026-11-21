@@ -179,6 +179,8 @@ function Gallery({ data }: { data: PostDetailPage }) {
           <div className="media-grid">
             {media.map((m, index) => <Fragment key={listKey(m, index)}>
               <figure id={text("media-", (index + 1))}>
+                {has_media_tools && <MediaVisibilityToggle postId={post.id} mediaId={m.id}
+                  galleryVersion={gallery_version} hidden={m.hidden} />}
                 {thumbnailsOnly ? <>
                   <a href={'/media/' + m.hash} target="_blank" rel="noopener noreferrer"
                     aria-label={`Open ${m.is_video ? 'video' : 'image'} ${index + 1} at full size`}>
@@ -232,11 +234,6 @@ function Gallery({ data }: { data: PostDetailPage }) {
               {media.map((m, index) => <Fragment key={listKey(m, index)}>
                 <div className="post-tool-row">
                   <a className="post-image-link" href={text("#media-", (index + 1))}><span>Image {(index + 1)}</span></a>
-                  <ActionForm action={text("/posts/", post.id, "/media")} className="inline">
-                    <TextField type="hidden" name="gallery_version" value={gallery_version} />
-                    <TextField type="hidden" name="media_id" value={m.id} />
-                    <button type="submit" name="action" value={(m.hidden ? "restore" : "hide")} className="small ghost">{(m.hidden ? "Restore" : "Hide from outgoing copies")}</button>
-                  </ActionForm>
                   {m.can_select ? <>
                     <label className="check">
                       <input type="checkbox" checked={selected.has(m.id)} onChange={() => toggle(m.id)} aria-label={text("Include image ", (index + 1), " in merge")} />
@@ -286,6 +283,20 @@ function Gallery({ data }: { data: PostDetailPage }) {
       </> : null}
     </div>
   )
+}
+
+function MediaVisibilityToggle({ postId, mediaId, galleryVersion, hidden }: {
+  postId: number; mediaId: number; galleryVersion: string; hidden: boolean
+}) {
+  return <ActionForm action={text("/posts/", postId, "/media")} className="media-visibility-toggle">
+    <TextField type="hidden" name="gallery_version" value={galleryVersion} />
+    <TextField type="hidden" name="media_id" value={mediaId} />
+    <button type="submit" name="action" value={hidden ? 'restore' : 'hide'} className="small ghost"
+      aria-label={hidden ? 'Restore image' : 'Hide image'}
+      title={hidden ? 'Restore image to outgoing copies' : 'Hide image from outgoing copies'}>
+      {hidden ? 'show' : 'hide'}
+    </button>
+  </ActionForm>
 }
 
 function TagReview({ postId, review, enabled, open }: {
