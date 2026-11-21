@@ -85,16 +85,17 @@ pub(super) async fn compress(state: &AppState, job: &Job) -> Result<JobReport> {
     let post_id = job.post_id.ok_or_else(invalid)?;
     let payload = job.payload.as_deref().ok_or_else(invalid)?;
     let mut parts = payload.split(':');
-    let media_id = parts
-        .next()
-        .and_then(|part| part.parse().ok())
-        .ok_or_else(invalid)?;
+    let selection = parts.next().ok_or_else(invalid)?;
     let version = parts
         .next()
         .filter(|part| part.len() == 64)
         .ok_or_else(invalid)?
         .to_owned();
     let settings = parse_compression(parts)?;
+    if selection == "all" {
+        return compress_all(state, job.id, post_id, version, settings).await;
+    }
+    let media_id = selection.parse().map_err(|_| invalid())?;
     let input = state
         .db
         .call({
@@ -132,6 +133,73 @@ pub(super) async fn compress(state: &AppState, job: &Job) -> Result<JobReport> {
             )
         })
         .await?;
+    Ok(JobReport::Done {
+        message,
+        post_id: Some(post_id),
+    })
+}
+
+struct StagedRenditions(std::path::PathBuf);
+
+impl Drop for StagedRenditions {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+async fn compress_all(
+    state: &AppState,
+    job_id: i64,
+    post_id: i64,
+    version: String,
+    settings: Compression,
+) -> Result<JobReport> {
+    let input_version = version.clone();
+    let inputs = state
+        .db
+        .call(move |conn| media_merges::batch_compression_input(conn, post_id, &input_version))
+        .await?;
+    let store = state.blobs.clone();
+    let db = state.db.clone();
+    let limit = state.cfg.max_upload_bytes;
+    let dir = state
+        .cfg
+        .staging_dir()
+        .join(format!("compress-{}", uuid::Uuid::new_v4()));
+    let message = tokio::task::spawn_blocking(move || {
+        std::fs::create_dir(&dir)?;
+        let staged = StagedRenditions(dir);
+        let total = inputs.len() as i64;
+        let mut outputs = Vec::with_capacity(inputs.len());
+        for (index, input) in inputs.into_iter().enumerate() {
+            let position = index + 1;
+            let stage_image = || -> Result<_> {
+                let Some(input) = input else { return Ok(None) };
+                let path = store.path_for(&input.blob_hash, &input.ext);
+                let Some(jpeg) = crate::media::compress::compress_still(&path, settings, limit)?
+                else {
+                    return Ok(None);
+                };
+                let (jpeg, thumb) = with_thumbnail(jpeg)?;
+                let path = staged.0.join(format!("{position}.jpg"));
+                let thumb_path = staged.0.join(format!("{position}.webp"));
+                std::fs::write(&path, jpeg)?;
+                std::fs::write(&thumb_path, thumb)?;
+                Ok(Some((path, thumb_path)))
+            };
+            outputs.push(
+                stage_image()
+                    .map_err(|error| Error::other(format!("Image {position}: {error}")))?,
+            );
+            db.with(|conn| crate::db::jobs::progress(conn, job_id, position as i64, total))?;
+        }
+        db.with(|conn| {
+            media_merges::finish_batch_compression(
+                conn, &store, job_id, post_id, &version, &outputs,
+            )
+        })
+    })
+    .await??;
     Ok(JobReport::Done {
         message,
         post_id: Some(post_id),

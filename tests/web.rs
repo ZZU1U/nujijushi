@@ -1503,6 +1503,42 @@ fn archive_test_images(state: &AppState, source: &str, id: &str, files: &[(&[u8]
 }
 
 #[tokio::test]
+async fn batch_compression_preserves_the_gallery_on_encode_failure() {
+    use nujijushi::{
+        db::{media_merges as gallery, posts},
+        jobs::worker::JobWorker,
+    };
+    let h = harness();
+    let left = encode_image(
+        image::RgbImage::from_pixel(30, 20, image::Rgb([80, 90, 100])),
+        image::ImageFormat::Png,
+    );
+    let id = archive_test_images(
+        &h.state,
+        "local",
+        "broken-gallery",
+        &[(&left, "png"), (b"broken", "png")],
+    );
+    let original = h.state.db.with(|conn| posts::get(conn, id)).unwrap();
+    let version = gallery::gallery_version(&original.media);
+    let form = format!(
+        "csrf={}&action=compress_all&gallery_version={version}&output=fit",
+        h.ws.csrf
+    );
+    let response = h.send(h.post(&format!("/posts/{id}/media"), &form)).await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let job = Harness::json(&response)["job_ids"][0].as_i64().unwrap();
+    assert_eq!(JobWorker::new(h.state.clone()).drain().await.unwrap(), 1);
+    let status = h.page(&format!("/jobs/{job}/status")).await;
+    assert_eq!(status["state"], "failed");
+    assert!(status["message"].as_str().unwrap().contains("Image 2"));
+    assert_eq!(
+        h.state.db.with(|conn| posts::get(conn, id)).unwrap().media,
+        original.media
+    );
+}
+
+#[tokio::test]
 async fn duplicate_inbox_indexes_and_dismisses_cross_source_media_pairs() {
     use nujijushi::db::{duplicates, posts, queue};
     let h = harness();

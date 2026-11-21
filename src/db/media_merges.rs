@@ -558,26 +558,36 @@ fn source_position(
 pub fn enqueue_compression(
     conn: &mut Connection,
     post_id: i64,
-    media_id: i64,
+    media_id: Option<i64>,
     version: &str,
     settings: Compression,
 ) -> Result<Option<i64>> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let media = posts::media(&tx, post_id)?;
     verify_gallery(&tx, post_id, &media, version)?;
-    let index = media_position(&media, media_id)?;
-    if !crate::media::merge::supports(&media[index]) {
-        return Err(Error::invalid("Select a still JPEG, PNG or WebP image"));
-    }
+    let (selection, total) = if let Some(id) = media_id {
+        let index = media_position(&media, id)?;
+        if !crate::media::merge::supports(&media[index]) {
+            return Err(Error::invalid("Select a still JPEG, PNG or WebP image"));
+        }
+        (id.to_string(), 1)
+    } else {
+        if !media.iter().any(crate::media::merge::supports) {
+            return Err(Error::invalid(
+                "This post has no supported images to compress",
+            ));
+        }
+        ("all".into(), media.len() as i64)
+    };
     if latest_job(&tx, post_id)?.is_some_and(|job| job.is_active()) {
         return Ok(None);
     }
     let payload = format!(
-        "{media_id}:{version}:{}:{}",
+        "{selection}:{version}:{}:{}",
         settings.quality(),
         settings.fits_telegram(),
     );
-    let job_id = jobs::create(&tx, "compress_media", &payload, 1)?;
+    let job_id = jobs::create(&tx, "compress_media", &payload, total)?;
     jobs::attach_post(&tx, job_id, post_id)?;
     tx.commit()?;
     Ok(Some(job_id))
@@ -592,16 +602,117 @@ pub fn compression_input(
     let media = posts::media(conn, post_id)?;
     verify_gallery(conn, post_id, &media, version)?;
     let index = media_position(&media, media_id)?;
-    let retained = sources(conn, post_id)?;
-    if retained.is_empty() {
-        return Ok(NewMedia::from(&media[index]));
-    }
-    let merges = merges(conn, post_id)?;
-    let source = source_position(retained.len(), &merges, index)?;
-    Ok(merges
+    compression_sources(conn, post_id, &media)?
         .into_iter()
-        .find(|merge| merge.members[0] == source)
-        .map_or_else(|| retained[source].clone(), |merge| merge.item))
+        .nth(index)
+        .ok_or_else(|| Error::invalid("Invalid gallery layout"))
+}
+
+fn compression_sources(
+    conn: &Connection,
+    post_id: i64,
+    media: &[MediaItem],
+) -> Result<Vec<NewMedia>> {
+    let original = gallery_sources(conn, post_id, media)?;
+    let merges = merges(conn, post_id)?;
+    let slots = layout(original.len(), &merges)?;
+    let mut merges = merges.into_iter().peekable();
+    Ok(slots
+        .into_iter()
+        .map(|slot| {
+            let first = slot[0];
+            merges
+                .next_if(|merge| merge.members[0] == first)
+                .map_or_else(|| original[first].clone(), |merge| merge.item)
+        })
+        .collect())
+}
+
+pub(crate) fn batch_compression_input(
+    conn: &mut Connection,
+    post_id: i64,
+    version: &str,
+) -> Result<Vec<Option<NewMedia>>> {
+    let tx = conn.transaction()?;
+    let media = posts::media(&tx, post_id)?;
+    verify_gallery(&tx, post_id, &media, version)?;
+    let sources = compression_sources(&tx, post_id, &media)?;
+    if sources.len() != media.len() {
+        return Err(Error::invalid("Invalid gallery layout"));
+    }
+    Ok(media
+        .iter()
+        .zip(sources)
+        .map(|(item, source)| crate::media::merge::supports(item).then_some(source))
+        .collect())
+}
+
+pub(crate) fn finish_batch_compression(
+    conn: &mut Connection,
+    store: &BlobStore,
+    job_id: i64,
+    post_id: i64,
+    version: &str,
+    outputs: &[Option<(std::path::PathBuf, std::path::PathBuf)>],
+) -> Result<String> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    verify_running(&tx, job_id)?;
+    let media = posts::media(&tx, post_id)?;
+    verify_gallery(&tx, post_id, &media, version)?;
+    if outputs.len() != media.len() {
+        return Err(Error::invalid("The gallery changed. Reload the post."));
+    }
+    if super::queue::for_post(&tx, post_id)?
+        .iter()
+        .any(|(_, _, state)| *state == crate::model::QueueState::Sending)
+    {
+        return Err(Error::invalid(
+            "Wait for the current send to finish before compressing the gallery",
+        ));
+    }
+    let mut saved = 0;
+    let mut retained = Vec::new();
+    let mut slots = Vec::new();
+    for (index, output) in outputs.iter().enumerate() {
+        let Some((path, thumb_path)) = output else {
+            continue;
+        };
+        let bytes = std::fs::read(path)?;
+        if blake3::hash(&bytes).to_hex().as_str() == media[index].blob_hash {
+            continue;
+        }
+        if retained.is_empty() {
+            retained = retain_sources(&tx, post_id, &media)?;
+            slots = layout(retained.len(), &merges(&tx, post_id)?)?;
+        }
+        let output = register(
+            &tx,
+            store,
+            Rendition {
+                bytes: &bytes,
+                ext: "jpg",
+                thumbnail: &std::fs::read(thumb_path)?,
+            },
+        )?;
+        save_compression(
+            &tx,
+            post_id,
+            slots[index][0],
+            &output.hash,
+            output.width,
+            output.height,
+        )?;
+        saved += 1;
+    }
+    if saved > 0 {
+        rebuild(&tx, post_id, &retained)?;
+    }
+    let total = outputs.len();
+    let message = format!("{saved} compressed · {} skipped", total - saved);
+    jobs::progress(&tx, job_id, total as i64, total as i64)?;
+    jobs::set_state(&tx, job_id, "done", Some(&message))?;
+    tx.commit()?;
+    Ok(message)
 }
 
 pub fn finish_compression(

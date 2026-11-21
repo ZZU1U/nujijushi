@@ -51,11 +51,22 @@ pub fn geometry_error(width: u32, height: u32) -> Option<&'static str> {
 }
 
 pub fn compress(path: &Path, settings: Compression, upload_limit: u64) -> Result<Vec<u8>> {
-    let mut decoder = super::merge::decoder(path, None)?;
+    compress_still(path, settings, upload_limit)?
+        .ok_or_else(|| Error::invalid("Animated images cannot be edited"))
+}
+
+pub(crate) fn compress_still(
+    path: &Path,
+    settings: Compression,
+    upload_limit: u64,
+) -> Result<Option<Vec<u8>>> {
+    let Some(mut decoder) = super::merge::still_decoder(path, None)? else {
+        return Ok(None);
+    };
     let orientation = decoder.orientation()?;
     let mut image = DynamicImage::from_decoder(decoder)?;
     image.apply_orientation(orientation);
-    encode(image, settings, upload_limit)
+    encode(image, settings, upload_limit).map(Some)
 }
 
 // Return scaled content dimensions. A border, added later, brings panoramas

@@ -159,6 +159,8 @@ Use `nujijushi export --share --out <new-directory>` to copy outgoing images and
 
 Open **Compress image** on a gallery item or **Merge output options** when stitching panels. **Use exact JPEG quality** keeps the pixel dimensions and uses the quality you enter. **Fit to Telegram** starts with a quality ceiling of 85 and can lower it or reduce the dimensions to fit the photo limits. It may add white borders to very wide or tall images. JPEG fills transparency with white. **Undo compression** restores the original image or merged PNG.
 
+Use **Compress all images** in **Media tools** to apply the same settings to the gallery in one job. It includes hidden still images and merged panels, and skips video and animated images. Each image has its own **Undo compression** action.
+
 `GET /metrics` provides Prometheus text metrics for build information, posts, channels,
 queue depth, recent jobs, and storage mirrors. It is accessible without a session.
 Bind the UI to loopback or restrict this path at the proxy if the port is reachable from outside.

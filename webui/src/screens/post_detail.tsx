@@ -214,6 +214,14 @@ function Gallery({ data }: { data: PostDetailPage }) {
             {(merge_job && merge_job.active) ? <>
               <p className="hint">A gallery edit is in progress.</p>
             </> : <>
+              {media.some((item) => item.can_compress) && <details className="post-inline-options">
+                <summary>Compress all images</summary>
+                <ActionForm action={text("/posts/", post.id, "/media")} className="post-command">
+                  <TextField type="hidden" name="gallery_version" value={gallery_version} />
+                  <CompressionOptions />
+                  <button type="submit" name="action" value="compress_all" className="small">Compress all</button>
+                </ActionForm>
+              </details>}
               {media.map((m, index) => <Fragment key={listKey(m, index)}>
                 <div className="post-tool-row">
                   <a className="post-image-link" href={text("#media-", (index + 1))}><span>Image {(index + 1)}</span></a>

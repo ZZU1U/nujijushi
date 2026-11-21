@@ -448,7 +448,7 @@ pub async fn create_merge_media_job(
 pub async fn create_compress_media_job(
     state: &AppState,
     post_id: i64,
-    media_id: i64,
+    media_id: Option<i64>,
     version: String,
     settings: crate::media::compress::Compression,
 ) -> Result<Option<i64>> {
