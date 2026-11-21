@@ -151,6 +151,11 @@ specific queued item and bypasses the schedule. Three consecutive failed attempt
 pause the channel. On `run` startup, stale `sending` leases older than 600 s become
 `unknown`. An operator can confirm delivery or explicitly requeue the whole post.
 
+`flush_channel` uses the same per-item publishing path for a snapshot of current
+queued rows. It skips policy vetoes and stops on a delivery error. A staging file
+lock excludes other sends for that channel during the flush. Each item still takes
+its own gallery lease, and each successful send updates the next scheduled slot.
+
 ### The projection (estimated times)
 
 `plan_ahead` (`src/tg/publish.rs`) reads up to 200 queued items, filters their outgoing
@@ -200,6 +205,7 @@ cookie. On revalidation, the ETag identifies the actual WebP bytes.
 
 ```
 POST /api/v1/publish                     → publish a channel or queue item
+POST /api/v1/channels/{id}/flush         → publish the channel's queued posts in succession
 POST /api/v1/storage/drain               → upload pending mirrors
 POST /api/v1/import                      → import one job per target
 POST /api/v1/jobs/retry                  → retry a failed import in a new job

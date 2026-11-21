@@ -349,6 +349,7 @@ async fn poster_for(state: &AppState, video: &Path, hash: &str) -> Result<Option
 pub const KIND_IMPORT: &str = "import";
 pub const KIND_PUBLISH_CHANNEL: &str = "publish_channel";
 pub const KIND_PUBLISH_ITEM: &str = "publish_item";
+pub const KIND_FLUSH_CHANNEL: &str = "flush_channel";
 pub const KIND_STORAGE_DRAIN: &str = "storage_drain";
 pub const KIND_WATCH_CHECK: &str = "watch_check";
 pub const KIND_TAG_SUGGESTIONS: &str = "suggest_tags";
@@ -391,6 +392,16 @@ pub async fn create_publish_channel_job(state: &AppState, channel_id: i64) -> Re
 /// Queue "publish exactly this queue item", unless one is already queued.
 pub async fn create_publish_item_job(state: &AppState, queue_id: i64) -> Result<Option<i64>> {
     enqueue_unique(state, KIND_PUBLISH_ITEM, queue_id.to_string()).await
+}
+
+pub async fn create_flush_channel_job(state: &AppState, channel_id: i64) -> Result<Option<i64>> {
+    enqueue_unique(state, KIND_FLUSH_CHANNEL, channel_id.to_string()).await
+}
+
+async fn flush_job_lock(state: &AppState, channel_id: i64) -> Result<Option<std::fs::File>> {
+    state
+        .try_staging_lock(&format!("flush-job-{channel_id}.lock"))
+        .await
 }
 
 /// Queue a storage drain (uploads whatever mirrors are waiting).
@@ -464,10 +475,13 @@ async fn enqueue_unique(
     state
         .db
         .call(move |conn| {
-            if job_db::find_active(conn, kind, &payload)?.is_some() {
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            if job_db::find_active(&tx, kind, &payload)?.is_some() {
                 return Ok(None);
             }
-            Ok(Some(job_db::create_for(conn, kind, &payload, 0, None)?))
+            let id = job_db::create_for(&tx, kind, &payload, 0, None)?;
+            tx.commit()?;
+            Ok(Some(id))
         })
         .await
 }
@@ -476,7 +490,7 @@ async fn enqueue_unique(
 #[derive(Debug, Clone)]
 pub enum JobReport {
     Import(ImportOutcome),
-    Watch {
+    Batch {
         message: String,
         attempted: i64,
     },
@@ -491,20 +505,38 @@ impl JobReport {
     pub fn message(&self) -> String {
         match self {
             JobReport::Import(outcome) => outcome.summary(),
-            JobReport::Done { message, .. } | JobReport::Watch { message, .. } => message.clone(),
+            JobReport::Done { message, .. } | JobReport::Batch { message, .. } => message.clone(),
         }
     }
 
     pub fn post_ids(&self) -> &[i64] {
         match self {
             JobReport::Import(outcome) => &outcome.post_ids,
-            JobReport::Done { .. } | JobReport::Watch { .. } => &[],
+            JobReport::Done { .. } | JobReport::Batch { .. } => &[],
         }
     }
 }
 
 /// Run a job that is already marked `running`, then record how it went.
 pub async fn run_job(state: &AppState, job: &job_db::Job) -> Result<JobReport> {
+    let _flush_lock = if job.kind == KIND_FLUSH_CHANNEL {
+        let lock = flush_job_lock(state, payload_i64(job)?)
+            .await?
+            .ok_or_else(|| Error::other("The queue flush job is locked by another worker"))?;
+        let id = job.id;
+        if !state
+            .db
+            .call(move |conn| Ok(job_db::get(conn, id)?.is_some_and(|job| job.state == "running")))
+            .await?
+        {
+            return Err(Error::other(
+                "The queue flush job was interrupted before it started",
+            ));
+        }
+        Some(lock)
+    } else {
+        None
+    };
     let _watch_lock = if job.kind == KIND_WATCH_CHECK {
         let watch_id = payload_i64(job)?;
         let lock = watch::lock(state, watch_id)
@@ -533,6 +565,7 @@ pub async fn run_job(state: &AppState, job: &job_db::Job) -> Result<JobReport> {
         KIND_MERGE_MEDIA => "merging images",
         KIND_COMPRESS_MEDIA => "compressing image",
         KIND_PUBLISH_CHANNEL | KIND_PUBLISH_ITEM => "publishing",
+        KIND_FLUSH_CHANNEL => "Flushing queue",
         KIND_STORAGE_DRAIN => "uploading mirrors",
         other => return Err(Error::invalid(format!("unknown job kind: {other}"))),
     };
@@ -564,7 +597,7 @@ pub async fn run_job(state: &AppState, job: &job_db::Job) -> Result<JobReport> {
                     outcome.post_ids.first().copied(),
                 ),
                 JobReport::Done { post_id, .. } => (1, *post_id),
-                JobReport::Watch { attempted, .. } => (*attempted, None),
+                JobReport::Batch { attempted, .. } => (*attempted, None),
             };
             state
                 .db
@@ -629,6 +662,14 @@ async fn run_kind(state: &AppState, job: &job_db::Job) -> Result<JobReport> {
             Ok(JobReport::Done {
                 message: outcome.describe(),
                 post_id: published_post(&outcome),
+            })
+        }
+        KIND_FLUSH_CHANNEL => {
+            let report =
+                crate::tg::publish::flush_channel(state, payload_i64(job)?, Some(job.id)).await?;
+            Ok(JobReport::Batch {
+                message: report.describe(),
+                attempted: report.total,
             })
         }
         KIND_STORAGE_DRAIN => {
@@ -708,7 +749,7 @@ pub async fn import_and_record(state: &AppState, target: &str) -> Result<ImportO
         .ok_or_else(|| crate::error::Error::NotFound(format!("job {job_id}")))?;
     match run_job(state, &job).await? {
         JobReport::Import(outcome) => Ok(outcome),
-        JobReport::Done { .. } | JobReport::Watch { .. } => {
+        JobReport::Done { .. } | JobReport::Batch { .. } => {
             Err(Error::other("expected an import job"))
         }
     }

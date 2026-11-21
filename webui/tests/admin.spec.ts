@@ -483,3 +483,33 @@ test('table headers align with their rows and stick to the table scrollport', as
     Math.abs(cell.getBoundingClientRect().top - cell.closest('[role=region]')!.getBoundingClientRect().top),
   )).toBeLessThan(1)
 })
+
+test('flushing a channel queue asks for confirmation and shows the job result', async ({ page }) => {
+  cli('channel', 'add', 'flush-test', '@flush_test_channel', '--no-verify')
+  const db = new DatabaseSync(join(directory, 'archive', 'nujijushi.sqlite3'), { readOnly: true })
+  const channel = db.prepare("SELECT id FROM channels WHERE alias = 'flush-test'").get()!
+  db.close()
+  const path = `/channels/${channel.id}/queue`
+  await signIn(page, path)
+  const button = page.getByRole('button', { name: 'Flush queue', exact: true })
+  await expect(button).toBeDisabled()
+  cli('queue', 'add', '20', '21', '--channel', 'flush-test')
+  await expect(button).toBeEnabled()
+
+  page.once('dialog', (dialog) => {
+    expect(dialog.message()).toContain('@flush_test_channel')
+    void dialog.dismiss()
+  })
+  await button.click()
+  await expect(page.locator('[data-publish-job]')).toHaveCount(0)
+
+  page.once('dialog', (dialog) => void dialog.accept())
+  const response = page.waitForResponse((reply) => reply.url().endsWith(`/api/v1/channels/${channel.id}/flush`)
+    && reply.request().method() === 'POST')
+  await button.click()
+  expect((await response).status()).toBe(202)
+  const job = page.locator('[data-publish-job]').filter({ hasText: 'Flush queue' })
+  await expect(job).toContainText('Failed', { timeout: 12_000 })
+  await expect(job).toContainText('0 published · 0 skipped')
+  await expect(button).toBeEnabled()
+})

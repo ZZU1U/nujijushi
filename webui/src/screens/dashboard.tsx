@@ -135,7 +135,7 @@ const unconfirmedColumns: Column<UnknownDelivery>[] = [
 
 function DashboardChannels({ channels, jobs }: { channels: DashboardChannel[]; jobs: Job[] }) {
   const publishing = new Set(jobs
-    .filter((job) => job.active && job.kind === 'publish_channel')
+    .filter((job) => job.active && (job.kind === 'publish_channel' || job.kind === 'flush_channel'))
     .map((job) => job.payload))
   const columns: Column<DashboardChannel>[] = [
     {

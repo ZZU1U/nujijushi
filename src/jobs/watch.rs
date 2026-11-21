@@ -91,7 +91,7 @@ pub async fn check(state: &AppState, watch_id: i64, job_id: i64) -> Result<JobRe
         "{added} added · {skipped} skipped (already archived) · {failed} failed · {remaining} pending"
     );
     if errors.is_empty() {
-        Ok(JobReport::Watch {
+        Ok(JobReport::Batch {
             message: summary,
             attempted: total,
         })

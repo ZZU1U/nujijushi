@@ -20,6 +20,7 @@
 | `nujijushi queue add\|ls\|skip\|pin\|reset\|rm` | queue management |
 | `nujijushi preview <channel> [--count N]` | what the next N slots would publish |
 | `nujijushi push --channel C [--dry-run] [--force]` | publish one post now |
+| `nujijushi flush --channel C` | publish the channel’s queued posts in succession, bypassing its schedule |
 | `nujijushi run [--once] [--tick 15] [--no-web] [--no-bot] [--bind ADDR]` | scheduler + UI + bot |
 | `nujijushi serve [--bind ADDR]` | admin UI and its background jobs |
 | `nujijushi bot [--once]` | Telegram command interface only |
@@ -168,6 +169,14 @@ Bind the UI to loopback or restrict this path at the proxy if the port is reacha
 Both ask for confirmation and bypass the schedule, active hours, and daily cap. The channel’s NSFW rules, media grouping, and lease protections still apply. A successful manual send advances the channel’s next slot. The CLI equivalent of **publish next** is `nujijushi push --channel <alias> --force`.
 
 The request queues a background job. Open **jobs** to see progress or retry a failed import. Imports default to two concurrent jobs, configurable with `[import] max_concurrent`. See the [web UI flow](../codebase.md#flow-3--the-web-ui) for job lifecycle and API details.
+
+### Flush a channel queue
+
+Open a channel’s **queue**, choose **Flush queue**, and confirm the Telegram destination. The queue page shows the background job and its progress. From the CLI, run `nujijushi flush --channel <alias>` and wait for the result.
+
+The flush takes the items already queued when it starts and publishes them one after another. Pinned items go first, then higher priority, then oldest first. The flush bypasses the interval, active hours, daily cap, and the channel’s paused or disabled schedule. Channel content policy still applies. Held previews and unconfirmed deliveries require their usual review.
+
+The flush stops on a send failure after the usual Telegram retries. The queue retains the remaining posts. A partial delivery stays unconfirmed. Successful sends advance the next scheduled slot as usual, and posts queued after the flush starts wait for a regular slot or another manual action. If a publish is already in progress when the flush tries to start, let it finish and try again.
 
 ### Watched sources and duplicate artwork
 

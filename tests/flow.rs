@@ -774,6 +774,112 @@ async fn publish_item_sends_that_specific_post() {
 }
 
 #[tokio::test]
+async fn flush_publishes_queued_posts_in_order_and_keeps_policy_and_held_items() {
+    let h = harness(MockTransport::new());
+    let mut channel = h.add_channel(NsfwPolicy::Allow).await;
+    let channel_id = channel.id;
+    channel.next_due_at = Some(chrono::Utc::now() + chrono::Duration::days(3));
+    channel.daily_cap = 1;
+    channel.blocked_tags = "blocked".into();
+    h.state
+        .db
+        .with(|conn| nujijushi::db::channels::update(conn, &channel))
+        .unwrap();
+
+    let mut queue_ids = Vec::new();
+    for (label, priority, tags) in [
+        ("first", 0, &[][..]),
+        ("priority", 50, &[][..]),
+        ("pinned", 0, &[][..]),
+        ("veto", 100, &["blocked"][..]),
+    ] {
+        let post = h.add_post(label, 1, false, tags, Rating::Sfw).await;
+        let id = h
+            .state
+            .db
+            .with(|conn| nujijushi::db::queue::enqueue_new(conn, post, channel_id, priority))
+            .unwrap()
+            .unwrap();
+        queue_ids.push(id);
+    }
+    h.state
+        .db
+        .with(|conn| nujijushi::db::queue::set_pinned(conn, queue_ids[2], true))
+        .unwrap();
+    let held = h.add_post("held", 1, false, &[], Rating::Sfw).await;
+    assert!(matches!(
+        nujijushi::queue::hold_for_preview(&h.state, &channel, held)
+            .await
+            .unwrap(),
+        nujijushi::queue::EnqueueOutcome::Queued(_)
+    ));
+
+    let report = nujijushi::tg::publish::flush_channel(&h.state, channel_id, None)
+        .await
+        .unwrap();
+    assert_eq!(report.describe(), "3 published · 1 skipped");
+    let sends = h.mock.sends();
+    assert_eq!(sends.len(), 3);
+    for (send, label) in sends.iter().zip(["pinned", "priority", "first"]) {
+        assert!(
+            send.media[0]
+                .path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(label)
+        );
+    }
+    let states: Vec<_> = h
+        .queue_state(&channel)
+        .await
+        .into_iter()
+        .map(|(state, _)| state)
+        .collect();
+    assert_eq!(
+        states,
+        [
+            QueueState::Sent,
+            QueueState::Sent,
+            QueueState::Sent,
+            QueueState::Skipped,
+            QueueState::Held
+        ]
+    );
+}
+
+#[tokio::test]
+async fn flush_stops_after_a_partial_delivery_and_never_resends_it() {
+    let h = harness(MockTransport::with_script(vec![
+        None,
+        None,
+        Some(TgError::Permanent("upload rejected".into())),
+    ]));
+    let channel = h.add_channel(NsfwPolicy::Allow).await;
+    for (label, media) in [("first", 1), ("partial", 12), ("last", 1)] {
+        let post = h.add_post(label, media, false, &[], Rating::Sfw).await;
+        h.queue(post, &channel).await;
+    }
+    let error = nujijushi::tg::publish::flush_channel(&h.state, channel.id, None)
+        .await
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("1 published · 0 skipped"));
+    assert_eq!(h.mock.send_count(), 2);
+    let states = h.queue_state(&channel).await;
+    assert_eq!(states[0].0, QueueState::Sent);
+    assert_eq!(states[1].0, QueueState::Unknown);
+    assert_eq!(states[2].0, QueueState::Queued);
+
+    let report = nujijushi::tg::publish::flush_channel(&h.state, channel.id, None)
+        .await
+        .unwrap();
+    assert_eq!(report.describe(), "1 published · 0 skipped");
+    assert_eq!(h.mock.send_count(), 3);
+    assert_eq!(h.queue_state(&channel).await[1].0, QueueState::Unknown);
+}
+
+#[tokio::test]
 async fn publish_item_ignores_the_schedule_but_respects_policy() {
     let harness = harness(MockTransport::new());
     let mut channel = harness.add_channel(NsfwPolicy::Allow).await;

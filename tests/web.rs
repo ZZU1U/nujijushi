@@ -504,6 +504,41 @@ async fn a_second_click_does_not_queue_a_second_publish() {
 }
 
 #[tokio::test]
+async fn channel_flush_is_a_csrf_checked_deduplicated_background_job() {
+    let h = harness();
+    let channel = h.add_channel().await;
+    h.queue_a_post("1", &channel).await;
+    h.queue_a_post("2", &channel).await;
+    let path = format!("/channels/{}/flush", channel.id);
+    let queue_path = format!("/channels/{}/queue/status", channel.id);
+    assert_eq!(
+        h.send(h.post(&path, "csrf=invalid")).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+    let body = format!("csrf={}", h.ws.csrf);
+    let response = h.send(h.post(&path, &body)).await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let id = Harness::json(&response)["job_ids"][0].as_i64().unwrap();
+    assert_eq!(h.send(h.post(&path, &body)).await.status(), StatusCode::OK);
+    assert_eq!(h.jobs().await.len(), 1);
+    assert_eq!(h.mock.send_count(), 0);
+    let queued = h.page(&queue_path).await;
+    assert_eq!(queued["queued"], 2);
+    assert_eq!(queued["jobs"][0]["kind"], "flush_channel");
+    assert_eq!(queued["jobs"][0]["id"], id);
+
+    let worker = nujijushi::jobs::worker::JobWorker::new(h.state.clone());
+    assert_eq!(worker.drain().await.unwrap(), 1);
+    assert_eq!(h.mock.send_count(), 2);
+    let finished = h.page(&queue_path).await;
+    assert_eq!(finished["queued"], 0);
+    assert_eq!(finished["jobs"][0]["state"], "done");
+    assert_eq!(finished["jobs"][0]["progress"], 2);
+    assert_eq!(finished["jobs"][0]["total"], 2);
+    assert_eq!(finished["jobs"][0]["message"], "2 published · 0 skipped");
+}
+
+#[tokio::test]
 async fn a_single_queue_item_can_be_published_as_a_job() {
     let h = harness();
     let channel = h.add_channel().await;

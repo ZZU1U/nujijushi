@@ -75,6 +75,8 @@ For guided web setup, run `nujijushi init`, then `nujijushi run` and open the [a
 
    Open the [admin UI](http://127.0.0.1:8788/) with the token from step 1. Use `nujijushi serve` when you want the UI and its background jobs without scheduled sends.
 
+   To publish a whole queue on demand, use **Flush queue** on the channel’s queue page or `nujijushi flush --channel <alias>`. See the [flush workflow](docs/usage.md#flush-a-channel-queue).
+
    Set `[bot] queue_alerts = true` to DM the Telegram users in `[access] admins` about empty queues and unconfirmed sends. Each recipient must start a private chat with the bot first.
    Set `[bot] guest_reputation = true` to score guest suggestions and show their balance in `/whoami`.
 

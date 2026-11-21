@@ -170,6 +170,12 @@ pub enum Command {
         force: bool,
     },
 
+    /// Publish all queued posts for a channel in order, ignoring the schedule
+    Flush {
+        #[arg(long, value_name = "CHANNEL")]
+        channel: String,
+    },
+
     /// Run the scheduler (and the admin UI) until interrupted
     Run {
         /// One scheduler pass, then exit
@@ -708,6 +714,13 @@ async fn dispatch(state: &AppState, cmd: Command) -> Result<()> {
             dry_run,
             force,
         } => cmd_push(state, channel, dry_run, force).await,
+        Command::Flush { channel } => {
+            let channel = resolve_channel(state, &channel).await?;
+            let result = crate::tg::publish::flush_channel(state, channel.id, None).await;
+            queue_alerts::check(state).await;
+            println!("{}", result?.describe());
+            Ok(())
+        }
         Command::Run {
             once,
             tick,
@@ -2888,6 +2901,14 @@ mod parse_tests {
         let mut full = vec!["nujijushi"];
         full.extend_from_slice(args);
         Args::try_parse_from(full).expect("the CLI definition must accept this")
+    }
+
+    #[test]
+    fn flush_accepts_a_channel() {
+        assert!(matches!(
+            parse(&["flush", "--channel", "art"]).cmd,
+            Command::Flush { channel } if channel == "art"
+        ));
     }
 
     #[test]

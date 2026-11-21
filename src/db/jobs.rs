@@ -148,7 +148,7 @@ pub fn channel_publish_activity(conn: &Connection, channel_id: i64) -> Result<Ve
     let mut stmt = conn.prepare(&format!(
         "WITH channel_jobs AS (
              SELECT {COLUMNS} FROM jobs
-             WHERE (kind = 'publish_channel' AND payload = CAST(?1 AS TEXT))
+             WHERE (kind IN ('publish_channel', 'flush_channel') AND payload = CAST(?1 AS TEXT))
                 OR (kind = 'publish_item' AND EXISTS (
                     SELECT 1 FROM queue q WHERE q.id = CAST(jobs.payload AS INTEGER)
                     AND q.channel_id = ?1 AND jobs.created_at >= q.added_at

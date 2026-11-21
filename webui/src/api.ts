@@ -135,7 +135,11 @@ export interface ChannelEditPage {
 }
 export interface QueueStatus {
   revision: string
-  jobs: { id: number; queue_id: number | null; label: string; state: string; message: string | null }[]
+  queued: number
+  jobs: {
+    id: number; kind: 'publish_channel' | 'publish_item' | 'flush_channel'; queue_id: number | null
+    label: string; state: string; message: string | null; progress: number; total: number
+  }[]
   latest_attempt: { id: number; post_id: number | null; state: string; error: string | null } | null
 }
 export interface QueueRow {

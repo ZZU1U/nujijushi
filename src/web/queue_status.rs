@@ -28,6 +28,7 @@ pub(super) const PAGE_LIMIT: i64 = 200;
 #[derive(Serialize)]
 pub(super) struct QueueActivity {
     pub revision: String,
+    queued: i64,
     jobs: Vec<PublishActivity>,
     latest_attempt: Option<queue::DeliveryAttempt>,
 }
@@ -36,9 +37,12 @@ pub(super) struct QueueActivity {
 struct PublishActivity {
     id: i64,
     queue_id: Option<i64>,
+    kind: String,
     label: &'static str,
     state: String,
     message: Option<String>,
+    progress: i64,
+    total: i64,
 }
 
 pub(super) fn snapshot(conn: &Connection, channel: &Channel) -> Result<QueueActivity> {
@@ -74,17 +78,22 @@ pub(super) fn snapshot(conn: &Connection, channel: &Channel) -> Result<QueueActi
             PublishActivity {
                 id: job.id,
                 queue_id,
+                kind: job.kind,
                 label,
                 state: job.state,
                 message: job.message,
+                progress: job.progress,
+                total: job.total,
             }
         })
         .collect();
     let latest_attempt = queue::latest_attempt(conn, channel.id)?;
+    let queued = queue::count_state(conn, channel.id, QueueState::Queued)?;
     let inputs = serde_json::to_vec(&(
         rows,
         &jobs,
         &latest_attempt,
+        queued,
         &channel.title,
         &channel.tg_id,
         channel.enabled,
@@ -99,6 +108,7 @@ pub(super) fn snapshot(conn: &Connection, channel: &Channel) -> Result<QueueActi
     ))?;
     Ok(QueueActivity {
         revision: blake3::hash(&inputs).to_hex().to_string(),
+        queued,
         jobs,
         latest_attempt,
     })

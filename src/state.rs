@@ -44,14 +44,28 @@ impl AppState {
 
     /// Keep lock files in place so worker processes always share the same inode.
     pub(crate) async fn try_staging_lock(&self, name: &str) -> Result<Option<File>> {
+        self.try_staging_lock_mode(name, false).await
+    }
+
+    pub(crate) async fn try_staging_shared_lock(&self, name: &str) -> Result<Option<File>> {
+        self.try_staging_lock_mode(name, true).await
+    }
+
+    async fn try_staging_lock_mode(&self, name: &str, shared: bool) -> Result<Option<File>> {
         let path = self.cfg.staging_dir().join(name);
         tokio::task::spawn_blocking(move || {
             let file = OpenOptions::new()
+                .read(true)
                 .write(true)
                 .create(true)
                 .truncate(false)
                 .open(path)?;
-            match file.try_lock() {
+            let locked = if shared {
+                file.try_lock_shared()
+            } else {
+                file.try_lock()
+            };
+            match locked {
                 Ok(()) => Ok(Some(file)),
                 Err(TryLockError::WouldBlock) => Ok(None),
                 Err(TryLockError::Error(err)) => Err(err.into()),

@@ -136,7 +136,7 @@ pub fn list(
         }
     }
     sql.push_str(&format!(
-        " ORDER BY pinned DESC, priority DESC, added_at ASC LIMIT {}",
+        " ORDER BY pinned DESC, priority DESC, added_at ASC, id ASC LIMIT {}",
         if limit > 0 { limit } else { -1 }
     ));
     let mut stmt = conn.prepare(&sql)?;
@@ -172,14 +172,7 @@ pub fn entries(
 
 /// Candidates for the next publish, in priority order.
 pub fn candidates(conn: &Connection, channel_id: i64) -> Result<Vec<QueueItem>> {
-    let mut items = list(conn, channel_id, &[QueueState::Queued], 0)?;
-    items.sort_by(|a, b| {
-        b.pinned
-            .cmp(&a.pinned)
-            .then(b.priority.cmp(&a.priority))
-            .then(a.added_at.cmp(&b.added_at))
-    });
-    Ok(items)
+    list(conn, channel_id, &[QueueState::Queued], 0)
 }
 
 /// Queue rows for one post: `(queue_id, channel_id, state)`.
@@ -291,6 +284,20 @@ pub fn acquire_for_target(
         params![token, fmt_ts(Utc::now()), target, id],
     )?;
     Ok(updated > 0)
+}
+
+pub(crate) fn matches_target(
+    conn: &Connection,
+    id: i64,
+    post_id: i64,
+    target: &str,
+) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM queue q JOIN channels c ON c.id = q.channel_id
+         WHERE q.id = ?1 AND q.post_id = ?2 AND c.tg_id = ?3)",
+        params![id, post_id, target],
+        |row| row.get(0),
+    )?)
 }
 
 pub fn mark_partial(

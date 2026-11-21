@@ -7,9 +7,9 @@ use super::audit;
 use super::policy::RetryPolicy;
 use super::transport::{MediaKind, OutgoingMedia, SendOptions, TgError, Transport};
 use crate::db::{queue as queue_db, tags as tag_db};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::media::{MessageShape, plan_messages};
-use crate::model::{Channel, Post, QueueState};
+use crate::model::{Channel, Post, QueueItem, QueueState};
 use crate::nsfw::{self, Decision};
 use crate::queue::scheduler;
 use crate::queue::selection::{Candidate, Selection};
@@ -248,6 +248,10 @@ impl PublishOutcome {
 /// How many queued rows one policy pass looks at before asking for more.
 const CANDIDATE_PAGE: i64 = 60;
 
+fn channel_lock_name(channel_id: i64) -> String {
+    format!("publish-channel-{channel_id}.lock")
+}
+
 /// Publish the next post for a channel (dry run still selects and renders).
 pub async fn publish_channel(
     state: &AppState,
@@ -269,6 +273,20 @@ pub async fn publish_channel(
             channel, now, sent_today,
         )));
     }
+
+    let _send_lock = if dry_run {
+        None
+    } else {
+        let Some(lock) = state
+            .try_staging_shared_lock(&channel_lock_name(channel.id))
+            .await?
+        else {
+            return Ok(PublishOutcome::NotDue(
+                "a queue flush is in progress".into(),
+            ));
+        };
+        Some(lock)
+    };
 
     let rules = state.db.call(|conn| tag_db::TagRules::load(conn)).await?;
     let want = channel.posts_per_slot.max(1) as usize;
@@ -416,6 +434,29 @@ pub async fn publish_item(
             .call(move |conn| crate::db::channels::get(conn, id))
             .await?
     };
+    let _send_lock = if dry_run {
+        None
+    } else {
+        let Some(lock) = state
+            .try_staging_shared_lock(&channel_lock_name(channel.id))
+            .await?
+        else {
+            return Ok(PublishOutcome::NotDue(
+                "a queue flush is in progress".into(),
+            ));
+        };
+        Some(lock)
+    };
+    publish_queued_item(state, &channel, &item, dry_run).await
+}
+
+async fn publish_queued_item(
+    state: &AppState,
+    channel: &Channel,
+    item: &QueueItem,
+    dry_run: bool,
+) -> Result<PublishOutcome> {
+    let queue_id = item.id;
     let (post, revision) = {
         let id = item.post_id;
         state
@@ -423,16 +464,16 @@ pub async fn publish_item(
             .call(move |conn| crate::db::media_merges::publish_snapshot(conn, id))
             .await?
     };
-    if post.state == crate::model::PostState::Rejected {
-        return Ok(PublishOutcome::AllSkipped(vec![format!(
-            "queue #{queue_id}: the post was rejected by the curator"
-        )]));
-    }
-
     let rules = state.db.call(|conn| tag_db::TagRules::load(conn)).await?;
-    let decision = nsfw::evaluate(&post, &channel, &rules);
-    if let nsfw::Verdict::Reject(reason) = &decision.verdict {
-        let reason = reason.clone();
+    let decision = nsfw::evaluate(&post, channel, &rules);
+    let rejection = if post.state == crate::model::PostState::Rejected {
+        Some("post was rejected by the curator".to_string())
+    } else if let nsfw::Verdict::Reject(reason) = &decision.verdict {
+        Some(reason.clone())
+    } else {
+        None
+    };
+    if let Some(reason) = rejection {
         let note = format!("queue #{queue_id}: {reason}");
         state
             .db
@@ -441,8 +482,107 @@ pub async fn publish_item(
         return Ok(PublishOutcome::AllSkipped(vec![note]));
     }
 
-    let plan = build_plan(state, &channel, &post, queue_id, decision)?;
+    let plan = build_plan(state, channel, &post, queue_id, decision)?;
     execute_plan(state, plan, revision, dry_run).await
+}
+
+pub struct FlushReport {
+    pub total: i64,
+    published: i64,
+    skipped: i64,
+}
+
+impl FlushReport {
+    pub fn describe(&self) -> String {
+        format!("{} published · {} skipped", self.published, self.skipped)
+    }
+}
+
+/// Publish the queue as it stands at the start, in queue order, without slot checks.
+pub async fn flush_channel(
+    state: &AppState,
+    channel_id: i64,
+    job_id: Option<i64>,
+) -> Result<FlushReport> {
+    let Some(_lock) = state
+        .try_staging_lock(&channel_lock_name(channel_id))
+        .await?
+    else {
+        return Err(Error::other(
+            "A publish is already in progress for this channel",
+        ));
+    };
+    let (target, items) = state
+        .db
+        .call(move |conn| {
+            let target = crate::db::channels::get(conn, channel_id)?.tg_id;
+            let items = queue_db::candidates(conn, channel_id)?;
+            if let Some(id) = job_id {
+                crate::db::jobs::progress(conn, id, 0, items.len() as i64)?;
+            }
+            Ok((target, items))
+        })
+        .await?;
+    let mut report = FlushReport {
+        total: items.len() as i64,
+        published: 0,
+        skipped: 0,
+    };
+    for queued in items {
+        let id = queued.id;
+        let result = flush_item(state, &target, queued).await;
+        match result {
+            Ok(true) => report.published += 1,
+            Ok(false) => report.skipped += 1,
+            Err(error) => {
+                return Err(Error::other(format!(
+                    "Flush stopped at queue #{id} ({}): {error}",
+                    report.describe()
+                )));
+            }
+        }
+        if let Some(job_id) = job_id {
+            let done = report.published + report.skipped;
+            let total = report.total;
+            state
+                .db
+                .call(move |conn| crate::db::jobs::progress(conn, job_id, done, total))
+                .await?;
+        }
+    }
+    Ok(report)
+}
+
+async fn flush_item(state: &AppState, target: &str, queued: QueueItem) -> Result<bool> {
+    let id = queued.id;
+    let channel_id = queued.channel_id;
+    let (channel, item) = state
+        .db
+        .call(move |conn| {
+            let channel = crate::db::channels::get(conn, channel_id)?;
+            match queue_db::get(conn, id) {
+                Ok(item) => Ok((channel, Some(item))),
+                Err(Error::NotFound(_)) => Ok((channel, None)),
+                Err(error) => Err(error),
+            }
+        })
+        .await?;
+    if channel.tg_id != target {
+        return Err(Error::other("The Telegram destination changed"));
+    }
+    let Some(item) = item.filter(|item| {
+        item.channel_id == channel_id
+            && item.post_id == queued.post_id
+            && item.added_at == queued.added_at
+            && item.state == QueueState::Queued
+    }) else {
+        return Ok(false);
+    };
+    match publish_queued_item(state, &channel, &item, false).await? {
+        PublishOutcome::Published { .. } => Ok(true),
+        PublishOutcome::AllSkipped(_) => Ok(false),
+        outcome => Err(Error::other(outcome.describe())),
+    }
 }
 
 /// Lease a queue item, send its planned messages and record the outcome.
@@ -469,7 +609,7 @@ async fn execute_plan(
     .await?
     else {
         return Ok(PublishOutcome::NotDue(
-            "item is no longer queued or its outgoing gallery changed".to_string(),
+            "the queue item, Telegram destination, or outgoing gallery changed".to_string(),
         ));
     };
 
@@ -791,6 +931,42 @@ pub fn slot_label(slot: chrono::DateTime<Utc>, now: chrono::DateTime<Utc>) -> St
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    #[tokio::test]
+    async fn a_flush_and_a_regular_publish_cannot_share_a_channel_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = crate::config::Config::load_from_home(dir.path().to_path_buf()).unwrap();
+        let state = AppState::open(config.clone(), None).unwrap();
+        let other = AppState::open(config, None).unwrap();
+        let mut channel = Channel::new("Test", "@test_channel");
+        channel.id = state
+            .db
+            .with(|conn| crate::db::channels::insert(conn, &channel))
+            .unwrap();
+        let lock_name = channel_lock_name(channel.id);
+
+        let publish = state
+            .try_staging_shared_lock(&lock_name)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(flush_channel(&other, channel.id, None).await,
+            Err(Error::Other(message)) if message.contains("already in progress")));
+        drop(publish);
+
+        let flush = state.try_staging_lock(&lock_name).await.unwrap().unwrap();
+        assert!(
+            matches!(publish_channel(&other, &channel, false, true).await.unwrap(),
+            PublishOutcome::NotDue(message) if message.contains("flush is in progress"))
+        );
+        drop(flush);
+        assert!(matches!(
+            publish_channel(&other, &channel, false, true)
+                .await
+                .unwrap(),
+            PublishOutcome::EmptyQueue
+        ));
+    }
 
     #[test]
     fn slot_labels_are_relative_to_today() {
