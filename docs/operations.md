@@ -29,10 +29,14 @@ Export cookies for the site in Netscape format (e.g. with the "Get cookies.txt"
 browser extension) into `$NUJIJUSHI_HOME/cookies/`:
 
 ```
-cookies/pixiv.txt      cookies/twitter.txt     cookies/danbooru.txt
-cookies/gelbooru.txt   cookies/artstation.txt  cookies/deviantart.txt
-cookies/bluesky.txt    cookies/tumblr.txt      (or <host>.txt)
+cookies/pixiv.txt      cookies/fanbox.txt      cookies/twitter.txt
+cookies/danbooru.txt   cookies/gelbooru.txt    cookies/artstation.txt
+cookies/deviantart.txt cookies/bluesky.txt     cookies/tumblr.txt
+(or <host>.txt)
 ```
+
+For `fanbox.cc` and creator subdomains, export the cookies from your signed-in
+FANBOX session to `cookies/fanbox.txt`. The export must include `FANBOXSESSID`.
 
 `nujijushi doctor` reports each cookie file's age — refresh anything older than ~30 days.
 Public content (many sites) imports fine without cookies.

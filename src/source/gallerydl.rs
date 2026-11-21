@@ -41,6 +41,8 @@ pub fn cookie_site(host: &str) -> Option<&'static str> {
     let host = host.to_ascii_lowercase();
     let site = if host.ends_with("pixiv.net") || host.ends_with("pximg.net") {
         "pixiv"
+    } else if host == "fanbox.cc" || host.ends_with(".fanbox.cc") {
+        "fanbox"
     } else if host.ends_with("twitter.com") || host.ends_with("x.com") {
         "twitter"
     } else if host.ends_with("danbooru.donmai.us") {
@@ -306,10 +308,32 @@ mod tests {
     #[test]
     fn cookie_names() {
         assert_eq!(cookie_site("www.pixiv.net"), Some("pixiv"));
+        assert_eq!(cookie_site("fanbox.cc"), Some("fanbox"));
+        assert_eq!(cookie_site("notfanbox.cc"), None);
         assert_eq!(cookie_site("x.com"), Some("twitter"));
         assert_eq!(cookie_site("twitter.com"), Some("twitter"));
         assert_eq!(cookie_site("danbooru.donmai.us"), Some("danbooru"));
         assert_eq!(cookie_site("example.com"), None);
+    }
+
+    #[test]
+    fn creator_posts_use_fanbox_cookies() {
+        let home = tempfile::tempdir().unwrap();
+        let cfg = Config::load_from_home(home.path().to_path_buf()).unwrap();
+        let cookies = cfg.cookies_dir();
+        std::fs::create_dir(&cookies).unwrap();
+        std::fs::write(cookies.join("pixiv.txt"), "").unwrap();
+        let source = GalleryDlSource::new(cfg);
+        let target = "https://creator.fanbox.cc/posts/123";
+        assert!(source.cookie_file(target).is_none());
+
+        let host_file = cookies.join("creator.fanbox.cc.txt");
+        std::fs::write(&host_file, "").unwrap();
+        assert_eq!(source.cookie_file(target), Some(host_file));
+
+        let fanbox = cookies.join("fanbox.txt");
+        std::fs::write(&fanbox, "").unwrap();
+        assert_eq!(source.cookie_file(target), Some(fanbox));
     }
 
     #[test]
