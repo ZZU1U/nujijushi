@@ -247,8 +247,8 @@
     </details>
 
     {% if can_suggest_tags or tag_review %}
-    <details class="panel post-disclosure"{% if open_section == 'suggestions' or tag_review.job.active %} open{% endif %}>
-      <summary>Tag suggestions{% if tag_review.suggestions %} <span class="hint">{{ tag_review.suggestions | length }} to review</span>{% endif %}</summary>
+    <details class="panel post-disclosure"{% if open_section == 'suggestions' or (tag_review and tag_review.job.active) %} open{% endif %}>
+      <summary>Tag suggestions{% if tag_review and tag_review.suggestions %} <span class="hint">{{ tag_review.suggestions | length }} to review</span>{% endif %}</summary>
       <div class="post-disclosure-body">
         {% if tag_review %}
         <div {% if tag_review.job.active %}data-job="{{ tag_review.job.id }}" data-state="{{ tag_review.job.state }}" data-tag-review="{{ post.id }}"{% endif %}>

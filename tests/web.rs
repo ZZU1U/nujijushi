@@ -1723,6 +1723,26 @@ fn tagger_harness(port: u16) -> Harness {
     h
 }
 
+#[tokio::test]
+async fn post_detail_renders_with_tag_suggestions_enabled_before_the_first_job() {
+    let mut h = harness();
+    Arc::make_mut(&mut h.state.cfg).tag_suggestions.enabled = true;
+    h.ws = WebState::new(h.state.clone()).unwrap();
+    let post_id = h.post_only("suggestions-not-started").await;
+    for query in ["", "?section=suggestions"] {
+        let response = h
+            .send(h.get(&format!("/api/v1/posts/{post_id}{query}")))
+            .await;
+        let status = response.status();
+        let body = body_text(response).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let view: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let html = view["html"].as_str().unwrap();
+        assert!(html.contains("Suggest tags"), "{html}");
+        assert!(!html.contains("Suggest again"), "{html}");
+    }
+}
+
 fn foidfinder_reply(
     strong: &[(&str, f32)],
     guesses: &[(&str, f32)],
