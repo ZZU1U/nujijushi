@@ -191,6 +191,26 @@ for (const width of [390, 1440]) test('every admin screen fits a ' + width + 'px
   }
 })
 
+test('wide dashboard job columns scroll inside the table on mobile', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.route('**/api/v1/dashboard', async (route) => {
+    const response = await route.fetch()
+    const dashboard = await response.json()
+    const jobs = [{
+      id: 123, kind: 'watch', kind_label: 'Import artwork discovered by a watched source',
+      state: 'done', message: 'Imported artwork', payload: null, post_id: null,
+      age: '1m', created: '2026-01-01', progress: 1, total: 1, percent: 100,
+      active: false, retryable: false, track: false,
+    }]
+    await route.fulfill({ response, json: { ...dashboard, jobs } })
+  })
+  await signIn(page, '/')
+  const recentJobs = page.getByRole('region', { name: 'Recent jobs' })
+  await expect(recentJobs.getByRole('columnheader', { name: 'result' })).toBeAttached()
+  await expect.poll(() => recentJobs.evaluate((table) => table.scrollWidth - table.clientWidth)).toBeGreaterThan(0)
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBe(390)
+})
+
 test('JPEG quality only appears in exact mode and remembers the draft', async ({ page }) => {
   await signIn(page, '/posts/2')
   await page.getByText('Media tools', { exact: true }).click()

@@ -9,6 +9,7 @@ body.login-body .admin-shell { display: grid; justify-items: center; }
 .action-feedback:not([hidden]) { display: block; color: var(--muted); margin: .35rem 0; overflow-wrap: anywhere; }
 .action-feedback.action-error, .admin-notice.action-error { color: var(--err); }
 .table-scroll {
+  position: relative; /* Keep visually hidden column labels inside the scroll area. */
   max-inline-size: 100%;
   max-block-size: 65vh;
   overflow: auto;
