@@ -24,6 +24,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0017_tagger_character_names.sql"),
     include_str!("../../migrations/0018_post_text_edits.sql"),
     include_str!("../../migrations/0019_gallery_visibility.sql"),
+    include_str!("../../migrations/0020_gallery_order.sql"),
 ];
 
 pub fn schema_version(conn: &Connection) -> Result<i64> {
@@ -95,6 +96,7 @@ mod tests {
             "jobs",
             "media",
             "media_compressions",
+            "media_gallery_order",
             "media_hidden_sources",
             "media_merge_members",
             "media_merge_sources",

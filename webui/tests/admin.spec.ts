@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
@@ -58,6 +58,8 @@ test.beforeAll(async () => {
     NUJIJUSHI_BOT: '0', NUJIJUSHI_ADMINS: '', NUJIJUSHI_PROXY: '' }
   cli = (...args: string[]) => execFileSync(binary, args, { env, stdio: ['ignore', 'pipe', 'pipe'] })
   cli('init')
+  const config = join(env.NUJIJUSHI_HOME, 'config.toml')
+  await writeFile(config, (await readFile(config, 'utf8')).replace('guest_reputation = false', 'guest_reputation = true'))
   cli('channel', 'add', 'art', '@local_test_channel', '--no-verify')
   const valid = await gallery('Merge panels', [12, 12, 12, 12])
   const invalid = await gallery('Different heights', [12, 16])
@@ -92,6 +94,24 @@ function countDocuments(page: Page) {
   let documents = 0
   page.on('request', (request) => { if (request.resourceType() === 'document') documents++ })
   return () => documents
+}
+
+async function imageOptions(page: Page, position: number) {
+  const name = 'Image ' + position + ' options'
+  const button = page.getByRole('button', { name, exact: true })
+  if (await button.getAttribute('aria-expanded') === 'false') await button.click()
+  return page.getByRole('group', { name, exact: true })
+}
+
+async function browserPost(name: string, heights: number[]) {
+  const artwork = await gallery(name, heights)
+  cli('import', artwork)
+  const db = new DatabaseSync(join(directory, 'archive', 'nujijushi.sqlite3'))
+  try {
+    return Number(db.prepare('SELECT id FROM posts WHERE title = ?').get(name)?.id)
+  } finally {
+    db.close()
+  }
 }
 
 test('queue on page 3 and return from a post in the same browser document', async ({ page }) => {
@@ -136,13 +156,10 @@ test('thumbnail preference keeps full-resolution media unloaded in the gallery',
 test('a failed merge keeps selection and its error beside the controls', async ({ page }) => {
   const documents = countDocuments(page)
   await signIn(page, '/posts/2')
-  await page.getByText('Media tools', { exact: true }).click()
-  await page.getByLabel('Include image 1 in merge').check()
-  await page.getByLabel('Include image 2 in merge').check()
+  for (const index of [1, 2]) await (await imageOptions(page, index)).getByLabel('Include image ' + index + ' in merge').check()
   await page.getByRole('button', { name: 'Merge side by side' }).click()
   await expect(page.locator('#merge-gallery .action-error')).toContainText('same height')
-  await expect(page.getByLabel('Include image 1 in merge')).toBeChecked()
-  await expect(page.getByLabel('Include image 2 in merge')).toBeChecked()
+  for (const index of [1, 2]) await expect((await imageOptions(page, index)).getByLabel('Include image ' + index + ' in merge')).toBeChecked()
   await expect(page).toHaveURL(base + '/posts/2')
   expect(documents()).toBe(1)
 })
@@ -150,18 +167,16 @@ test('a failed merge keeps selection and its error beside the controls', async (
 test('merge 1, 2, and 4, then hide the remaining image in place', async ({ page }) => {
   const documents = countDocuments(page)
   await signIn(page, '/posts/1')
-  await page.getByText('Edit post details', { exact: true }).click()
   const draft = page.getByLabel('Title', { exact: true })
-  await draft.fill('An unsaved title')
-  await page.getByText('Media tools', { exact: true }).click()
-  for (const index of [1, 2, 4]) await page.getByLabel('Include image ' + index + ' in merge').check()
+  await draft.fill('Merge panels, edited')
+  for (const index of [1, 2, 4]) await (await imageOptions(page, index)).getByLabel('Include image ' + index + ' in merge').check()
   await page.getByRole('button', { name: 'Merge side by side' }).click()
   await expect(page.locator('.media-grid figure')).toHaveCount(2)
-  await expect(draft).toHaveValue('An unsaved title')
+  await expect(draft).toHaveValue('Merge panels, edited')
   await expect(page.locator('.media-grid figure').first()).toContainText('48×12')
-  await page.locator('.media-grid figure').nth(1).getByRole('button', { name: 'Hide image' }).click()
+  await (await imageOptions(page, 2)).getByRole('button', { name: 'Hide from outgoing copies' }).click()
   await expect(page.locator('.media-grid figure').nth(1)).toContainText('Hidden from outgoing copies')
-  await page.locator('.media-grid figure').nth(1).getByRole('button', { name: 'Restore image' }).click()
+  await (await imageOptions(page, 2)).getByRole('button', { name: 'Restore', exact: true }).click()
   await expect(page.locator('.media-grid figure').nth(1)).not.toContainText('Hidden from outgoing copies')
   expect(documents()).toBe(1)
 })
@@ -200,9 +215,9 @@ test('wide dashboard job columns scroll inside the table on mobile', async ({ pa
 
 test('JPEG quality only appears in exact mode and remembers the draft', async ({ page }) => {
   await signIn(page, '/posts/2')
-  await page.getByText('Media tools', { exact: true }).click()
-  const compress = page.locator('details').filter({ has: page.locator(':scope > summary', { hasText: /^Compress image$/ }) }).first()
-  await compress.locator('summary').click()
+  const options = await imageOptions(page, 1)
+  const compress = options.locator('details')
+  await options.getByText('Compress image', { exact: true }).click()
   const mode = compress.getByLabel('Mode')
   const quality = compress.getByLabel('JPEG quality', { exact: true })
   await expect(mode).toHaveValue('fit')
@@ -216,6 +231,7 @@ test('JPEG quality only appears in exact mode and remembers the draft', async ({
   await mode.selectOption('quality')
   await expect(quality).toHaveValue('67')
 
+  await options.getByLabel('Include image 1 in merge').check()
   await page.getByText('Merge output options', { exact: true }).click()
   const merge = page.locator('#merge-gallery')
   await expect(merge.getByLabel('Output')).toHaveValue('lossless')
@@ -538,11 +554,13 @@ test('compress all updates the post and Settings cleans a confirmed sent gallery
   const id = String(item.id)
   try {
     await signIn(page, '/posts/' + id)
-    await page.getByText('Media tools', { exact: true }).click()
+    await (await imageOptions(page, 2)).getByRole('button', { name: 'Move earlier' }).click()
+    await expect(page.getByText('All changes saved')).toBeVisible()
     await page.getByText('Compress all images', { exact: true }).click()
     await page.getByRole('button', { name: 'Compress all', exact: true }).click()
     await expect(page.getByText('2 compressed · 0 skipped', { exact: true })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Undo compression' })).toHaveCount(2)
+    await expect(page.locator('button[value="undo_compression"]')).toHaveCount(2)
+    const sources = await page.locator('.media-grid img').evaluateAll((images) => images.map((image) => image.getAttribute('src')))
 
     cli('queue', 'add', id, '--channel', 'art')
     db.prepare('UPDATE posts SET imported_at = ? WHERE id = ?')
@@ -562,9 +580,212 @@ test('compress all updates the post and Settings cleans a confirmed sent gallery
     await expect(cleanup.getByText(/1 post\(s\) cleaned.*0 file\(s\) to retry/)).toBeVisible()
 
     await page.goto(base + '/posts/' + id)
-    await page.getByText('Media tools', { exact: true }).click()
-    await expect(page.getByRole('button', { name: 'Undo compression' })).toHaveCount(0)
     await expect(page.locator('.media-grid figcaption').first()).toContainText('jpg')
+    await expect(page.locator('button[value="undo_compression"]')).toHaveCount(0)
+    expect(await page.locator('.media-grid img').evaluateAll((images) => images.map((image) => image.getAttribute('src')))).toEqual(sources)
+  } finally {
+    db.close()
+  }
+})
+
+test('artwork reorders by drag and by keyboard from the corner menu', async ({ page }) => {
+  const id = await browserPost('Reorder example', [12, 14, 16])
+  const path = '/posts/' + id
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await signIn(page, path)
+  const tiles = page.locator('.media-grid figure')
+  await expect(tiles).toHaveCount(3)
+  const ids = () => tiles.evaluateAll((items) => items.map((item) => item.getAttribute('data-media-id')))
+  const [first, second, third] = await ids()
+  await tiles.first().locator('img').dragTo(tiles.nth(2).locator('img'))
+  await expect.poll(ids).toEqual([second, third, first])
+  await expect(page.getByText('All changes saved', { exact: true })).toBeVisible()
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  const options = await imageOptions(page, 2)
+  const earlier = options.getByRole('button', { name: 'Move earlier' })
+  await earlier.focus()
+  await earlier.press('Enter')
+  await expect.poll(ids).toEqual([third, second, first])
+  await expect(page.getByText('All changes saved', { exact: true })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await page.reload()
+  await expect.poll(ids).toEqual([third, second, first])
+  const popover = await imageOptions(page, 1)
+  await expect(popover).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('button', { name: 'Image 1 options' })).toBeFocused()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390)
+})
+
+test('a conflicting artwork order reloads the gallery and lets the editor move again', async ({ page }) => {
+  const id = await browserPost('Ordering conflict', [12, 14, 16])
+  const endpoint = base + '/api/v1/posts/' + id
+  await signIn(page, '/posts/' + id)
+  const current = await (await page.request.get(endpoint)).json()
+  const { csrf } = await (await page.request.get(base + '/api/v1/session')).json()
+  const [first, second, third] = current.media.map((item: { id: number }) => item.id)
+  const otherOrder = [third, first, second]
+  await page.route(endpoint + '/media', async (route) => {
+    const concurrent = await page.request.post(endpoint + '/media', {
+      form: { csrf, action: 'reorder', gallery_version: current.gallery_version, media_ids: otherOrder.join(',') },
+    })
+    expect(concurrent.ok()).toBeTruthy()
+    await route.continue()
+  }, { times: 1 })
+  await (await imageOptions(page, 2)).getByRole('button', { name: 'Move earlier' }).click()
+  await expect(page.getByRole('alert')).toContainText('The gallery changed')
+  const ids = () => page.locator('.media-grid figure').evaluateAll((items) => items.map((item) => Number(item.getAttribute('data-media-id'))))
+  await expect.poll(ids).toEqual(otherOrder)
+  await (await imageOptions(page, 1)).getByRole('button', { name: 'Move later' }).click()
+  await expect(page.getByText('All changes saved', { exact: true })).toBeVisible()
+  await expect.poll(ids).toEqual([first, third, second])
+})
+
+test('post autosave retains a failed draft, refreshes multiline captions, and flushes before leaving', async ({ page }) => {
+  const id = await browserPost('Autosave example', [15])
+  const path = '/posts/' + id
+  await signIn(page, path)
+  const title = page.getByLabel('Title', { exact: true })
+  let rejected = false
+  const writes: URLSearchParams[] = []
+  await page.route(base + '/api/v1' + path, async (route) => {
+    if (route.request().method() === 'POST') {
+      writes.push(new URLSearchParams(route.request().postData() ?? ''))
+      if (!rejected) {
+        rejected = true
+        return route.fulfill({ status: 500, json: { error: 'The save failed' } })
+      }
+    }
+    await route.continue()
+  })
+  await title.fill('Autosave with retry')
+  await title.press('Tab')
+  await expect(page.getByRole('alert')).toContainText('The save failed')
+  await expect(title).toHaveValue('Autosave with retry')
+  const back = page.getByRole('link', { name: '← Posts' })
+  await back.click()
+  await expect(page).toHaveURL(base + path)
+  await page.getByRole('button', { name: 'Retry', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Autosave with retry' })).toBeVisible()
+  expect(writes.slice(0, 2).map((write) => [...write.keys()].sort())).toEqual([['csrf', 'title'], ['csrf', 'title']])
+
+  const description = 'First line\n\nThird line with <b>literal angle brackets</b>'
+  await page.getByLabel('Description').fill(description)
+  const caption = page.locator('.post-captions .caption').first()
+  await expect.poll(() => caption.textContent()).toContain(description)
+  await expect(caption).toHaveCSS('white-space', 'pre-wrap')
+  await expect(caption.locator('b')).toHaveCount(0)
+
+  await page.route(base + '/api/v1' + path + '/queue', async (route) => {
+    const saved = await (await page.request.get(base + '/api/v1' + path)).json()
+    expect(saved.post.notes).toBe('Flushed before queueing')
+    await route.continue()
+  }, { times: 1 })
+  await page.getByLabel('Notes', { exact: true }).fill('Flushed before queueing')
+  await page.getByRole('button', { name: 'Add to queue', exact: true }).click()
+  await expect(page.locator('.admin-notice')).toContainText(/queued/)
+
+  await page.getByLabel('Notes', { exact: true }).fill('Flushed on navigation')
+  await back.click()
+  await expect(page).toHaveURL(base + '/posts')
+  const saved = await (await page.request.get(base + '/api/v1' + path)).json()
+  expect(saved.post.notes).toBe('Flushed on navigation')
+})
+
+test('tags use one chip per canonical tag with source undo and inline suggestions', async ({ page }) => {
+  const id = await browserPost('Tag chips example', [13])
+  const path = '/posts/' + id
+  const endpoint = base + '/api/v1' + path
+  const db = new DatabaseSync(join(directory, 'archive', 'nujijushi.sqlite3'))
+  try {
+    db.exec("PRAGMA busy_timeout=5000; INSERT INTO tag_aliases (from_tag, to_tag) VALUES ('browser_alias', 'browser_canonical');")
+    const source = db.prepare("INSERT INTO tags (name) VALUES ('browser_source')").run().lastInsertRowid
+    db.prepare("INSERT INTO post_tags (post_id, tag_id, origin) VALUES (?, ?, 'source'), (?, ?, 'manual')").run(id, source, id, source)
+  } finally {
+    db.close()
+  }
+  let suggested = false
+  let reviewed = false
+  await page.route(endpoint, async (route) => {
+    const response = await route.fetch()
+    const data = await response.json()
+    data.can_suggest_tags = true
+    if (suggested) data.tag_review = {
+      job: { id: 10000, state: 'done', total: 1, progress: 1, message: '1 tag suggested', active: false },
+      stale: false,
+      suggestions: reviewed ? [] : [{ id: 1, kind: 'character', tag: 'suggested_name', evidence: 'Local catalog', images: [1] }],
+    }
+    await route.fulfill({ response, json: data })
+  })
+  await page.route(endpoint + '/tag-suggestions', async (route) => {
+    const fields = new URLSearchParams(route.request().postData() ?? '')
+    if (fields.get('action') === 'generate') suggested = true
+    else {
+      expect(fields.get('action')).toBe('accept')
+      expect(fields.get('tag')).toBe('edited_suggestion')
+      const added = await page.request.post(endpoint + '/tags', {
+        form: { csrf: fields.get('csrf')!, action: 'add', tags: fields.get('tag')! },
+      })
+      expect(added.ok()).toBeTruthy()
+      reviewed = true
+    }
+    await route.fulfill({ json: { message: 'Suggestion updated', job_ids: [] } })
+  })
+  await signIn(page, path)
+  const tags = page.locator('#post-tags')
+  const input = tags.getByRole('textbox', { name: 'Add a tag' })
+  await tags.getByRole('button', { name: 'Remove tag browser_source' }).click()
+  await expect(tags.getByRole('link', { name: '#browser_source' })).toHaveCount(0)
+  await tags.getByText(/Removed source tags/).click()
+  await tags.getByRole('button', { name: 'Restore source tag browser_source' }).click()
+  await expect(tags.getByRole('link', { name: '#browser_source' })).toHaveCount(1)
+
+  await input.fill('#Browser Alias')
+  await input.press('Enter')
+  await expect(tags.getByRole('link', { name: '#browser_canonical' })).toBeVisible()
+  await input.fill('Comma tag,')
+  await expect(tags.getByRole('link', { name: '#comma_tag' })).toBeVisible()
+  await input.evaluate((element) => {
+    const clipboardData = new DataTransfer()
+    clipboardData.setData('text/plain', 'Paste One\nPaste Two, paste one')
+    element.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }))
+  })
+  await expect(tags.getByRole('link', { name: '#paste_one' })).toHaveCount(1)
+  await expect(tags.getByRole('link', { name: '#paste_two' })).toBeVisible()
+
+  await tags.getByRole('button', { name: 'Suggest tags', exact: true }).click()
+  await expect(tags.getByRole('link', { name: 'Image 1' })).toHaveAttribute('href', '#media-1')
+  await tags.getByRole('textbox', { name: 'Edit suggested character tag suggested_name' }).fill('edited_suggestion')
+  await tags.getByRole('button', { name: 'Accept tag' }).click()
+  await expect(tags.getByRole('link', { name: '#edited_suggestion' })).toBeVisible()
+  await expect(tags.getByRole('button', { name: 'Accept tag' })).toHaveCount(0)
+})
+
+test('guest reputation requires an explicit verdict and uses the entered points', async ({ page }) => {
+  const id = await browserPost('Guest review example', [17])
+  const db = new DatabaseSync(join(directory, 'archive', 'nujijushi.sqlite3'))
+  try {
+    db.exec('PRAGMA busy_timeout=5000')
+    db.prepare("UPDATE posts SET state = 'new' WHERE id = ?").run(id)
+    const subject = db.prepare('INSERT INTO reputation_subjects (reviewable) VALUES (1)').run().lastInsertRowid
+    db.prepare('INSERT INTO reputation_posts (post_id, subject_id) VALUES (?, ?)').run(id, subject)
+    db.prepare('INSERT INTO reputation_suggestions (subject_id, user_id, review_member) VALUES (?, 99, 1)').run(subject)
+    const balance = () => db.prepare('SELECT balance FROM reputation_events WHERE user_id = 99 ORDER BY id DESC LIMIT 1').get()?.balance
+    await signIn(page, '/posts/' + id)
+    const points = page.getByRole('spinbutton', { name: /Approval points/ })
+    await points.fill('17')
+    await page.getByLabel('Notes', { exact: true }).fill('Reviewed the source')
+    await expect(page.getByText('All changes saved', { exact: true })).toBeVisible()
+    expect(balance()).toBeUndefined()
+    const state = page.getByRole('combobox', { name: 'State', exact: true })
+    await expect(state).toHaveValue('new')
+    await page.getByRole('button', { name: 'Approve', exact: true }).click()
+    await expect(state).toHaveValue('approved')
+    expect(balance()).toBe(1700)
+    await page.getByRole('button', { name: 'Reject', exact: true }).click()
+    await expect(state).toHaveValue('rejected')
+    expect(balance()).toBeLessThan(1700)
   } finally {
     db.close()
   }

@@ -170,7 +170,8 @@ pub struct PostEdit {
 pub struct PostTagAction {
     #[serde(default)]
     pub csrf: String,
-    pub tag_id: i64,
+    pub tag_id: Option<i64>,
+    pub tags: Option<String>,
     pub action: String,
 }
 

@@ -27,6 +27,8 @@ export function CompressionOptions({ merge = false }: { merge?: boolean }) {
 type FormProps = Omit<FormHTMLAttributes<HTMLFormElement>, 'action' | 'onSubmit'> & {
   action: string
   fields?: ActionFields
+  beforeSubmit?: () => Promise<boolean>
+  onBusyChange?: (busy: boolean) => void
   onSaved?: (result: ActionResult) => void
   onJobDone?: () => void
   feedback?: 'inline' | 'notice'
@@ -47,7 +49,7 @@ function formValues(form: HTMLFormElement, fields: ActionFields | undefined, but
 }
 
 export function ActionForm({
-  action: endpoint, fields, onSaved, onJobDone, feedback = 'notice', children, ...props
+  action: endpoint, fields, beforeSubmit, onBusyChange, onSaved, onJobDone, feedback = 'notice', children, ...props
 }: FormProps) {
   const page = useActions()
   const pending = useRef(false)
@@ -65,13 +67,17 @@ export function ActionForm({
     const button = (event.nativeEvent as SubmitEvent).submitter
     const confirm = button?.dataset.confirm || form.dataset.confirm
     if (confirm && !window.confirm(confirm)) return
-    const values = formValues(form, fields, button)
     pending.current = true
     setBusy(true)
+    onBusyChange?.(true)
     setFailed(false)
-    setMessage(form.hasAttribute('data-verify-destination') && values.get('tg_id')?.trim() !== form.dataset.verifyDestination
-      ? 'Checking Telegram…' : 'Working…')
+    setMessage('')
     try {
+      if (beforeSubmit && !await beforeSubmit()) return
+      if (!form.isConnected || path.current !== submittedAt) return
+      const values = formValues(form, fields, button)
+      setMessage(form.hasAttribute('data-verify-destination') && values.get('tg_id')?.trim() !== form.dataset.verifyDestination
+        ? 'Checking Telegram…' : 'Working…')
       const result = await action(endpoint, Object.fromEntries(values), page.csrf)
       if (!form.isConnected || path.current !== submittedAt) return
       if (endpoint === '/logout') {
@@ -81,8 +87,8 @@ export function ActionForm({
       onSaved?.(result)
       if (result.location && result.location.split('?')[0] !== page.path.split('?')[0]) {
         page.navigate(result.location)
-      } else if (feedback !== 'inline' || result.job_ids.length === 0) {
-        page.refresh()
+      } else {
+        await page.refresh()
       }
       setMessage(feedback === 'inline' ? result.message : '')
       if (feedback === 'notice') page.notice(result.message)
@@ -90,7 +96,7 @@ export function ActionForm({
       const failure = jobs.find((job) => job?.state === 'failed')
       if (form.isConnected && path.current === submittedAt && jobs.some((job) => job?.state === 'done')) {
         onJobDone?.()
-        page.refresh()
+        await page.refresh()
       }
       if (form.isConnected && failure && feedback === 'inline') {
         setFailed(true)
@@ -106,6 +112,7 @@ export function ActionForm({
     } finally {
       pending.current = false
       setBusy(false)
+      onBusyChange?.(false)
     }
   }
 

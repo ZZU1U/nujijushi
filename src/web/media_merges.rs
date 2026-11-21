@@ -28,6 +28,19 @@ pub(super) async fn action(
         .to_owned();
     let mut job_id = None;
     let message = match forms::field(&form, "action") {
+        Some("reorder") => {
+            let ids = forms::field(&form, "media_ids")
+                .ok_or_else(|| Error::invalid("Missing artwork order"))?
+                .split(',')
+                .map(str::parse::<i64>)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| Error::invalid("Invalid artwork order"))?;
+            ws.app
+                .db
+                .call(move |conn| crate::db::media_merges::reorder(conn, post_id, &ids, &version))
+                .await?;
+            "Artwork order saved"
+        }
         Some("merge") => {
             let compression = match forms::field(&form, "output") {
                 None | Some("lossless") => None,

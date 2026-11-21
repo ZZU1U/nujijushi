@@ -100,6 +100,7 @@ fn save_sources(conn: &Connection, post_id: i64, sources: &[NewMedia]) -> Result
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )?;
     for (ordinal, item) in sources.iter().enumerate() {
+        posts::ensure_media_blobs(conn, item)?;
         statement.execute(params![
             post_id,
             ordinal as i64,
@@ -116,27 +117,31 @@ fn save_sources(conn: &Connection, post_id: i64, sources: &[NewMedia]) -> Result
     Ok(())
 }
 
-// A merged image takes the position of its first selected source image.
-fn layout(source_count: usize, merges: &[Merge]) -> Result<Vec<Vec<usize>>> {
-    let mut starts = HashMap::new();
-    let mut covered = HashSet::new();
+// A merged image takes the position of its first member in the preferred order.
+// Membership retains canonical source ordinals for merge and compression records.
+fn layout(
+    conn: &Connection,
+    post_id: i64,
+    sources: &[NewMedia],
+    merges: &[Merge],
+) -> Result<Vec<Vec<usize>>> {
+    let mut covered = vec![None; sources.len()];
     for merge in merges {
-        let [first, _, ..] = merge.members.as_slice() else {
+        let [_, _, ..] = merge.members.as_slice() else {
             return Err(Error::other("invalid gallery merge membership"));
         };
         for &member in &merge.members {
-            if member >= source_count || !covered.insert(member) {
+            if member >= sources.len() || covered[member].replace(&merge.members).is_some() {
                 return Err(Error::other("overlapping or missing gallery merge member"));
             }
         }
-        starts.insert(*first, &merge.members);
     }
-    Ok((0..source_count)
-        .filter_map(|index| {
-            starts
-                .get(&index)
-                .map(|members| (*members).clone())
-                .or_else(|| (!covered.contains(&index)).then(|| vec![index]))
+    let mut shown = HashSet::new();
+    Ok(ordered_sources(sources, &preferred_order(conn, post_id)?)
+        .into_iter()
+        .filter_map(|index| match covered[index] {
+            Some(members) => shown.insert(members[0]).then(|| members.clone()),
+            None => Some(vec![index]),
         })
         .collect())
 }
@@ -169,16 +174,18 @@ fn compressions(conn: &Connection, post_id: i64) -> Result<HashMap<usize, NewMed
 
 fn rebuild(conn: &Connection, post_id: i64, sources: &[NewMedia]) -> Result<()> {
     let merges = merges(conn, post_id)?;
-    let slots = layout(sources.len(), &merges)?;
-    let mut merged = merges.into_iter().peekable();
+    let slots = layout(conn, post_id, sources, &merges)?;
+    let mut merged: HashMap<_, _> = merges
+        .into_iter()
+        .map(|merge| (merge.members[0], merge.item))
+        .collect();
     let mut compressed = compressions(conn, post_id)?;
     let mut active = Vec::with_capacity(slots.len());
     for members in slots {
         let start = members[0];
-        let mut item = match merged.next_if(|merge| merge.members[0] == start) {
-            Some(merge) => merge.item,
-            None => sources[start].clone(),
-        };
+        let mut item = merged
+            .remove(&start)
+            .unwrap_or_else(|| sources[start].clone());
         item.sensitive = members.iter().any(|&index| sources[index].sensitive);
         if let Some(mut replacement) = compressed.remove(&start) {
             replacement.sensitive = item.sensitive;
@@ -201,7 +208,8 @@ fn rebuild(conn: &Connection, post_id: i64, sources: &[NewMedia]) -> Result<()> 
 /// Apply fresh source media and report when it replaces local edits.
 pub(super) fn refresh(conn: &Connection, post_id: i64, imported: &[NewMedia]) -> Result<bool> {
     let previous = sources(conn, post_id)?;
-    if previous.is_empty() {
+    let order = preferred_order(conn, post_id)?;
+    if previous.is_empty() && order.is_empty() {
         posts::replace_media(conn, post_id, imported)?;
         update_mirror_visibility(conn, post_id)?;
         return Ok(false);
@@ -260,13 +268,16 @@ pub(super) fn refresh(conn: &Connection, post_id: i64, imported: &[NewMedia]) ->
         "DELETE FROM media_compressions WHERE post_id = ?1",
         [post_id],
     )?;
-    if kept_merges.is_empty() && kept_compressions.is_empty() {
+    if kept_merges.is_empty() && kept_compressions.is_empty() && order.is_empty() {
         conn.execute(
             "DELETE FROM media_merge_sources WHERE post_id = ?1",
             [post_id],
         )?;
         posts::replace_media(conn, post_id, imported)?;
     } else {
+        if !order.is_empty() {
+            save_order(conn, post_id, imported, ordered_sources(imported, &order))?;
+        }
         save_sources(conn, post_id, imported)?;
         for merge in kept_merges {
             save_merge(
@@ -339,7 +350,7 @@ pub fn undo_ids(conn: &Connection, post_id: i64) -> Result<Vec<(usize, i64)>> {
     if merges.is_empty() {
         return Ok(Vec::new());
     }
-    let slots = layout(sources(conn, post_id)?.len(), &merges)?;
+    let slots = layout(conn, post_id, &sources(conn, post_id)?, &merges)?;
     Ok(slots
         .iter()
         .enumerate()
@@ -364,6 +375,51 @@ fn source_keys(sources: &[NewMedia]) -> Vec<(&str, i64)> {
             (key, occurrence)
         })
         .collect()
+}
+
+fn preferred_order(conn: &Connection, post_id: i64) -> Result<Vec<(String, i64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT blob_hash, occurrence FROM media_gallery_order WHERE post_id = ?1 ORDER BY position",
+    )?;
+    Ok(stmt
+        .query_map([post_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+fn ordered_sources(sources: &[NewMedia], order: &[(String, i64)]) -> Vec<usize> {
+    let mut ordinals: Vec<_> = (0..sources.len()).collect();
+    if !order.is_empty() {
+        let ranks: HashMap<_, _> = order
+            .iter()
+            .enumerate()
+            .map(|(rank, (hash, occurrence))| ((hash.as_str(), *occurrence), rank))
+            .collect();
+        let keys = source_keys(sources);
+        ordinals.sort_by_key(|&index| ranks.get(&keys[index]).copied().unwrap_or(usize::MAX));
+    }
+    ordinals
+}
+
+fn save_order(
+    conn: &Connection,
+    post_id: i64,
+    sources: &[NewMedia],
+    order: impl IntoIterator<Item = usize>,
+) -> Result<()> {
+    conn.execute(
+        "DELETE FROM media_gallery_order WHERE post_id = ?1",
+        [post_id],
+    )?;
+    let keys = source_keys(sources);
+    let mut stmt = conn.prepare(
+        "INSERT INTO media_gallery_order (post_id, position, blob_hash, occurrence)
+         VALUES (?1, ?2, ?3, ?4)",
+    )?;
+    for (position, index) in order.into_iter().enumerate() {
+        let (hash, occurrence) = keys[index];
+        stmt.execute(params![post_id, position as i64, hash, occurrence])?;
+    }
+    Ok(())
 }
 
 fn gallery_sources(conn: &Connection, post_id: i64, media: &[MediaItem]) -> Result<Vec<NewMedia>> {
@@ -393,7 +449,7 @@ pub fn hidden_positions(
         .iter()
         .map(|(hash, count)| (hash.as_str(), *count))
         .collect();
-    let slots = layout(original.len(), &merges(conn, post_id)?)?;
+    let slots = layout(conn, post_id, &original, &merges(conn, post_id)?)?;
     Ok(slots
         .iter()
         .enumerate()
@@ -437,6 +493,61 @@ pub fn current_revision(conn: &Connection, post_id: i64) -> Result<String> {
     edit_version(conn, post_id, &posts::media(conn, post_id)?)
 }
 
+pub fn reorder(conn: &mut Connection, post_id: i64, ids: &[i64], version: &str) -> Result<()> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let media = posts::get(&tx, post_id)?.media;
+    verify_gallery(&tx, post_id, &media, version)?;
+    let positions: HashMap<_, _> = media
+        .iter()
+        .enumerate()
+        .map(|(index, item)| (item.id, index))
+        .collect();
+    if ids.len() != positions.len()
+        || ids.iter().copied().collect::<HashSet<_>>().len() != ids.len()
+        || !ids.iter().all(|id| positions.contains_key(id))
+    {
+        return Err(Error::invalid(
+            "Send every current artwork item exactly once",
+        ));
+    }
+    if latest_job(&tx, post_id)?.is_some_and(|job| job.is_active()) {
+        return Err(Error::invalid("Wait for the gallery edit to finish"));
+    }
+    if super::queue::for_post(&tx, post_id)?
+        .iter()
+        .any(|(_, _, state)| *state == crate::model::QueueState::Sending)
+    {
+        return Err(Error::invalid(
+            "Wait for the current send to finish before reordering the gallery",
+        ));
+    }
+    if media.iter().map(|item| item.id).eq(ids.iter().copied()) {
+        return Ok(());
+    }
+    let original = retain_sources(&tx, post_id, &media)?;
+    let mut slots = layout(&tx, post_id, &original, &merges(&tx, post_id)?)?;
+    if slots.len() != media.len() {
+        return Err(Error::other("invalid gallery edit layout"));
+    }
+    let mut ranks = vec![0; original.len()];
+    for (rank, index) in ordered_sources(&original, &preferred_order(&tx, post_id)?)
+        .into_iter()
+        .enumerate()
+    {
+        ranks[index] = rank;
+    }
+    for members in &mut slots {
+        members.sort_by_key(|&index| ranks[index]);
+    }
+    let order = ids
+        .iter()
+        .flat_map(|id| slots[positions[id]].iter().copied());
+    save_order(&tx, post_id, &original, order)?;
+    posts::reorder_media(&tx, post_id, ids)?;
+    tx.commit()?;
+    Ok(())
+}
+
 pub fn set_hidden(
     conn: &mut Connection,
     post_id: i64,
@@ -460,7 +571,7 @@ pub fn set_hidden(
     }
     let index = media_position(&media, media_id)?;
     let original = gallery_sources(&tx, post_id, &media)?;
-    let slots = layout(original.len(), &merges(&tx, post_id)?)?;
+    let slots = layout(&tx, post_id, &original, &merges(&tx, post_id)?)?;
     let keys = source_keys(&original);
     let members = slots
         .get(index)
@@ -510,7 +621,8 @@ fn restore(conn: &Connection, post_id: i64) -> Result<()> {
     conn.execute(
         "DELETE FROM media_merge_sources WHERE post_id = ?1
          AND NOT EXISTS (SELECT 1 FROM media_merges WHERE post_id = ?1)
-         AND NOT EXISTS (SELECT 1 FROM media_compressions WHERE post_id = ?1)",
+         AND NOT EXISTS (SELECT 1 FROM media_compressions WHERE post_id = ?1)
+         AND NOT EXISTS (SELECT 1 FROM media_gallery_order WHERE post_id = ?1)",
         [post_id],
     )?;
     Ok(())
@@ -529,7 +641,7 @@ pub fn compressed_positions(conn: &Connection, post_id: i64) -> Result<Vec<usize
         return Ok(Vec::new());
     }
     let sources = sources(conn, post_id)?;
-    let slots = layout(sources.len(), &merges(conn, post_id)?)?;
+    let slots = layout(conn, post_id, &sources, &merges(conn, post_id)?)?;
     Ok(slots
         .iter()
         .enumerate()
@@ -545,11 +657,12 @@ fn media_position(media: &[MediaItem], media_id: i64) -> Result<usize> {
 }
 
 fn source_position(
-    source_count: usize,
-    merges: &[Merge],
+    conn: &Connection,
+    post_id: i64,
+    sources: &[NewMedia],
     visible_position: usize,
 ) -> Result<usize> {
-    layout(source_count, merges)?
+    layout(conn, post_id, sources, &merges(conn, post_id)?)?
         .get(visible_position)
         .map(|members| members[0])
         .ok_or_else(|| Error::other("invalid gallery edit layout"))
@@ -615,15 +728,18 @@ fn compression_sources(
 ) -> Result<Vec<NewMedia>> {
     let original = gallery_sources(conn, post_id, media)?;
     let merges = merges(conn, post_id)?;
-    let slots = layout(original.len(), &merges)?;
-    let mut merges = merges.into_iter().peekable();
+    let slots = layout(conn, post_id, &original, &merges)?;
+    let mut merged: HashMap<_, _> = merges
+        .into_iter()
+        .map(|merge| (merge.members[0], merge.item))
+        .collect();
     Ok(slots
         .into_iter()
         .map(|slot| {
             let first = slot[0];
-            merges
-                .next_if(|merge| merge.members[0] == first)
-                .map_or_else(|| original[first].clone(), |merge| merge.item)
+            merged
+                .remove(&first)
+                .unwrap_or_else(|| original[first].clone())
         })
         .collect())
 }
@@ -683,7 +799,7 @@ pub(crate) fn finish_batch_compression(
         }
         if retained.is_empty() {
             retained = retain_sources(&tx, post_id, &media)?;
-            slots = layout(retained.len(), &merges(&tx, post_id)?)?;
+            slots = layout(&tx, post_id, &retained, &merges(&tx, post_id)?)?;
         }
         let output = register(
             &tx,
@@ -736,7 +852,7 @@ pub fn finish_compression(
         return Ok(message);
     }
     let sources = retain_sources(&tx, intent.post_id, &media)?;
-    let first = source_position(sources.len(), &merges(&tx, intent.post_id)?, index)?;
+    let first = source_position(&tx, intent.post_id, &sources, index)?;
     let output = register(&tx, store, rendition)?;
     save_compression(
         &tx,
@@ -775,7 +891,7 @@ pub fn undo_compression(
     if sources.is_empty() {
         return Err(missing());
     }
-    let first = source_position(sources.len(), &merges(&tx, post_id)?, index)? as i64;
+    let first = source_position(&tx, post_id, &sources, index)? as i64;
     if delete_compressions(&tx, post_id, first, first)? == 0 {
         return Err(missing());
     }
@@ -804,6 +920,9 @@ pub(super) fn compact(conn: &Connection, post_id: i64) -> Result<()> {
     let hidden = hidden_positions(conn, post_id, &media)?;
     let items: Vec<_> = media.iter().map(NewMedia::from).collect();
     let keys = source_keys(&items);
+    if !preferred_order(conn, post_id)?.is_empty() {
+        save_order(conn, post_id, &items, 0..items.len())?;
+    }
     conn.execute(
         "DELETE FROM media_hidden_sources WHERE post_id = ?1",
         [post_id],
@@ -985,7 +1104,7 @@ pub fn finish(
     verify_gallery(&tx, intent.post_id, &media, intent.version)?;
     let positions = intent_positions(&tx, &media, intent)?;
     let sources = retain_sources(&tx, post_id, &media)?;
-    let slots = layout(sources.len(), &merges(&tx, post_id)?)?;
+    let slots = layout(&tx, post_id, &sources, &merges(&tx, post_id)?)?;
     if slots.len() != media.len() {
         return Err(Error::other("invalid gallery merge layout"));
     }

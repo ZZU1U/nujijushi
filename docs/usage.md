@@ -148,19 +148,21 @@ Click a post card to select it, or click its post number to open it. **Select al
 
 The post gallery loads full-resolution images as you scroll. Click an image to open the file on its own in a new tab. To keep full-resolution media unloaded during browsing, enable **Settings → Use thumbnails for media previews**; previews then use the archive thumbnails for images and videos, while clicking still opens the original. This preference is stored in the browser, not in the archive.
 
-On the post page, open **Edit post details** to change the title or description. A blank field clears its text. Edits survive re-imports, and future captions use the saved text wherever the channel template includes it.
+The **Post details** panel autosaves edits. Clear the title or description to remove its text. Edits survive re-imports, and future captions use the saved text wherever the channel template includes it.
 
-The post detail page shows whether a tag came from the source, a manual edit, or both. Removing a source tag keeps it hidden on that post after re-import. Undo restores it if the most recent import still supplied it. Edit manual tags in the separate **Save tags** form.
+Add tags with **Add a tag** or remove them with the × on each chip. Hover over a chip to see whether it came from the source, a manual edit, or both. Removing a source tag keeps it hidden after re-import. Restore it under **Removed source tags** if the most recent import still supplied it.
 
-Select any still images of the same height and choose **Merge side by side** to replace them with a single PNG. The gallery updates in place when the job finishes. **Undo merge** restores its source panels. Re-imports keep a merge when every selected source image is still present, and keep visibility settings for matching images. The active gallery is used by new previews and deliveries. Hide individual images from future sends, mirrors, and shareable exports with **Hide from outgoing copies**. Use **Restore** to include them again. Completed mirrors and Telegram messages keep the gallery that was sent.
+Drag artwork tiles to reorder them, or choose **Move earlier** and **Move later** from a tile's corner menu. The saved order applies to future Telegram sends, mirrors, and share exports. Use the same menu to hide or restore an item in outgoing copies.
+
+Use **Include in merge** in the corner menu to select still images of the same height, then choose **Merge side by side** above the gallery. **Undo merge** restores the source panels. Re-imports preserve the order and visibility of matching images and retain a merge when every source panel is still present.
 
 Channel caption presets include **Default**, **Compact**, and **Detailed**. Compact shows title, credit, tags, and source attribution in fewer lines. Detailed includes an available description and artist handle. Both use the channel’s tag and attribution settings.
 
 Use `nujijushi export --share --out <new-directory>` to copy outgoing images and their `post.json` files. The regular backup retains all original images and the visibility settings.
 
-Open **Compress image** on a gallery item or **Merge output options** when stitching panels. **Use exact JPEG quality** keeps the pixel dimensions and uses the quality you enter. **Fit to Telegram** starts with a quality ceiling of 85 and can lower it or reduce the dimensions to fit the photo limits. It may add white borders to very wide or tall images. JPEG fills transparency with white. **Undo compression** restores the original image or merged PNG.
+Open **Compress image** in a tile's corner menu or **Merge output options** when stitching panels. **Use exact JPEG quality** keeps the pixel dimensions and uses the quality you enter. **Fit to Telegram** starts with a quality ceiling of 85 and can lower it or reduce the dimensions to fit the photo limits. It may add white borders to very wide or tall images. JPEG fills transparency with white. **Undo compression** restores the original image or merged PNG.
 
-Use **Compress all images** in **Media tools** to apply the same settings to the gallery in one job. It includes hidden still images and merged panels, and skips video and animated images. Each image has its own **Undo compression** action.
+Use **Compress all images** in the **Artwork** header to apply the same settings to the gallery in one job. It includes hidden still images and merged panels, and skips video and animated images. Each compressed image has its own **Undo compression** action.
 
 `GET /metrics` provides Prometheus text metrics for build information, posts, channels,
 queue depth, recent jobs, and storage mirrors. It is accessible without a session.

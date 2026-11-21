@@ -5,7 +5,8 @@ export interface PageActions {
   csrf: string
   path: string
   navigate: (path: string, replace?: boolean) => void
-  refresh: () => void
+  refresh: () => void | Promise<void>
+  guardNavigation: (guard: () => Promise<boolean>) => () => void
   expire: () => void
   notice: (message: string) => void
   follow: (id: number) => Promise<Job | undefined>

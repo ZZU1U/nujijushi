@@ -118,7 +118,7 @@ function Screen({ path, grids }: { path: string; grids: Map<string, GridSnapshot
   if (route === '/') return <Resource<DashboardPage> path={endpoint} initialJobs={(data) => data.jobs}>{(data) => <Dashboard data={data} />}</Resource>
   if (route === '/posts') return <Posts path={route + url.search} snapshots={grids} />
   if (/^\/posts\/\d+\/delete$/.test(route)) return <Resource<PostDeletePage> path={endpoint}>{(data) => <PostDelete data={data} />}</Resource>
-  if (/^\/posts\/\d+$/.test(route)) return <Resource<PostDetailPage> path={endpoint} initialJobs={(data) => [data.merge_job, data.tag_review?.job ?? null]}>{(data) => <PostDetail data={data} />}</Resource>
+  if (/^\/posts\/\d+$/.test(route)) return <Resource<PostDetailPage> path={endpoint} initialJobs={(data) => [data.merge_job, data.tag_review?.job ?? null]}>{(data, reload) => <PostDetail data={data} reload={reload} />}</Resource>
   if (route === '/channels') return <Resource<ChannelsPage> path={endpoint}>{(data) => <Channels data={data} />}</Resource>
   if (/^\/channels\/\d+\/edit$/.test(route)) return <Resource<ChannelEditPage> path={endpoint}>{(data) => <ChannelEdit data={data} />}</Resource>
   if (/^\/channels\/\d+\/queue$/.test(route)) return <Resource<QueuePage> path={endpoint}>{(data) => <LiveQueue data={data} />}</Resource>
@@ -144,6 +144,12 @@ function Workspace({ session, signOut }: { session: Session; signOut: (path: str
   const polling = useRef(new Map<number, { task: Promise<Job | undefined>; controller: AbortController }>())
   const reported = useRef(new Set<number>())
   const mounted = useRef(true)
+  const navigationGuard = useRef<(() => Promise<boolean>) | null>(null)
+  const navigationAttempt = useRef(0)
+  const guardNavigation = useCallback((guard: () => Promise<boolean>) => {
+    navigationGuard.current = guard
+    return () => { if (navigationGuard.current === guard) navigationGuard.current = null }
+  }, [])
   const expire = useCallback(() => signOut(pathRef.current), [signOut])
 
   const follow = useCallback((id: number) => {
@@ -189,11 +195,15 @@ function Workspace({ session, signOut }: { session: Session; signOut: (path: str
     setNotice('')
   }
 
-  function navigate(next: string, replace = false) {
+  async function navigate(next: string, replace = false) {
     const url = new URL(next, location.origin)
     if (url.origin !== location.origin || !localRoute.test(url.pathname)) return
     next = url.pathname + url.search + url.hash
     if (next === '/posts' && /^\/posts\/\d+\/delete/.test(pathRef.current)) next = gridBack.current
+    if (next === pathRef.current) return
+    const attempt = ++navigationAttempt.current
+    if (navigationGuard.current && !await navigationGuard.current()) return
+    if (!mounted.current || attempt !== navigationAttempt.current) return
     change(next)
     if (next !== current()) {
       if (replace) history.replaceState(null, '', next)
@@ -212,7 +222,15 @@ function Workspace({ session, signOut }: { session: Session; signOut: (path: str
   useEffect(() => {
     mounted.current = true
     history.scrollRestoration = 'manual'
-    const pop = () => change(current())
+    const pop = async () => {
+      const next = current()
+      if (next === pathRef.current) return
+      const attempt = ++navigationAttempt.current
+      const allowed = !navigationGuard.current || await navigationGuard.current()
+      if (!mounted.current || attempt !== navigationAttempt.current) return
+      if (allowed) change(next)
+      else history.pushState(null, '', pathRef.current)
+    }
     window.addEventListener('popstate', pop)
     return () => {
       mounted.current = false
@@ -236,13 +254,15 @@ function Workspace({ session, signOut }: { session: Session; signOut: (path: str
   const tab = pathname === '/duplicates' ? '/posts' : '/' + (pathname.split('/')[1] ?? '')
   useEffect(() => { document.title = 'nujijushi · ' + (tab === '/' ? 'dashboard' : tab.slice(1)) }, [tab])
   return <Actions.Provider value={{
-    csrf: session.csrf, path, navigate, refresh: () => { }, expire, notice: setNotice, follow, jobs, onReady,
+    csrf: session.csrf, path, navigate, refresh: () => { }, guardNavigation, expire, notice: setNotice, follow, jobs, onReady,
   }}>
     <div className="admin-shell" onClick={click}>
       <header className="top">
         <a className="brand" href="/"><span className="dot" />nujijushi</a>
         <nav>{nav.map(([href, label]) => <a key={href} href={href} className={tab === href ? 'active' : ''}>{label}</a>)}</nav>
-        <ActionForm action="/logout" className="inline"><button className="link" type="submit">log out</button></ActionForm>
+        <ActionForm action="/logout" className="inline" beforeSubmit={async () => await navigationGuard.current?.() ?? true}>
+          <button className="link" type="submit">log out</button>
+        </ActionForm>
       </header>
       {notice && <div className="admin-notice" role="status">{notice}<button className="small ghost" onClick={() => setNotice('')}>Dismiss</button></div>}
       <main key={pathname}><Screen path={path} grids={grids.current} /></main>

@@ -1311,9 +1311,28 @@ async fn post_tag_action(
     Form(form): Form<PostTagAction>,
 ) -> WebResult<Response> {
     check_csrf(&ws, &form.csrf)?;
-    let tag_id = form.tag_id;
+    let tag_id = || form.tag_id.ok_or_else(|| Error::invalid("Missing tag ID"));
     let message = match form.action.as_str() {
+        "add" => {
+            let tags = form.tags.ok_or_else(|| Error::invalid("Enter a tag"))?;
+            ws.app
+                .db
+                .call(move |conn| tag_db::add_post_tags(conn, id, &tags))
+                .await?;
+            "tags added"
+        }
+        "remove_tag" => {
+            let tag_id = tag_id()?;
+            ws.app
+                .db
+                .call(move |conn| {
+                    crate::db::transaction(conn, |conn| tag_db::remove_by_id(conn, id, tag_id))
+                })
+                .await?;
+            "tag removed"
+        }
         "remove" => {
+            let tag_id = tag_id()?;
             let changed = ws
                 .app
                 .db
@@ -1326,6 +1345,7 @@ async fn post_tag_action(
             }
         }
         "undo" => {
+            let tag_id = tag_id()?;
             let changed = ws
                 .app
                 .db

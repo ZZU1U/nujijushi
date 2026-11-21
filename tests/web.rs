@@ -431,6 +431,62 @@ async fn post_detail_shows_tag_provenance_and_can_undo_a_source_removal() {
 }
 
 #[tokio::test]
+async fn post_tag_edits_are_targeted_and_remove_both_origins() {
+    use nujijushi::db::tags;
+
+    let h = harness();
+    let post = h.post_only("targeted-tags").await;
+    let original = h
+        .state
+        .db
+        .with(|conn| {
+            tags::set_alias(conn, "hero", "main_character")?;
+            tags::add_manual(conn, post, &["original".into(), "favorite".into()])?;
+            Ok(tags::provenance(conn, post)?[0].id)
+        })
+        .unwrap();
+    let path = format!("/posts/{post}");
+    let endpoint = format!("{path}/tags");
+    let csrf = &h.ws.csrf;
+    let add = format!("csrf={csrf}&action=add&tags=%23Hero%2C+Night+Sky%0Ahero");
+    assert_eq!(
+        h.send(h.post(&endpoint, &add)).await.status(),
+        StatusCode::OK
+    );
+    let page = h.page(&path).await;
+    assert_eq!(
+        page["post"]["manual_tags"],
+        "original, favorite, main_character, night_sky"
+    );
+    let invalid = format!("csrf={csrf}&action=add&tags=keep_out%2C{}", "a".repeat(49));
+    assert_eq!(
+        h.send(h.post(&endpoint, &invalid)).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+    let remove = format!("csrf={csrf}&action=remove_tag&tag_id={original}");
+    assert_eq!(
+        h.send(h.post(&endpoint, &remove)).await.status(),
+        StatusCode::OK
+    );
+    let removed = h.page(&path).await;
+    assert_eq!(removed["post"]["tag_removals"][0]["id"], original);
+    assert_eq!(
+        removed["post"]["manual_tags"],
+        "favorite, main_character, night_sky"
+    );
+    assert_eq!(removed["post"]["tags"].as_array().unwrap().len(), 3);
+    let undo = format!("csrf={csrf}&action=undo&tag_id={original}");
+    assert_eq!(
+        h.send(h.post(&endpoint, &undo)).await.status(),
+        StatusCode::OK
+    );
+    let restored = h.page(&path).await;
+    let tag = row(&restored["post"]["tags"], original);
+    assert_eq!(tag["source"], true);
+    assert_eq!(tag["manual"], false);
+}
+
+#[tokio::test]
 async fn publish_returns_at_once_and_the_worker_sends_it() {
     let h = harness();
     let channel = h.add_channel().await;
@@ -1500,6 +1556,322 @@ fn archive_test_images(state: &AppState, source: &str, id: &str, files: &[(&[u8]
         .with(|conn| nujijushi::db::posts::upsert(conn, &post, &items))
         .unwrap()
         .0
+}
+
+fn reorder_form(csrf: &str, version: &str, order: &[i64]) -> String {
+    let ids = order
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("csrf={csrf}&action=reorder&gallery_version={version}&media_ids={ids}")
+}
+
+#[tokio::test]
+async fn gallery_reorder_keeps_duplicate_identity_and_drives_publishing_and_exports() {
+    use nujijushi::db::{media_merges as gallery, posts, queue};
+    use nujijushi::media::compress::Compression;
+    use nujijushi::tg::publish::{PublishOutcome, publish_item};
+
+    let h = harness();
+    let channel = h.add_channel().await;
+    let [a, b, c, new] = [30, 60, 90, 120].map(|shade| {
+        encode_image(
+            image::RgbImage::from_pixel(8, 8, image::Rgb([shade, 0, 0])),
+            image::ImageFormat::Png,
+        )
+    });
+    let id = archive_test_images(
+        &h.state,
+        "local",
+        "ordered",
+        &[(&a, "png"), (&b, "png"), (&a, "png"), (&c, "png")],
+    );
+    let load = || h.state.db.with(|conn| posts::get(conn, id)).unwrap();
+    let version = || {
+        h.state
+            .db
+            .with(|conn| gallery::current_revision(conn, id))
+            .unwrap()
+    };
+    let original = load();
+    let [a_id, b_id, second_a, c_id] = std::array::from_fn(|index| original.media[index].id);
+    let initial_version = version();
+    h.state
+        .db
+        .with(|conn| gallery::set_hidden(conn, id, second_a, &initial_version, true))
+        .unwrap();
+    let revision = version();
+    let order = [second_a, c_id, b_id, a_id];
+    let endpoint = format!("/posts/{id}/media");
+    let csrf = &h.ws.csrf;
+    let form = reorder_form(csrf, &revision, &order);
+    for rejected in [
+        reorder_form("bad", &revision, &order),
+        reorder_form(csrf, &revision, &[a_id, a_id, b_id, c_id]),
+        reorder_form(csrf, &revision, &[a_id, b_id, c_id]),
+        reorder_form(csrf, &revision, &[a_id, b_id, c_id, -1]),
+        format!("csrf={csrf}&action=reorder&gallery_version={revision}&media_ids=artwork"),
+    ] {
+        assert_eq!(
+            h.send(h.post(&endpoint, &rejected)).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let job = h
+        .state
+        .db
+        .with(|conn| {
+            Ok(gallery::enqueue_compression(
+                conn,
+                id,
+                None,
+                &revision,
+                Compression::new(85, false)?,
+            )?
+            .unwrap())
+        })
+        .unwrap();
+    let active = h.send(h.post(&endpoint, &form)).await;
+    assert_eq!(active.status(), StatusCode::BAD_REQUEST);
+    assert!(body_text(active).await.contains("gallery edit to finish"));
+    let queue_id = h
+        .state
+        .db
+        .with(|conn| {
+            job_db::set_state(conn, job, "failed", None)?;
+            Ok(queue::enqueue_new(conn, id, channel.id, 0)?.unwrap())
+        })
+        .unwrap();
+    assert!(
+        nujijushi::queue::lease::acquire_for_gallery(
+            &h.state,
+            queue_id,
+            channel.tg_id.clone(),
+            id,
+            revision.clone()
+        )
+        .await
+        .unwrap()
+        .is_some()
+    );
+    let sending = h.send(h.post(&endpoint, &form)).await;
+    assert_eq!(sending.status(), StatusCode::BAD_REQUEST);
+    assert!(body_text(sending).await.contains("current send"));
+    h.state
+        .db
+        .with(|conn| queue::release(conn, queue_id))
+        .unwrap();
+    assert_eq!(version(), revision);
+
+    assert_eq!(
+        h.send(h.post(&endpoint, &form)).await.status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        load()
+            .media
+            .into_iter()
+            .map(|item| item.id)
+            .collect::<Vec<_>>(),
+        order
+    );
+    assert_eq!(
+        h.page(&format!("/posts/{id}")).await["media"][0]["hidden"],
+        true
+    );
+    assert_eq!(
+        h.send(h.post(&endpoint, &form)).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert!(
+        nujijushi::queue::lease::acquire_for_gallery(
+            &h.state,
+            queue_id,
+            channel.tg_id.clone(),
+            id,
+            revision
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+
+    let export = tempfile::tempdir().unwrap();
+    let share = export.path().join("share");
+    let mirror = export.path().join("mirror");
+    let mut mirrored = h.state.clone();
+    Arc::make_mut(&mut mirrored.cfg).storage.local = Some(nujijushi::config::LocalSinkConfig {
+        path: mirror.clone(),
+    });
+    assert_eq!(
+        nujijushi::storage::share(&h.state, &share).await.unwrap(),
+        (1, 0)
+    );
+    assert_eq!(
+        nujijushi::storage::enqueue(&mirrored, &[id]).await.unwrap(),
+        1
+    );
+    assert_eq!(nujijushi::storage::drain(&mirrored, 10).await.unwrap(), 1);
+    let outgoing = h
+        .state
+        .db
+        .with(|conn| gallery::outgoing_post(conn, id))
+        .unwrap();
+    let planned = nujijushi::storage::plan(&h.state, &outgoing).unwrap();
+    for root in [&share, &mirror] {
+        assert!(!root.join(&planned.dir).join("00.png").exists());
+        for (position, bytes) in [&c, &b, &a].into_iter().enumerate() {
+            assert_eq!(
+                &std::fs::read(
+                    root.join(&planned.dir)
+                        .join(format!("{:02}.png", position + 1))
+                )
+                .unwrap(),
+                bytes
+            );
+        }
+    }
+    assert!(matches!(
+        publish_item(&h.state, queue_id, false).await.unwrap(),
+        PublishOutcome::Published { .. }
+    ));
+    let sent = h.mock.sends();
+    let sent_paths: Vec<_> = sent
+        .iter()
+        .flat_map(|send| send.media.iter().map(|item| &item.path))
+        .collect();
+    assert_eq!(
+        sent_paths,
+        planned
+            .files
+            .iter()
+            .map(|file| &file.path)
+            .collect::<Vec<_>>()
+    );
+
+    assert_eq!(
+        archive_test_images(
+            &h.state,
+            "local",
+            "ordered",
+            &[
+                (&b, "png"),
+                (&a, "png"),
+                (&new, "png"),
+                (&a, "png"),
+                (&c, "png")
+            ]
+        ),
+        id
+    );
+    let reimported = load();
+    assert_eq!(
+        reimported.media[..4]
+            .iter()
+            .map(|item| item.blob_hash.as_str())
+            .collect::<Vec<_>>(),
+        [2, 3, 1, 0].map(|index| original.media[index].blob_hash.as_str())
+    );
+    assert_eq!(
+        reimported.media[4].blob_hash,
+        blake3::hash(&new).to_hex().as_str()
+    );
+    assert_eq!(
+        h.page(&format!("/posts/{id}")).await["media"][0]["hidden"],
+        true
+    );
+}
+
+#[tokio::test]
+async fn gallery_reorder_carries_merge_and_compression_and_undo_expands_at_the_new_position() {
+    use nujijushi::db::{media_merges as gallery, posts};
+    use nujijushi::jobs::{self, worker::JobWorker};
+    use nujijushi::media::compress::Compression;
+
+    let h = harness();
+    let panels: Vec<_> = (1..=4)
+        .map(|shade| {
+            encode_image(
+                image::RgbImage::from_pixel(8, 8, image::Rgb([shade, 20, 30])),
+                image::ImageFormat::Png,
+            )
+        })
+        .collect();
+    let files = panels
+        .iter()
+        .map(|bytes| (bytes.as_slice(), "png"))
+        .collect::<Vec<_>>();
+    let id = archive_test_images(&h.state, "local", "ordered-merge", &files);
+    let load = || h.state.db.with(|conn| posts::get(conn, id)).unwrap();
+    let version = || {
+        h.state
+            .db
+            .with(|conn| gallery::current_revision(conn, id))
+            .unwrap()
+    };
+    let original = load();
+    let reorder = |order: &[i64]| {
+        let revision = version();
+        h.state
+            .db
+            .with(|conn| gallery::reorder(conn, id, order, &revision))
+            .unwrap()
+    };
+    reorder(&[3, 0, 2, 1].map(|index| original.media[index].id));
+    let selected = vec![original.media[2].id, original.media[3].id];
+    let worker = JobWorker::new(h.state.clone());
+    let job = jobs::create_merge_media_job(&h.state, id, selected, version(), None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(worker.drain().await.unwrap(), 1);
+    assert_eq!(h.job_state(job).await, "done");
+    let merged = load();
+    assert_eq!(merged.media[0].width, Some(16));
+    assert_eq!(merged.media[1].blob_hash, original.media[0].blob_hash);
+    let job = jobs::create_compress_media_job(
+        &h.state,
+        id,
+        Some(merged.media[0].id),
+        version(),
+        Compression::new(75, false).unwrap(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(worker.drain().await.unwrap(), 1);
+    assert_eq!(h.job_state(job).await, "done");
+    let compressed = load();
+    reorder(&[1, 2, 0].map(|index| compressed.media[index].id));
+    let moved = load();
+    assert_eq!(moved.media[2].blob_hash, compressed.media[0].blob_hash);
+    let revision = version();
+    let merge = h
+        .state
+        .db
+        .with(|conn| {
+            assert_eq!(gallery::compressed_positions(conn, id)?, [2]);
+            let merges = gallery::undo_ids(conn, id)?;
+            assert_eq!(merges[0].0, 2);
+            gallery::undo_compression(conn, id, moved.media[2].id, &revision)?;
+            Ok(merges[0].1)
+        })
+        .unwrap();
+    assert_eq!(load().media[2].blob_hash, merged.media[0].blob_hash);
+    let revision = version();
+    h.state
+        .db
+        .with(|conn| gallery::undo(conn, id, merge, &revision))
+        .unwrap();
+    assert_eq!(
+        load()
+            .media
+            .iter()
+            .map(|item| item.blob_hash.as_str())
+            .collect::<Vec<_>>(),
+        [0, 1, 3, 2].map(|index| original.media[index].blob_hash.as_str())
+    );
 }
 
 #[tokio::test]

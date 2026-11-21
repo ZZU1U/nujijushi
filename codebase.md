@@ -38,7 +38,7 @@ pub struct AppState {
 See [.env.example](.env.example) for environment overrides. `AppState::open` creates
 the home layout, opens and migrates the DB, and builds the blob store and renderer.
 
-## Data model (SQLite, schema v19 via `PRAGMA user_version`)
+## Data model (SQLite, schema v20 via `PRAGMA user_version`)
 
 | migration | tables and views | purpose |
 |---|---|---|
@@ -55,6 +55,7 @@ the home layout, opens and migrates the DB, and builds the blob store and render
 | `0013_tag_suggestions.sql`, `0017_tagger_character_names.sql` | `post_tag_suggestion*`, `tag_franchise_associations`, `tag_character_names` | tag recommendations, review state, image evidence, and local catalog mappings |
 | `0015_media_merges.sql`, `0016_media_compressions.sql`, `0019_gallery_visibility.sql` | `media_merges`, `media_merge_sources`, `media_merge_members`, `media_compressions`, `media_hidden_sources` | original panels, explicit merge membership, JPEG derivatives, and outgoing visibility |
 | `0018_post_text_edits.sql` | `posts` | flags that preserve title and description edits across re-imports |
+| `0020_gallery_order.sql` | `media_gallery_order` | preferred artwork order keyed by source blob hash and occurrence |
 
 Blob bytes live at `blobs/<aa>/<blake3>.<ext>` and thumbnails at
 `thumbs/<aa>/<blake3>.webp`. Identical files across posts are stored once. SQLite
@@ -214,7 +215,7 @@ POST /api/v1/import                      → import one job per target
 POST /api/v1/jobs/retry                  → retry a failed import in a new job
 POST /api/v1/watches/{id}/check          → check a watched source
 POST /api/v1/posts/{id}/tag-suggestions  → suggest tags
-POST /api/v1/posts/{id}/media            → merge or compress images
+POST /api/v1/posts/{id}/media            → reorder artwork, merge or compress images
 ```
 
 Job submissions return 202 with job IDs. Publish, storage drain, and import retry

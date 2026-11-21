@@ -197,6 +197,24 @@ pub fn add_manual(conn: &Connection, post_id: i64, raw: &[String]) -> Result<()>
     Ok(())
 }
 
+pub(crate) fn add_post_tags(conn: &mut Connection, post_id: i64, raw: &str) -> Result<()> {
+    let tags: Vec<_> = raw
+        .split([',', '\n'])
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if tags.is_empty() || tags.iter().any(|tag| normalize(tag).is_none()) {
+        return Err(crate::error::Error::invalid(
+            "Enter valid tags of up to 48 bytes",
+        ));
+    }
+    super::transaction(conn, |conn| {
+        super::posts::get(conn, post_id)?;
+        add_manual(conn, post_id, &tags)
+    })
+}
+
 pub fn replace_manual(conn: &mut Connection, post_id: i64, raw: &[String]) -> Result<()> {
     super::transaction(conn, |conn| replace_manual_in(conn, post_id, raw))
 }
@@ -250,13 +268,18 @@ pub fn remove(conn: &Connection, post_id: i64, raw: &[String]) -> Result<()> {
             active.iter().find(|tag| tag.name == canonical)
         });
         if let Some(tag) = tag {
-            suppress_source(conn, post_id, tag.id)?;
-            conn.execute(
-                "DELETE FROM post_tags WHERE post_id = ?1 AND tag_id = ?2 AND origin = 'manual'",
-                rusqlite::params![post_id, tag.id],
-            )?;
+            remove_by_id(conn, post_id, tag.id)?;
         }
     }
+    Ok(())
+}
+
+pub(crate) fn remove_by_id(conn: &Connection, post_id: i64, tag_id: i64) -> Result<()> {
+    suppress_source(conn, post_id, tag_id)?;
+    conn.execute(
+        "DELETE FROM post_tags WHERE post_id = ?1 AND tag_id = ?2 AND origin = 'manual'",
+        rusqlite::params![post_id, tag_id],
+    )?;
     Ok(())
 }
 

@@ -36,7 +36,6 @@ body.login-body .admin-shell { display: grid; justify-items: center; }
   white-space: nowrap;
 }
 .cols > * { min-inline-size: 0; }
-.post-disclosure-body [aria-busy="true"] button[type="submit"] { opacity: .65; }
 @media (max-width: 720px) {
   .top nav { min-width: 0; }
   .setup-steps { grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr)); }

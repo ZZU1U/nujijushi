@@ -60,7 +60,7 @@ export interface TagSuggestion {
 }
 export interface TagSuggestions { job: Job; stale: boolean; suggestions: TagSuggestion[] }
 export interface PostCaption {
-  channel: string; allowed: boolean; spoiler: boolean; eta?: string; eta_in?: string
+  channel: string; tg_id: string; allowed: boolean; spoiler: boolean; eta?: string; eta_in?: string
   caption: string; length: number; messages: number; verdict: string
 }
 export interface PostDetailPage {

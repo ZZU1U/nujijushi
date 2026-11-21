@@ -310,22 +310,27 @@ fn upsert_post(
     Ok((post_id, existing.is_none(), gallery_edits_reset))
 }
 
+pub(super) fn ensure_media_blobs(conn: &Connection, item: &NewMedia) -> Result<()> {
+    // Self-heal the blob catalogue: media and retained source rows are FK-bound to it.
+    conn.execute(
+        "INSERT INTO blobs (hash, ext, bytes, created_at) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (hash) DO NOTHING",
+        params![item.blob_hash, item.ext, item.bytes, fmt_ts(Utc::now())],
+    )?;
+    if let Some(poster) = &item.poster_hash {
+        conn.execute(
+            "INSERT INTO blobs (hash, ext, bytes, created_at) VALUES (?1, 'jpg', 0, ?2)
+                     ON CONFLICT (hash) DO NOTHING",
+            params![poster, fmt_ts(Utc::now())],
+        )?;
+    }
+    Ok(())
+}
+
 pub(super) fn replace_media(conn: &Connection, post_id: i64, media: &[NewMedia]) -> Result<()> {
     conn.execute("DELETE FROM media WHERE post_id = ?1", [post_id])?;
     for (ordinal, item) in media.iter().enumerate() {
-        // self-heal the blob catalogue: media rows are FK-bound to it
-        conn.execute(
-            "INSERT INTO blobs (hash, ext, bytes, created_at) VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT (hash) DO NOTHING",
-            params![item.blob_hash, item.ext, item.bytes, fmt_ts(Utc::now())],
-        )?;
-        if let Some(poster) = &item.poster_hash {
-            conn.execute(
-                "INSERT INTO blobs (hash, ext, bytes, created_at) VALUES (?1, 'jpg', 0, ?2)
-                     ON CONFLICT (hash) DO NOTHING",
-                params![poster, fmt_ts(Utc::now())],
-            )?;
-        }
+        ensure_media_blobs(conn, item)?;
         conn.execute(
                 "INSERT INTO media (post_id, ordinal, blob_hash, mime, width, height, is_video, poster_hash, sensitive, meta_json)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
@@ -342,6 +347,19 @@ pub(super) fn replace_media(conn: &Connection, post_id: i64, media: &[NewMedia])
                     item.meta_json
                 ],
             )?;
+    }
+    Ok(())
+}
+
+pub(super) fn reorder_media(conn: &Connection, post_id: i64, ids: &[i64]) -> Result<()> {
+    conn.execute(
+        "UPDATE media SET ordinal = -ordinal - 1 WHERE post_id = ?1",
+        [post_id],
+    )?;
+    let mut update =
+        conn.prepare("UPDATE media SET ordinal = ?1 WHERE post_id = ?2 AND id = ?3")?;
+    for (position, id) in ids.iter().enumerate() {
+        update.execute(params![position as i64, post_id, id])?;
     }
     Ok(())
 }
