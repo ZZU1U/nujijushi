@@ -2,11 +2,13 @@ import { useState, type FormEvent } from 'react'
 import { ActionForm, JobProgress, useActions } from '../ui'
 import { ChannelSelect } from '../components/ChannelSelect'
 import { api, expired, friendly, type CleanupPreview, type SettingsPage } from '../api'
+import { useThumbnailsOnly } from '../preferences'
 
 const archiveBytes = new Intl.NumberFormat(undefined, { notation: 'compact', style: 'unit', unit: 'byte' })
 
 export function Settings({ data }: { data: SettingsPage }) {
   const { channels, default_channel } = data
+  const [thumbnailsOnly, setThumbnailsOnly] = useThumbnailsOnly()
   return <>
     <section className="panel">
       <h2>Settings</h2>
@@ -16,6 +18,11 @@ export function Settings({ data }: { data: SettingsPage }) {
         </label>
         <button type="submit">Save settings</button>
       </ActionForm>
+      <label className="check">
+        <input type="checkbox" checked={thumbnailsOnly} onChange={(event) => setThumbnailsOnly(event.target.checked)} />
+        Use thumbnails for media previews
+      </label>
+      <p className="hint">Keep full-resolution media unloaded in the post gallery. Click a preview to open the original when needed. This preference is stored in this browser.</p>
     </section>
     <StorageCleanup job={data.cleanup_job} />
   </>

@@ -119,6 +119,20 @@ test('queue on page 3 and return from a post in the same browser document', asyn
   expect(documents()).toBe(1)
 })
 
+test('thumbnail preference keeps full-resolution media unloaded in the gallery', async ({ page }) => {
+  await signIn(page, '/settings')
+  const preference = page.getByLabel('Use thumbnails for media previews')
+  await expect(preference).not.toBeChecked()
+  await preference.check()
+  await page.reload()
+  await expect(preference).toBeChecked()
+
+  await page.goto(base + '/posts/2')
+  await expect(page.locator('.media-grid img').first()).toHaveAttribute('src', /\/thumb\//)
+  await expect(page.locator('.media-grid img[src^="/media/"]')).toHaveCount(0)
+  await expect(page.locator('.media-grid a[href^="/media/"]').first()).toBeVisible()
+})
+
 test('a failed merge keeps selection and its error beside the controls', async ({ page }) => {
   const documents = countDocuments(page)
   await signIn(page, '/posts/2')

@@ -3,7 +3,8 @@ import { ActionForm, TextField, SelectField, TextArea, JobProgress, CaptionPrevi
 import { Badge } from '../components/Badge'
 import { ChannelSelect } from '../components/ChannelSelect'
 import type { Post, PostDetailPage, TagSuggestions } from '../api'
-import { thumbnailUrl } from '../components/Thumbnail'
+import { Thumbnail, thumbnailUrl } from '../components/Thumbnail'
+import { useThumbnailsOnly } from '../preferences'
 
 export function PostDetail({ data }: { data: PostDetailPage }) {
   const { post, open_section, guest_review, outgoing_count, tag_review, can_suggest_tags, captions, default_channel, ratings, states, channels } = data
@@ -160,6 +161,7 @@ function PostEditor({ post }: { post: Post }) {
 function Gallery({ data }: { data: PostDetailPage }) {
   const { post, media, media_total, outgoing_count, submitter, merge_job, has_media_tools, can_merge, gallery_version, open_section } = data
   const [selected, setSelected] = useState(new Set<number>())
+  const [thumbnailsOnly] = useThumbnailsOnly()
   const selection = Object.fromEntries([...selected].map((id) => ['sel_' + id, 'on']))
   function toggle(id: number) {
     setSelected((previous) => {
@@ -177,10 +179,15 @@ function Gallery({ data }: { data: PostDetailPage }) {
           <div className="media-grid">
             {media.map((m, index) => <Fragment key={listKey(m, index)}>
               <figure id={text("media-", (index + 1))}>
-                {m.is_video ? <>
+                {thumbnailsOnly ? <>
+                  <a href={'/media/' + m.hash} target="_blank" rel="noopener noreferrer"
+                    aria-label={`Open ${m.is_video ? 'video' : 'image'} ${index + 1} at full size`}>
+                    <Thumbnail hash={m.thumb} alt="" width={m.width ?? undefined} height={m.height ?? undefined} />
+                  </a>
+                </> : m.is_video ? <>
                   <video controls preload="none" poster={thumbnailUrl(m.thumb)} src={text("/media/", m.hash)}></video>
                 </> : <>
-                  <a href={'/media/' + m.hash} target="_blank" aria-label={`Open image ${index + 1} at full size`}>
+                  <a href={'/media/' + m.hash} target="_blank" rel="noopener noreferrer" aria-label={`Open image ${index + 1} at full size`}>
                     <img loading="lazy" decoding="async" src={'/media/' + m.hash} alt=""
                       width={m.width ?? undefined} height={m.height ?? undefined} />
                   </a>
