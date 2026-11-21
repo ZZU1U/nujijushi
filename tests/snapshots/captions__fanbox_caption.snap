@@ -1,0 +1,5 @@
+---
+source: tests/captions.rs
+expression: caption
+---
+via <a href="https://nightjar.fanbox.cc/posts/123456">Fanbox</a>

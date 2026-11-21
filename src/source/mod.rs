@@ -86,6 +86,8 @@ pub fn source_label(source: &str) -> &'static str {
     match source {
         "twitter" | "x" => "Twitter",
         "pixiv" => "Pixiv",
+        "fanbox" | "fanbox.cc" => "Fanbox",
+        host if host.ends_with(".fanbox.cc") => "Fanbox",
         "danbooru" => "Danbooru",
         "gelbooru" => "Gelbooru",
         "artstation" => "ArtStation",
