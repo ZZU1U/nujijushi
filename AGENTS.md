@@ -35,8 +35,8 @@ the MSRV or add a feature that needs nightly.
    row older than `STALE_LEASE_SECS` (600 s) becomes `unknown` and is **never** re-sent
    automatically; partial deliveries (some messages of a post out, then a failure) also
    become `unknown`. If you change the publish path, keep those two properties.
-   **The web never sends to Telegram inside a request**: `POST /publish` and
-   `POST /storage/drain` only create a job (`jobs::create_*_job`, deduplicated by
+   **The web never sends to Telegram inside a request**: `POST /api/v1/publish` and
+   `POST /api/v1/storage/drain` only create a job (`jobs::create_*_job`, deduplicated by
    `db::jobs::find_active`) and the worker runs it.
 2. **Telegram media rules.** ≤ `MAX_ALBUM` (10) items per album, videos never share a
    group with photos, exactly **one** captioned item per group, caption ≤ `CAPTION_LIMIT`
@@ -61,9 +61,9 @@ the MSRV or add a feature that needs nightly.
 8. **Secrets never get logged**: bot token, UI token, webhook secret. `config.toml` is
    written 0600. The webhook endpoint authenticates with
    `auth::constant_time_eq` on the secret header, not the UI cookie.
-9. **Every web POST carries a CSRF field** checked with `check_csrf`; templates
-   autoescape, and captions are the only `| safe` values because the pipeline escaped
-   them already.
+9. **Every admin POST carries a CSRF field.** Sign-in checks its cookie-bound
+   challenge and authenticated actions use `check_csrf`. React escapes text and the
+   caption preview component allowlists Telegram formatting.
 
 ## Code conventions
 
@@ -89,8 +89,8 @@ the MSRV or add a feature that needs nightly.
 | schema | new `migrations/000N_*.sql`, register it in `src/db/migrate.rs`, add the table to that file's test, never edit an applied migration |
 | config key | `config.example.toml`, the starter config in `src/config.rs`, `README.md` config block, `.env.example` if env-supported, a `doctor` line, and a parse test |
 | CLI command | `src/cli.rs` enum + handler, a case in `mod parse_tests`, the README command table |
-| web page/form | `src/web/routes.rs`, a template in `templates/`, register it in `src/web/views.rs`, CSRF on POSTs, and a render test |
-| slow web action | a job kind in `src/jobs/mod.rs` (`run_kind`), a `create_*_job` constructor, fields in `web::routes::job_view` (so `/api/status` and the templates agree), a `data-`-attribute hook for `static/app.js`, and a `tests/web.rs` case |
+| web page/form | register the JSON API in `src/web/routes.rs`, add the React screen and typed API data in `webui/src/`, check CSRF on writes, and test the API and rendered workflow |
+| slow web action | a job kind in `src/jobs/mod.rs` (`run_kind`), a `create_*_job` constructor, an accepted response with its job ID, the shared job view for status and React, and a `tests/web.rs` case |
 | bot command | `src/bot/commands.rs` `MENU` + parse test, `src/bot/handlers.rs`, permission via `Perm` in `src/bot/access.rs`, help text |
 | storage sink | implement `storage::Sink`, add its config section, wire it in `storage::sinks`, test it against a real local server if it speaks HTTP |
 | caption feature | `src/render/caption.rs` context/filters + an `insta` snapshot in `tests/captions.rs` |

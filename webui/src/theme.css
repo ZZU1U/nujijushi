@@ -249,7 +249,7 @@ pre.caption {
 .login button { width: 100%; margin-top: .6rem; }
 
 /* ======================================================== live interaction
-   Everything below reacts to attributes static/app.js sets at runtime
+   Live feedback and busy states
    (`aria-busy`, `.is-busy`, `data-changed`) plus keyboard focus.
    A page served with JS off keeps exactly the look it had before this block. */
 
@@ -353,7 +353,7 @@ tr[data-changed] > td { background: rgba(125, 211, 252, .06); }
 }
 
 /* ================================================== jobs: progress and toasts
-   The job rows (dashboard, /import, /jobs) carry `data-state`; static/app.js
+   The job rows (dashboard, /import, /jobs) carry `data-state`. The admin
    only rewrites the numbers, the bar and the badge. */
 
 .progress-cell { white-space: nowrap; }
@@ -435,5 +435,3 @@ tr[data-state="done"] .progress > span { background-image: none; background-colo
 .tagcloud a.active { border-color: var(--accent); color: var(--accent); }
 .post-card-tags { display: flex; gap: .35rem; flex-wrap: wrap; overflow-wrap: anywhere; font-size: .75rem; }
 .post-card-tags a { position: relative; z-index: 2; }
-
-.select-loaded { display: none; }

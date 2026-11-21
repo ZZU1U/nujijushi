@@ -62,7 +62,6 @@ pub async fn require_session(
     // and the document only carries counts (never titles, captions or tokens)
     if path == "/login"
         || path == "/api/v1/login"
-        || path.starts_with("/static/")
         || path.starts_with("/admin-assets/")
         || path == "/metrics"
         || path == crate::bot::WEBHOOK_PATH

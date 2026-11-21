@@ -2,21 +2,22 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use axum::extract::{OriginalUri, Path, Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
-use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Form, Json, Router, middleware};
 use serde_json::{Value, json};
 
+use super::WebState;
+use super::admin::{accepted, action_result};
 use super::auth;
+use super::data::*;
 use super::forms;
 use super::forms::{
     ChannelForm, FormMap, ImportForm, LoginForm, POST_PAGE_SIZES, PostDelete, PostDetailQuery,
     PostEdit, PostFilter, PostTagAction, QueueAction, post_page_size,
 };
-use super::views::{APP_CSS, APP_JS};
-use super::{WebState, auth as web_auth};
 use crate::db::{
     channels as channel_db, jobs as job_db, posts as post_db, queue as queue_db, tags as tag_db,
 };
@@ -36,37 +37,26 @@ impl From<Error> for WebError {
 
 impl IntoResponse for WebError {
     fn into_response(self) -> Response {
-        tracing::warn!("web error: {}", self.0);
-        let status = match &self.0 {
-            Error::Invalid(_) => StatusCode::BAD_REQUEST,
-            Error::NotFound(_) => StatusCode::NOT_FOUND,
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        let (status, message) = match &self.0 {
+            Error::Invalid(message) => (StatusCode::BAD_REQUEST, message.to_string()),
+            Error::NotFound(message) => (StatusCode::NOT_FOUND, message.to_string()),
+            _ => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "The server could not complete this request".into(),
+            ),
         };
-        let body = format!(
-            "<!doctype html><meta charset=utf-8><title>error</title>\
-             <body style=\"font:14px system-ui;padding:2rem;background:#111;color:#eee\">\
-             <h1>Something went wrong</h1><pre style=\"white-space:pre-wrap\">{}</pre>\
-             <p><a style=\"color:#7dd3fc\" href=\"/\">back</a></p>",
-            htmlescape::encode_minimal(&self.0.to_string())
-        );
-        let mut response = (status, Html(body)).into_response();
-        let message = if status.is_server_error() {
-            "The server could not complete this request".to_string()
-        } else {
-            self.0.to_string()
-        };
-        response
-            .extensions_mut()
-            .insert(super::admin::ClientError(message));
-        response
+        if status.is_server_error() {
+            tracing::warn!("web request failed: {}", self.0);
+        }
+        super::admin::error(status, message)
     }
 }
 
 pub(super) type WebResult<T> = std::result::Result<T, WebError>;
 
 pub fn router(ws: Arc<WebState>) -> Router {
-    let protected = Router::new()
-        .route("/", get(dashboard))
+    let api = Router::new()
+        .route("/dashboard", get(dashboard))
         .route("/posts", get(posts_page).post(posts_bulk))
         .route("/posts/{id}", get(post_page).post(post_update))
         .route(
@@ -106,60 +96,34 @@ pub fn router(ws: Arc<WebState>) -> Router {
         .route("/storage/drain", post(storage_drain))
         .route("/jobs", get(jobs_page))
         .route("/jobs/retry", post(jobs_retry))
-        .route("/api/status", get(api_status))
         .route("/import", get(import_page).post(import_submit))
         .route("/users", get(users_page).post(users_action))
         .route("/settings", get(settings_page).post(settings_save))
-        .route("/logout", post(logout));
-
-    let api = protected
-        .clone()
-        .route("/login", get(login_page).post(login_submit))
-        .route("/dashboard", get(dashboard))
+        .route("/logout", post(logout))
+        .route("/session", get(session))
+        .route("/login", get(login_challenge).post(login_submit))
         .route("/posts/cards", get(posts_more))
         .route("/jobs/{id}/status", get(super::admin::job))
         .route("/channels/{id}/queue/status", get(super::queue_status::get))
-        .layer(middleware::from_fn(super::admin::api_response));
+        .fallback(|| async {
+            super::admin::error(StatusCode::NOT_FOUND, "Admin endpoint not found")
+        })
+        .layer(middleware::from_fn(super::admin::api_headers));
 
     Router::new()
         .nest("/api/v1", api)
+        .route("/api/status", get(api_status))
         .route("/admin-assets/assets/{name}", get(super::admin::asset))
-        .route("/login", get(login_page).post(login_submit))
-        .route("/static/app.css", get(css))
         .route("/metrics", get(metrics_endpoint))
-        .route("/static/app.js", get(js))
         .route(crate::bot::WEBHOOK_PATH, post(webhook))
         .route("/thumb/{hash}", get(thumb))
         .route("/media/{hash}", get(media))
-        .merge(protected)
         .layer(middleware::from_fn_with_state(
             ws.clone(),
             auth::require_session,
         ))
         .layer(middleware::from_fn(super::admin::navigation))
         .with_state(ws)
-}
-
-pub(super) fn flash_redirect(path: &str, message: &str) -> Response {
-    let encoded = url::form_urlencoded::Serializer::new(String::new())
-        .append_pair("flash", message)
-        .finish();
-    let separator = if path.contains('?') { '&' } else { '?' };
-    Redirect::to(&format!("{path}{separator}{encoded}")).into_response()
-}
-
-fn decode_flash(raw: &Option<String>) -> Option<String> {
-    // Query extraction already decoded form URL encoding.
-    raw.clone()
-}
-
-pub(super) fn with_job(mut response: Response, id: Option<i64>) -> Response {
-    if let Some(id) = id {
-        response
-            .extensions_mut()
-            .insert(super::admin::AcceptedJob(id));
-    }
-    response
 }
 
 pub(super) fn check_csrf(ws: &WebState, provided: &str) -> WebResult<()> {
@@ -172,65 +136,69 @@ pub(super) fn check_csrf(ws: &WebState, provided: &str) -> WebResult<()> {
 
 // ---------------------------------------------------------------- auth
 
-async fn login_page(
-    State(ws): State<Arc<WebState>>,
-    Query(query): Query<PostFilter>,
-) -> WebResult<Html<String>> {
-    let html = ws.pages.render(
-        "login.html",
-        &json!({
-            "page": "login",
-            "csrf": ws.csrf,
-            "flash": decode_flash(&query.flash),
-            "next": query.next.as_deref().filter(|path| auth::local_page(path).is_some()).unwrap_or("/"),
-            "home": ws.app.cfg.home.display().to_string(),
-        }),
-    )?;
-    Ok(Html(html))
+#[derive(serde::Serialize)]
+struct SessionView<'a> {
+    csrf: &'a str,
 }
 
-async fn login_submit(State(ws): State<Arc<WebState>>, Form(form): Form<LoginForm>) -> Response {
-    let expected = ws.app.cfg.ui_token.clone().unwrap_or_default();
-    if auth::constant_time_eq(form.token.trim(), expected.trim()) {
-        let target = form
-            .next
-            .as_deref()
-            .filter(|path| auth::local_page(path).is_some())
-            .unwrap_or("/");
-        let mut response = Redirect::to(target).into_response();
-        response.headers_mut().insert(
-            header::SET_COOKIE,
-            auth::session_cookie(&ws.session).parse().unwrap(),
-        );
-        response
-    } else {
-        WebError(Error::invalid("Wrong UI token")).into_response()
+async fn session(State(ws): State<Arc<WebState>>) -> Response {
+    Json(SessionView { csrf: &ws.csrf }).into_response()
+}
+
+const LOGIN_COOKIE: &str = "nujijushi_login";
+
+async fn login_challenge() -> Response {
+    let csrf = crate::config::random_token();
+    let cookie = format!(
+        "{LOGIN_COOKIE}={csrf}; Path=/api/v1/login; HttpOnly; SameSite=Strict; Max-Age=600"
+    );
+    (
+        [(header::SET_COOKIE, cookie)],
+        Json(SessionView { csrf: &csrf }),
+    )
+        .into_response()
+}
+
+async fn login_submit(
+    State(ws): State<Arc<WebState>>,
+    headers: HeaderMap,
+    Form(form): Form<LoginForm>,
+) -> Response {
+    if form.csrf.is_empty()
+        || !auth::read_cookie(&headers, LOGIN_COOKIE)
+            .is_some_and(|expected| auth::constant_time_eq(&form.csrf, expected))
+    {
+        return super::admin::error(StatusCode::FORBIDDEN, "Sign-in expired. Try again.");
     }
+    let expected = ws.app.cfg.ui_token.as_deref().unwrap_or_default();
+    if !auth::constant_time_eq(form.token.trim(), expected.trim()) {
+        return super::admin::error(StatusCode::UNAUTHORIZED, "Wrong UI token");
+    }
+    let target = form
+        .next
+        .as_deref()
+        .filter(|path| auth::local_page(path).is_some())
+        .unwrap_or("/");
+    let mut response = action_result(target, "Signed in");
+    if let Ok(cookie) = HeaderValue::from_str(&auth::session_cookie(&ws.session)) {
+        response.headers_mut().append(header::SET_COOKIE, cookie);
+    }
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        HeaderValue::from_static(
+            "nujijushi_login=; Path=/api/v1/login; HttpOnly; SameSite=Strict; Max-Age=0",
+        ),
+    );
+    response
 }
 
 async fn logout(State(ws): State<Arc<WebState>>, Form(form): Form<FormMap>) -> WebResult<Response> {
     check_csrf(&ws, forms::field(&form, "csrf").unwrap_or_default())?;
-    let mut response = Redirect::to("/login").into_response();
-    response
-        .headers_mut()
-        .insert(header::SET_COOKIE, auth::clear_cookie().parse().unwrap());
+    let mut response = action_result("/login", "");
+    if let Ok(cookie) = HeaderValue::from_str(&auth::clear_cookie()) {
+        response.headers_mut().insert(header::SET_COOKIE, cookie);
+    }
     Ok(response)
-}
-
-async fn css() -> Response {
-    (
-        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
-        APP_CSS.to_string(),
-    )
-        .into_response()
-}
-
-async fn js() -> Response {
-    (
-        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
-        APP_JS.to_string(),
-    )
-        .into_response()
 }
 
 // ---------------------------------------------------------------- metrics
@@ -347,22 +315,19 @@ async fn media(State(ws): State<Arc<WebState>>, Path(hash): Path<String>) -> Res
 
 // ---------------------------------------------------------------- dashboard
 
-async fn dashboard(
-    State(ws): State<Arc<WebState>>,
-    Query(query): Query<PostFilter>,
-) -> WebResult<Html<String>> {
+async fn dashboard(State(ws): State<Arc<WebState>>) -> WebResult<Json<DashboardPage>> {
     let app = &ws.app;
     let (stats, posts, delivered) = app
         .db
         .call(|conn| {
             let posts = post_db::count(conn, None)?;
-            let stats = json!({
-                "posts": posts,
-                "approved": post_db::count(conn, Some(PostState::Approved))?,
-                "queued": queue_db::count_all(conn, QueueState::Queued)?,
-                "sent": queue_db::count_successful_sends(conn)?,
-                "unknown": queue_db::count_all(conn, QueueState::Unknown)?,
-            });
+            let stats = DashboardStats {
+                posts,
+                approved: post_db::count(conn, Some(PostState::Approved))?,
+                queued: queue_db::count_all(conn, QueueState::Queued)?,
+                sent: queue_db::count_successful_sends(conn)?,
+                unknown: queue_db::count_all(conn, QueueState::Unknown)?,
+            };
             Ok((stats, posts, queue_db::has_confirmed_delivery(conn)?))
         })
         .await?;
@@ -403,34 +368,37 @@ async fn dashboard(
             .into_iter()
             .next()
             .map(|slot| crate::tg::publish::slot_label(slot, now));
-        channel_views.push(json!({
-            "id": channel.id,
-            "title": channel.title,
-            "tg_id": channel.tg_id,
-            "queued": queued,
-            "interval": channel.interval_minutes,
-            "nsfw_policy": channel.nsfw_policy.as_str(),
-            "paused": channel.paused,
-            "enabled": channel.enabled,
-            "failures": channel.consecutive_failures,
-            "next": crate::tg::publish::next_slot_hint(channel, now),
-            "next_at": next_at,
-            "reason": crate::queue::scheduler::slot_reason(channel, now, sent_today),
-        }));
+        channel_views.push(DashboardChannel {
+            publishing: count(QueueState::Sending) > 0,
+            id: channel.id,
+            title: channel.title.clone(),
+            tg_id: channel.tg_id.clone(),
+            queued,
+            interval: channel.interval_minutes,
+            nsfw_policy: channel.nsfw_policy.as_str(),
+            paused: channel.paused,
+            enabled: channel.enabled,
+            failures: channel.consecutive_failures,
+            next: crate::tg::publish::next_slot_hint(channel, now),
+            next_at,
+            reason: crate::queue::scheduler::slot_reason(channel, now, sent_today),
+        });
     }
 
     let sends = crate::tg::audit::recent(app, 8).await?;
-    let send_views: Vec<Value> = sends
+    let send_views: Vec<SendView> = sends
         .iter()
-        .map(|send| {
-            json!({
-                "channel_id": send.channel_id,
-                "post_id": send.post_id,
-                "ok": send.ok,
-                "at": send.sent_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string(),
-                "ids": send.tg_message_ids,
-                "error": send.error,
-            })
+        .map(|send| SendView {
+            channel_id: send.channel_id,
+            post_id: send.post_id,
+            ok: send.ok,
+            at: send
+                .sent_at
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string(),
+            ids: send.tg_message_ids.clone(),
+            error: send.error.clone(),
         })
         .collect();
 
@@ -438,7 +406,7 @@ async fn dashboard(
         .db
         .call(|conn| crate::db::mirrors::summary(conn))
         .await?;
-    let mut storage_views: Vec<Value> = Vec::new();
+    let mut storage_views: Vec<SinkView> = Vec::new();
     for sink in crate::storage::sinks(app) {
         let counts: Vec<&(String, String, i64)> = mirrors
             .iter()
@@ -451,18 +419,18 @@ async fn dashboard(
                 .map(|(_, _, count)| *count)
                 .sum::<i64>()
         };
-        storage_views.push(json!({
-            "name": sink.name(),
-            "where": sink.describe(),
-            "done": get("done"),
-            "pending": get("pending"),
-            "failed": get("failed"),
-            "blocked": get("blocked"),
-        }));
+        storage_views.push(SinkView {
+            name: sink.name().to_string(),
+            location: sink.describe(),
+            done: get("done"),
+            pending: get("pending"),
+            failed: get("failed"),
+            blocked: get("blocked"),
+        });
     }
 
     let jobs = app.db.call(|conn| job_db::list(conn, 6)).await?;
-    let job_views: Vec<Value> = jobs.iter().map(|job| job_view(job, now)).collect();
+    let job_views: Vec<JobView> = jobs.iter().map(|job| job_view(job, now)).collect();
 
     let unknown = app
         .db
@@ -477,44 +445,29 @@ async fn dashboard(
         &setup_channels,
         !scheduler.stale,
     );
-    let html = ws.pages.render(
-        "dashboard.html",
-        &json!({
-            "page": "dashboard",
-            "csrf": ws.csrf,
-            "flash": decode_flash(&query.flash),
-            "stats": stats,
-            "channels": channel_views,
-            "sends": send_views,
-            "jobs": job_views,
-            "recent_unknown": unknown,
-            "storage": storage_views,
-            "scheduler": scheduler,
-            "setup": setup,
-        }),
-    )?;
-    Ok(Html(html))
+    Ok(Json(DashboardPage {
+        stats,
+        channels: channel_views,
+        sends: send_views,
+        jobs: job_views,
+        recent_unknown: unknown,
+        storage: storage_views,
+        scheduler,
+        setup,
+    }))
 }
 
 // ---------------------------------------------------------------- posts
 
-const POSTS_PER_PAGE_COOKIE: &str = "nujijushi_posts_per_page";
-
 async fn posts_page(
     State(ws): State<Arc<WebState>>,
     Query(query): Query<PostFilter>,
-    headers: HeaderMap,
-    OriginalUri(uri): OriginalUri,
-) -> WebResult<Response> {
+) -> WebResult<Json<PostsPage>> {
     let app = &ws.app;
-    let requested_size = query.per_page.as_deref().and_then(post_page_size);
-    let html_fallback = !uri.path().starts_with("/api/v1/");
-    let remembered_size = html_fallback
-        .then(|| auth::read_cookie(&headers, POSTS_PER_PAGE_COOKIE))
-        .flatten()
-        .and_then(post_page_size);
-    let per_page = requested_size
-        .or(remembered_size)
+    let per_page = query
+        .per_page
+        .as_deref()
+        .and_then(post_page_size)
         .unwrap_or(POST_PAGE_SIZES[0]);
     let requested_page = query.page.unwrap_or(1);
     let filter = grid_filter(&query, per_page);
@@ -559,55 +512,46 @@ async fn posts_page(
             }
         })
         .await?;
-    let cards = grid_card_views(&cards, &mut decorations, &query);
+    let cards = grid_card_views(cards, &mut decorations, &query);
 
-    let html = ws.pages.render(
-        "posts.html",
-        &json!({
-            "page": "posts",
-            "csrf": ws.csrf,
-            "flash": decode_flash(&query.flash),
-            "cards": cards,
-            "total": total,
-            "page_number": page,
-            "page_count": page_count,
-            "per_page": per_page,
-            "next_cursor": next_cursor,
-            "default_channel": default_channel,
-            "page_sizes": POST_PAGE_SIZES,
-            "grid_url": query.page_url(page, per_page),
-            "previous_page": (page > 1).then(|| query.page_url(page - 1, per_page)),
-            "next_page": (page < page_count).then(|| query.page_url(page + 1, per_page)),
-            "filters": {
-                "state": query.state,
-                "source": query.source,
-                "tag": active_tag,
-                "nsfw": query.nsfw,
-                "sent": query.sent,
-                "search": query.search,
-            },
-            "sources": sources,
-            "top_tags": tags.iter().map(|(tag, count)| json!({
-                "tag": tag, "count": count, "url": query.tag_url(Some(tag)),
-                "active": active_tag.as_ref() == Some(tag),
-            })).collect::<Vec<_>>(),
-            "clear_tag_url": query.tag_url(None),
-            "channels": channels.iter().map(|c| json!({"id": c.id, "title": c.title})).collect::<Vec<_>>(),
-            "states": PostState::all().iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-            "setup": query.setup,
-        }),
-    )?;
-    let mut response = Html(html).into_response();
-    if let Some(size) =
-        requested_size.filter(|size| html_fallback && Some(*size) != remembered_size)
-    {
-        let cookie = HeaderValue::from_str(&format!(
-            "{POSTS_PER_PAGE_COOKIE}={size}; Path=/posts; HttpOnly; SameSite=Strict; Max-Age=2592000"
-        ))
-        .map_err(|err| Error::other(err.to_string()))?;
-        response.headers_mut().append(header::SET_COOKIE, cookie);
-    }
-    Ok(response)
+    Ok(Json(PostsPage {
+        cards,
+        total,
+        page_number: page,
+        page_count,
+        per_page,
+        next_cursor,
+        default_channel,
+        page_sizes: POST_PAGE_SIZES,
+        grid_url: query.page_url(page, per_page),
+        previous_page: (page > 1).then(|| query.page_url(page - 1, per_page)),
+        next_page: (page < page_count).then(|| query.page_url(page + 1, per_page)),
+        sources,
+        top_tags: tags
+            .iter()
+            .map(|(tag, count)| TagCount {
+                tag: tag.clone(),
+                count: *count,
+                url: query.tag_url(Some(tag)),
+                active: active_tag.as_ref() == Some(tag),
+            })
+            .collect::<Vec<_>>(),
+        clear_tag_url: query.tag_url(None),
+        channels: channels.iter().map(ChannelChoice::from).collect(),
+        states: PostState::all()
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>(),
+        filters: FiltersView {
+            state: query.state,
+            source: query.source,
+            tag: active_tag,
+            nsfw: query.nsfw,
+            sent: query.sent,
+            search: query.search,
+        },
+        setup: query.setup,
+    }))
 }
 
 fn grid_filter(query: &PostFilter, limit: i64) -> post_db::PostFilter {
@@ -655,7 +599,7 @@ fn next_card_cursor(
 #[derive(Default)]
 struct CardDecoration {
     tags: Vec<String>,
-    queue: Vec<Value>,
+    queue: Vec<CardBadge>,
 }
 
 fn grid_decorations(
@@ -665,9 +609,11 @@ fn grid_decorations(
     let ids: Vec<_> = cards.iter().map(|card| card.id).collect();
     let mut out = HashMap::<i64, CardDecoration>::new();
     for (post, channel, state) in queue_db::card_states(conn, &ids)? {
-        out.entry(post).or_default().queue.push(json!({
-            "class": state.as_str(), "label": queue_state_label(state), "channel": channel
-        }));
+        out.entry(post).or_default().queue.push(CardBadge {
+            class: state.as_str(),
+            label: queue_state_label(state),
+            channel,
+        });
     }
     for (post, tag) in tag_db::card_tags(conn, &ids)? {
         out.entry(post).or_default().tags.push(tag);
@@ -676,28 +622,51 @@ fn grid_decorations(
 }
 
 fn grid_card_views(
-    cards: &[crate::model::PostCard],
+    cards: Vec<crate::model::PostCard>,
     decorations: &mut HashMap<i64, CardDecoration>,
     query: &PostFilter,
-) -> Vec<Value> {
-    cards.iter().map(|card| {
-        let decoration = decorations.remove(&card.id).unwrap_or_default();
-        json!({
-            "id": card.id, "source": card.source, "rating": card.rating.as_str(),
-            "state": card.state.as_str(), "artist": card.author_name, "submitted_by": card.submitted_by,
-            "submitter": card.submitter, "submitter_guest": card.submitter_guest,
-            "media_count": card.media_count, "thumb": card.thumb_hash, "nsfw": card.nsfw,
-            "snippet": card.snippet, "pushed": card.pushed, "queue_badges": decoration.queue,
-            "tags": decoration.tags.iter().map(|tag| json!({"name": tag, "url": query.tag_url(Some(tag))})).collect::<Vec<_>>(),
-            "imported": card.imported_at.with_timezone(&chrono::Local).format("%m-%d %H:%M").to_string(),
+) -> Vec<PostCardView> {
+    cards
+        .into_iter()
+        .map(|card| {
+            let decoration = decorations.remove(&card.id).unwrap_or_default();
+            PostCardView {
+                id: card.id,
+                source: card.source,
+                rating: card.rating.as_str(),
+                state: card.state.as_str(),
+                artist: card.author_name,
+                submitted_by: card.submitted_by,
+                submitter: card.submitter,
+                submitter_guest: card.submitter_guest,
+                media_count: card.media_count,
+                thumb: card.thumb_hash,
+                nsfw: card.nsfw,
+                snippet: card.snippet,
+                pushed: card.pushed,
+                queue_badges: decoration.queue,
+                tags: decoration
+                    .tags
+                    .into_iter()
+                    .map(|tag| CardTag {
+                        url: query.tag_url(Some(&tag)),
+                        name: tag,
+                    })
+                    .collect(),
+                imported: card
+                    .imported_at
+                    .with_timezone(&chrono::Local)
+                    .format("%m-%d %H:%M")
+                    .to_string(),
+            }
         })
-    }).collect()
+        .collect()
 }
 
 async fn posts_more(
     State(ws): State<Arc<WebState>>,
     Query(query): Query<PostFilter>,
-) -> WebResult<Json<Value>> {
+) -> WebResult<Json<CardsPage>> {
     const BATCH: usize = 24;
     let cursor = query
         .cursor
@@ -727,26 +696,18 @@ async fn posts_more(
             Ok((cards, decorations, next))
         })
         .await?;
-    let html = ws.pages.render(
-        "post_cards.html",
-        &json!({
-            "cards": grid_card_views(&cards, &mut decorations, &query),
-            "setup": query.setup,
-        }),
-    )?;
-    Ok(Json(json!({ "html": html, "next_cursor": next_cursor })))
+    Ok(Json(CardsPage {
+        cards: grid_card_views(cards, &mut decorations, &query),
+        next_cursor,
+    }))
 }
 
-async fn settings_page(
-    State(ws): State<Arc<WebState>>,
-    Query(query): Query<PostFilter>,
-) -> WebResult<Html<String>> {
+async fn settings_page(State(ws): State<Arc<WebState>>) -> WebResult<Json<SettingsPage>> {
     let (channels, default_channel) = queue_channels(&ws.app).await?;
-    Ok(Html(ws.pages.render("settings.html", &json!({
-        "page": "settings", "csrf": ws.csrf, "flash": decode_flash(&query.flash),
-        "channels": channels.iter().map(|c| json!({"id": c.id, "title": c.title})).collect::<Vec<_>>(),
-        "default_channel": default_channel,
-    }))?))
+    Ok(Json(SettingsPage {
+        channels: channels.iter().map(ChannelChoice::from).collect(),
+        default_channel,
+    }))
 }
 
 async fn settings_save(
@@ -771,7 +732,7 @@ async fn settings_save(
             Ok(())
         })
         .await?;
-    Ok(flash_redirect("/settings", "Queue preference saved"))
+    Ok(action_result("/settings", "Queue preference saved"))
 }
 
 async fn queue_channels(app: &AppState) -> crate::error::Result<(Vec<Channel>, Option<i64>)> {
@@ -794,7 +755,7 @@ async fn posts_bulk(
         .unwrap_or("/posts");
     let ids = forms::selected_ids(&form);
     if ids.is_empty() {
-        return Ok(flash_redirect(back, "no posts selected"));
+        return Ok(action_result(back, "no posts selected"));
     }
     let action = forms::field(&form, "action")
         .unwrap_or_default()
@@ -844,7 +805,7 @@ async fn posts_bulk(
         }
         "queue" => {
             let Some(channel_id) = channel_id else {
-                return Ok(flash_redirect(back, "choose a channel first"));
+                return Ok(action_result(back, "choose a channel first"));
             };
             let channel = app
                 .db
@@ -881,14 +842,14 @@ async fn posts_bulk(
         }
         other => format!("unknown action {other}"),
     };
-    Ok(flash_redirect(back, &note))
+    Ok(action_result(back, &note))
 }
 
 async fn post_page(
     State(ws): State<Arc<WebState>>,
     Path(id): Path<i64>,
     Query(query): Query<PostDetailQuery>,
-) -> WebResult<Html<String>> {
+) -> WebResult<Json<PostDetailPage>> {
     let app = &ws.app;
     let suggestions_enabled = app.cfg.tag_suggestions.enabled;
     let (
@@ -954,33 +915,37 @@ async fn post_page(
         let decision = crate::nsfw::evaluate(&outgoing, channel, &rules);
         let mut preview =
             match crate::tg::publish::build_plan(app, channel, &outgoing, 0, decision.clone()) {
-                Ok(plan) => json!({
-                    "channel": channel.title,
-                    "tg_id": channel.tg_id,
-                    "caption": plan.caption.text,
-                    "length": plan.caption.length,
-                    "truncated": plan.caption.truncated,
-                    "messages": plan.messages.len(),
-                    "verdict": plan.decision.reason,
-                    "allowed": decision.is_allowed(),
-                    "spoiler": decision.spoiler(),
-                }),
-                Err(err) => json!({
-                    "channel": channel.title,
-                    "tg_id": channel.tg_id,
-                    "caption": format!("template error: {err}"),
-                    "length": 0,
-                    "truncated": false,
-                    "messages": 0,
-                    "verdict": err.to_string(),
-                    "allowed": false,
-                    "spoiler": false,
-                }),
+                Ok(plan) => CaptionView {
+                    channel: channel.title.clone(),
+                    tg_id: channel.tg_id.clone(),
+                    caption: plan.caption.text,
+                    length: plan.caption.length,
+                    truncated: plan.caption.truncated,
+                    messages: plan.messages.len(),
+                    verdict: plan.decision.reason,
+                    allowed: decision.is_allowed(),
+                    spoiler: decision.spoiler(),
+                    eta: None,
+                    eta_in: None,
+                },
+                Err(err) => CaptionView {
+                    channel: channel.title.clone(),
+                    tg_id: channel.tg_id.clone(),
+                    caption: format!("template error: {err}"),
+                    length: 0,
+                    truncated: false,
+                    messages: 0,
+                    verdict: err.to_string(),
+                    allowed: false,
+                    spoiler: false,
+                    eta: None,
+                    eta_in: None,
+                },
             };
         // when this post would go out, if it is queued in this channel
         if let Some(slot) = post_eta(app, &post_queues, channel).await? {
-            preview["eta"] = json!(crate::tg::publish::slot_label(slot, now));
-            preview["eta_in"] = json!(crate::tg::publish::format_duration(slot - now));
+            preview.eta = Some(crate::tg::publish::slot_label(slot, now));
+            preview.eta_in = Some(crate::tg::publish::format_duration(slot - now));
         }
         captions.push(preview);
     }
@@ -995,30 +960,35 @@ async fn post_page(
         .count()
         == 2;
     let has_media_tools = !post.media.is_empty();
-    let media: Vec<Value> = post
+    let media: Vec<MediaView> = post
         .media
         .iter()
         .enumerate()
         .map(|(position, item)| {
             let editable = crate::media::merge::supports(item);
-            json!({
-                "id": item.id,
-                "hash": item.blob_hash,
-                "thumb": item.poster_hash.clone().unwrap_or_else(|| item.blob_hash.clone()),
-                "ext": item.ext,
-                "is_video": item.is_video,
-                "width": item.width,
-                "height": item.height,
-                "kib": (item.bytes as f64 / 1024.0).round(),
-                "hidden": hidden.binary_search(&position).is_ok(),
-                "can_select": can_merge && editable && hidden.binary_search(&position).is_err(),
-                "can_compress": editable,
-                "compressed": compressed.contains(&position),
-                "over_photo_limit": editable && (item.bytes > photo_limit as i64
-                    || item.width.zip(item.height).is_some_and(|(w, h)|
-                        crate::media::compress::geometry_error(w, h).is_some())),
-                "undo_id": merge_undo.get(&position),
-            })
+            MediaView {
+                id: item.id,
+                hash: item.blob_hash.clone(),
+                thumb: item
+                    .poster_hash
+                    .clone()
+                    .unwrap_or_else(|| item.blob_hash.clone()),
+                ext: item.ext.clone(),
+                is_video: item.is_video,
+                width: item.width,
+                height: item.height,
+                kib: (item.bytes as f64 / 1024.0).round(),
+                hidden: hidden.binary_search(&position).is_ok(),
+                can_select: can_merge && editable && hidden.binary_search(&position).is_err(),
+                can_compress: editable,
+                compressed: compressed.contains(&position),
+                over_photo_limit: editable
+                    && (item.bytes > photo_limit as i64
+                        || item.width.zip(item.height).is_some_and(|(w, h)| {
+                            crate::media::compress::geometry_error(w, h).is_some()
+                        })),
+                undo_id: merge_undo.get(&position).copied(),
+            }
         })
         .collect();
     let media_total = crate::model::format_bytes(
@@ -1027,55 +997,60 @@ async fn post_page(
             .map(|m| m.bytes.max(0) as u64)
             .sum::<u64>(),
     );
-    let html = ws.pages.render(
-        "post_detail.html",
-        &json!({
-            "page": "posts",
-            "csrf": ws.csrf,
-            "flash": query.flash,
-            "open_section": query.section,
-            "guest_review": guest_review,
-            "post": {
-                "id": post.id,
-                "source": post.source,
-                "source_id": post.source_id,
-                "url": post.url,
-                "title": post.title,
-                "description": post.description,
-                "artist": post.author.as_ref().map(|a| a.display()),
-                "artist_url": post.author.as_ref().and_then(|a| a.url.clone()),
-                "rating": post.rating.as_str(),
-                "state": post.state.as_str(),
-                "nsfw_override": match post.nsfw_override { Some(true) => "yes", Some(false) => "no", None => "auto" },
-                "nsfw": post.is_nsfw(rules.hits_nsfw(&post.tags)),
-                "tags": tags,
-                "manual_tags": manual_tags,
-                "tag_removals": removals,
-                "notes": post.notes,
-                "imported": post.imported_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string(),
+    let nsfw = post.is_nsfw(rules.hits_nsfw(&post.tags));
+    Ok(Json(PostDetailPage {
+        open_section: query.section,
+        guest_review,
+        post: PostView {
+            id: post.id,
+            source: post.source,
+            source_id: post.source_id,
+            url: post.url,
+            title: post.title,
+            description: post.description,
+            artist: post.author.as_ref().map(|a| a.display()),
+            artist_url: post.author.as_ref().and_then(|a| a.url.clone()),
+            rating: post.rating.as_str(),
+            state: post.state.as_str(),
+            nsfw_override: match post.nsfw_override {
+                Some(true) => "yes",
+                Some(false) => "no",
+                None => "auto",
             },
-            "submitter": submitter.map(|(tg_id, label, admin)| json!({
-                "tg_id": tg_id,
-                "label": label,
-                "admin": admin,
-            })),
-            "media_total": media_total,
-            "media": media,
-            "can_merge": can_merge,
-            "has_media_tools": has_media_tools,
-            "merge_job": merge_job.as_ref().map(|job| job_view(job, now)),
-            "gallery_version": gallery_version,
-            "outgoing_count": outgoing.media.len(),
-            "tag_review": tag_review,
-            "can_suggest_tags": suggestions_enabled && post.media.iter().any(|media| !media.is_video),
-            "captions": captions,
-            "default_channel": default_channel,
-            "ratings": Rating::all().iter().map(|r| r.as_str()).collect::<Vec<_>>(),
-            "states": PostState::all().iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-            "channels": channels.iter().map(|c| json!({"id": c.id, "title": c.title})).collect::<Vec<_>>(),
+            nsfw,
+            tags,
+            manual_tags,
+            tag_removals: removals,
+            notes: post.notes,
+            imported: post
+                .imported_at
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string(),
+        },
+        submitter: submitter.map(|(tg_id, label, admin)| SubmitterView {
+            tg_id,
+            label,
+            admin,
         }),
-    )?;
-    Ok(Html(html))
+        media_total,
+        media,
+        can_merge,
+        has_media_tools,
+        merge_job: merge_job.as_ref().map(|job| job_view(job, now)),
+        gallery_version,
+        outgoing_count: outgoing.media.len(),
+        tag_review,
+        can_suggest_tags: suggestions_enabled && post.media.iter().any(|media| !media.is_video),
+        captions,
+        default_channel,
+        ratings: Rating::all().iter().map(|r| r.as_str()).collect::<Vec<_>>(),
+        states: PostState::all()
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>(),
+        channels: channels.iter().map(ChannelChoice::from).collect(),
+    }))
 }
 
 async fn post_queue(
@@ -1096,7 +1071,7 @@ async fn post_queue(
     if let crate::queue::EnqueueOutcome::Skipped(reason) = &outcome {
         return Err(Error::invalid(reason.clone()).into());
     }
-    Ok(flash_redirect(
+    Ok(action_result(
         &format!("/posts/{id}"),
         &format!("{} · {}", outcome.describe(), channel.title),
     ))
@@ -1172,7 +1147,7 @@ async fn post_update(
             Ok(())
         })
         .await?;
-    Ok(flash_redirect(&back, "Changes saved"))
+    Ok(action_result(&back, "Changes saved"))
 }
 
 fn post_is_sending(conn: &rusqlite::Connection, id: i64) -> crate::error::Result<bool> {
@@ -1184,26 +1159,18 @@ fn post_is_sending(conn: &rusqlite::Connection, id: i64) -> crate::error::Result
 async fn post_delete_page(
     State(ws): State<Arc<WebState>>,
     Path(id): Path<i64>,
-    Query(query): Query<PostDetailQuery>,
-) -> WebResult<Html<String>> {
+) -> WebResult<Json<PostDeletePage>> {
     let (post, sending) = ws
         .app
         .db
         .call(move |conn| Ok((post_db::get(conn, id)?, post_is_sending(conn, id)?)))
         .await?;
-    let html = ws.pages.render(
-        "post_delete.html",
-        &json!({
-            "page": "posts",
-            "csrf": ws.csrf,
-            "flash": query.flash,
-            "id": id,
-            "title": post.title,
-            "imported_at": post.imported_at.to_rfc3339(),
-            "sending": sending,
-        }),
-    )?;
-    Ok(Html(html))
+    Ok(Json(PostDeletePage {
+        id,
+        title: post.title,
+        imported_at: post.imported_at.to_rfc3339(),
+        sending,
+    }))
 }
 
 async fn post_delete(
@@ -1233,9 +1200,9 @@ async fn post_delete(
         })
         .await?;
     if deleted {
-        Ok(flash_redirect("/posts", "Post deleted"))
+        Ok(action_result("/posts", "Post deleted"))
     } else {
-        Ok(flash_redirect(
+        Ok(action_result(
             &format!("/posts/{id}/delete"),
             "Wait for the current send to finish before deleting.",
         ))
@@ -1276,18 +1243,12 @@ async fn post_tag_action(
         }
         _ => return Err(Error::invalid("unknown source tag action").into()),
     };
-    Ok(flash_redirect(
-        &format!("/posts/{id}?section=tags"),
-        message,
-    ))
+    Ok(action_result(&format!("/posts/{id}?section=tags"), message))
 }
 
 // ---------------------------------------------------------------- channels
 
-async fn channels_page(
-    State(ws): State<Arc<WebState>>,
-    Query(query): Query<PostFilter>,
-) -> WebResult<Html<String>> {
+async fn channels_page(State(ws): State<Arc<WebState>>) -> WebResult<Json<ChannelsPage>> {
     let app = &ws.app;
     let channels = app.db.call(|conn| channel_db::list(conn)).await?;
     let now = chrono::Utc::now();
@@ -1298,35 +1259,31 @@ async fn channels_page(
             .db
             .call(move |conn| queue_db::count_state(conn, channel_id, QueueState::Queued))
             .await?;
-        views.push(json!({
-            "id": channel.id,
-            "alias": channel.alias,
-            "discovered": channel.discovered,
-            "title": channel.title,
-            "tg_id": channel.tg_id,
-            "queued": queued,
-            "interval": channel.interval_minutes,
-            "nsfw_policy": channel.nsfw_policy.as_str(),
-            "tag_style": channel.tag_style.as_str(),
-            "attribution": channel.attribution.as_str(),
-            "active": format!("{} - {} ({})", channel.active_from, channel.active_to, channel.tz),
-            "paused": channel.paused,
-            "enabled": channel.enabled,
-            "next": crate::tg::publish::next_slot_hint(channel, now),
-        }));
+        views.push(ChannelSummary {
+            id: channel.id,
+            alias: channel.alias.clone(),
+            discovered: channel.discovered,
+            title: channel.title.clone(),
+            tg_id: channel.tg_id.clone(),
+            queued,
+            interval: channel.interval_minutes,
+            nsfw_policy: channel.nsfw_policy.as_str(),
+            tag_style: channel.tag_style.as_str(),
+            attribution: channel.attribution.as_str(),
+            active: format!(
+                "{} - {} ({})",
+                channel.active_from, channel.active_to, channel.tz
+            ),
+            paused: channel.paused,
+            enabled: channel.enabled,
+            next: crate::tg::publish::next_slot_hint(channel, now),
+        });
     }
-    let html = ws.pages.render(
-        "channels.html",
-        &json!({
-            "page": "channels",
-            "csrf": ws.csrf,
-            "flash": decode_flash(&query.flash),
-            "channels": views,
-            "timezones": timezones(),
-            "templates": app.renderer.template_names(),
-        }),
-    )?;
-    Ok(Html(html))
+    Ok(Json(ChannelsPage {
+        channels: views,
+        timezones: timezones(),
+        templates: app.renderer.template_names(),
+    }))
 }
 
 fn channel_from_form(mut channel: Channel, form: &ChannelForm) -> Result<Channel, Error> {
@@ -1462,7 +1419,7 @@ async fn channel_create(
         .db
         .call(move |conn| channel_db::insert(conn, &to_insert))
         .await?;
-    Ok(flash_redirect(
+    Ok(action_result(
         &format!("/channels/{id}/edit"),
         &format!("Channel #{id} verified and created"),
     ))
@@ -1471,60 +1428,68 @@ async fn channel_create(
 async fn channel_edit_page(
     State(ws): State<Arc<WebState>>,
     Path(id): Path<i64>,
-) -> WebResult<Html<String>> {
+) -> WebResult<Json<ChannelEditPage>> {
     let app = &ws.app;
     let channel = app.db.call(move |conn| channel_db::get(conn, id)).await?;
     let preview = crate::tg::publish::preview_channel(app, &channel, 1).await?;
-    let html = ws.pages.render(
-        "channel_edit.html",
-        &json!({
-            "page": "channels",
-            "csrf": ws.csrf,
-            "flash": Value::Null,
-            "channel": {
-                "id": channel.id,
-                "alias": channel.alias,
-                "discovered": channel.discovered,
-                "title": channel.title,
-                "tg_id": channel.tg_id,
-                "enabled": channel.enabled,
-                "interval_minutes": channel.interval_minutes,
-                "active_from": channel.active_from,
-                "active_to": channel.active_to,
-                "tz": channel.tz,
-                "daily_cap": channel.daily_cap,
-                "jitter_secs": channel.jitter_secs,
-                "artist_cooldown": channel.artist_cooldown,
-                "nsfw_policy": channel.nsfw_policy.as_str(),
-                "min_media": channel.min_media,
-                "blocked_tags": channel.blocked_tags,
-                "required_tags": channel.required_tags,
-                "tag_style": channel.tag_style.as_str(),
-                "max_tags": channel.max_tags,
-                "attribution": channel.attribution.as_str(),
-                "parse_mode": channel.parse_mode.as_str(),
-                "template_name": channel.template_name,
-                "template": channel.template,
-                "silent": channel.silent,
-                "protect": channel.protect,
-                "include_source_tag": channel.include_source_tag,
-                "paused": channel.paused,
-                "failures": channel.consecutive_failures,
-            },
-            "timezones": timezones(),
-            "policies": NsfwPolicy::all().iter().map(|p| p.as_str()).collect::<Vec<_>>(),
-            "tag_styles": TagStyle::all().iter().map(|p| p.as_str()).collect::<Vec<_>>(),
-            "attributions": Attribution::all().iter().map(|p| p.as_str()).collect::<Vec<_>>(),
-            "parse_modes": ParseMode::all().iter().map(|p| p.as_str()).collect::<Vec<_>>(),
-            "templates": app.renderer.template_names(),
-            "default_template": app.renderer.template_source("default").unwrap_or_default(),
-            "sample": preview.first().map(|item| json!({
-                "caption": item.caption, "reason": item.reason, "media": item.media,
-                "messages": item.messages, "spoiler": item.spoiler,
-            })),
+    Ok(Json(ChannelEditPage {
+        channel: ChannelSettings {
+            id: channel.id,
+            alias: channel.alias.clone(),
+            discovered: channel.discovered,
+            title: channel.title.clone(),
+            tg_id: channel.tg_id.clone(),
+            enabled: channel.enabled,
+            interval_minutes: channel.interval_minutes,
+            active_from: channel.active_from,
+            active_to: channel.active_to,
+            tz: channel.tz,
+            daily_cap: channel.daily_cap,
+            jitter_secs: channel.jitter_secs,
+            artist_cooldown: channel.artist_cooldown,
+            nsfw_policy: channel.nsfw_policy.as_str(),
+            min_media: channel.min_media,
+            blocked_tags: channel.blocked_tags,
+            required_tags: channel.required_tags,
+            tag_style: channel.tag_style.as_str(),
+            max_tags: channel.max_tags,
+            attribution: channel.attribution.as_str(),
+            parse_mode: channel.parse_mode.as_str(),
+            template_name: channel.template_name,
+            template: channel.template,
+            silent: channel.silent,
+            protect: channel.protect,
+            include_source_tag: channel.include_source_tag,
+            paused: channel.paused,
+            failures: channel.consecutive_failures,
+        },
+        timezones: timezones(),
+        policies: NsfwPolicy::all()
+            .iter()
+            .map(|p| p.as_str())
+            .collect::<Vec<_>>(),
+        tag_styles: TagStyle::all()
+            .iter()
+            .map(|p| p.as_str())
+            .collect::<Vec<_>>(),
+        attributions: Attribution::all()
+            .iter()
+            .map(|p| p.as_str())
+            .collect::<Vec<_>>(),
+        parse_modes: ParseMode::all()
+            .iter()
+            .map(|p| p.as_str())
+            .collect::<Vec<_>>(),
+        templates: app.renderer.template_names(),
+        default_template: app.renderer.template_source("default").unwrap_or_default(),
+        sample: preview.first().map(|item| CaptionSample {
+            caption: item.caption.clone(),
+            reason: item.reason.clone(),
+            media: item.media,
+            messages: item.messages,
+            spoiler: item.spoiler,
         }),
-    )?;
-    Ok(Html(html))
+    }))
 }
 
 async fn channel_update(
@@ -1547,7 +1512,7 @@ async fn channel_update(
     app.db
         .call(move |conn| channel_db::update(conn, &to_update))
         .await?;
-    Ok(flash_redirect(&format!("/channels/{id}/edit"), "saved"))
+    Ok(action_result(&format!("/channels/{id}/edit"), "saved"))
 }
 
 fn queue_state_label(state: QueueState) -> &'static str {
@@ -1589,7 +1554,7 @@ async fn channel_schedule(
         })
         .await?;
     let back = format!("/channels/{id}/queue");
-    Ok(flash_redirect(
+    Ok(action_result(
         &back,
         if paused {
             "Schedule paused"
@@ -1602,10 +1567,10 @@ async fn channel_schedule(
 async fn queue_page(
     State(ws): State<Arc<WebState>>,
     Path(id): Path<i64>,
-) -> WebResult<Html<String>> {
+) -> WebResult<Json<QueuePage>> {
     let app = &ws.app;
     use super::queue_status::{PAGE_LIMIT, VISIBLE_STATES, snapshot};
-    let (channel, activity, entries, unresolved) = app
+    let (channel, activity, entries, mut unresolved) = app
         .db
         .call(move |conn| {
             let tx = conn.transaction()?;
@@ -1632,30 +1597,35 @@ async fn queue_page(
             .map(|projected| (projected.queue_id, projected.slot))
             .collect();
 
-    let items: Vec<Value> = entries
+    let items: Vec<QueueRow> = entries
         .iter()
         .map(|entry| {
             let post = entry.item.post_id;
             let slot = planned.get(&entry.item.id).copied();
-            json!({
-                "id": entry.item.id,
-                "post_id": post,
-                "state": entry.item.state.as_str(),
-                "state_label": queue_state_label(entry.item.state),
-                "delivery": unresolved.get(&entry.item.id),
-                "priority": entry.item.priority,
-                "pinned": entry.item.pinned,
-                "attempts": entry.item.attempts,
-                "error": entry.item.last_error,
-                "artist": entry.card.author_name,
-                "snippet": entry.card.snippet,
-                "thumb": entry.card.thumb_hash,
-                "media_count": entry.card.media_count,
-                "nsfw": entry.card.nsfw,
-                "added": entry.item.added_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string(),
-                "eta": slot.map(|slot| crate::tg::publish::slot_label(slot, now)),
-                "eta_in": slot.map(|slot| crate::tg::publish::format_duration(slot - now)),
-            })
+            QueueRow {
+                id: entry.item.id,
+                post_id: post,
+                state: entry.item.state.as_str(),
+                state_label: queue_state_label(entry.item.state),
+                delivery: unresolved.remove(&entry.item.id),
+                priority: entry.item.priority,
+                pinned: entry.item.pinned,
+                attempts: entry.item.attempts,
+                error: entry.item.last_error.clone(),
+                artist: entry.card.author_name.clone(),
+                snippet: entry.card.snippet.clone(),
+                thumb: entry.card.thumb_hash.clone(),
+                media_count: entry.card.media_count,
+                nsfw: entry.card.nsfw,
+                added: entry
+                    .item
+                    .added_at
+                    .with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M")
+                    .to_string(),
+                eta: slot.map(|slot| crate::tg::publish::slot_label(slot, now)),
+                eta_in: slot.map(|slot| crate::tg::publish::format_duration(slot - now)),
+            }
         })
         .collect();
 
@@ -1663,20 +1633,18 @@ async fn queue_page(
         .is_empty()
         .then_some("no ETA: nothing is queued, or the channel is paused/outside its hours");
 
-    let html = ws.pages.render(
-        "queue.html",
-        &json!({
-            "page": "channels",
-            "csrf": ws.csrf,
-            "flash": Value::Null,
-            "channel": {"id": channel.id, "title": channel.title, "tg_id": channel.tg_id,
-                "enabled": channel.enabled, "paused": channel.paused},
-            "activity": activity,
-            "items": items,
-            "eta_hint": eta_hint,
-        }),
-    )?;
-    Ok(Html(html))
+    Ok(Json(QueuePage {
+        channel: QueueChannel {
+            id: channel.id,
+            title: channel.title.clone(),
+            tg_id: channel.tg_id.clone(),
+            enabled: channel.enabled,
+            paused: channel.paused,
+        },
+        activity,
+        items,
+        eta_hint,
+    }))
 }
 
 fn guarded_queue_edit(
@@ -1782,19 +1750,18 @@ async fn queue_action(
         other => format!("unknown action {other}"),
     };
     match channel_id {
-        Some(channel_id) => Ok(flash_redirect(
+        Some(channel_id) => Ok(action_result(
             &format!("/channels/{channel_id}/queue"),
             &note,
         )),
-        None => Ok(flash_redirect("/", &note)),
+        None => Ok(action_result("/", &note)),
     }
 }
 
 async fn preview_page(
     State(ws): State<Arc<WebState>>,
     Path(id): Path<i64>,
-    Query(query): Query<PostFilter>,
-) -> WebResult<Html<String>> {
+) -> WebResult<Json<PreviewPage>> {
     let app = &ws.app;
     let channel = app.db.call(move |conn| channel_db::get(conn, id)).await?;
     let stopped = !channel.enabled || channel.paused;
@@ -1805,12 +1772,13 @@ async fn preview_page(
     let items = crate::tg::publish::preview_channel(app, &projection, 10).await?;
     let enable_item = if app.cfg.require_bot_token().is_ok() {
         match &held {
-            Some(held) if held["allowed"] == true => Some(held.clone()),
-            None if stopped => items.first().map(|item| {
-                json!({
-                    "queue_id": item.queue_id,
-                    "post_id": item.post_id,
-                })
+            Some(held) if held.allowed => Some(PreviewSelection {
+                queue_id: held.queue_id,
+                post_id: held.post_id,
+            }),
+            None if stopped => items.first().map(|item| PreviewSelection {
+                queue_id: item.queue_id,
+                post_id: item.post_id,
             }),
             _ => None,
         }
@@ -1818,32 +1786,34 @@ async fn preview_page(
         None
     };
     let now = chrono::Utc::now();
-    let html = ws.pages.render(
-        "preview.html",
-        &json!({
-            "page": "channels",
-            "csrf": ws.csrf,
-            "flash": decode_flash(&query.flash),
-            "channel": {"id": channel.id, "title": channel.title, "tg_id": channel.tg_id},
-            "held": held,
-            "stopped": stopped,
-            "enable_item": enable_item,
-            "items": items.iter().enumerate().map(|(index, item)| json!({
-                "slot": index + 1,
-                "queue_id": item.queue_id,
-                "post_id": item.post_id,
-                "title": item.title,
-                "caption": item.caption,
-                "media": item.media,
-                "messages": item.messages,
-                "spoiler": item.spoiler,
-                "nsfw": item.nsfw,
-                "eta": crate::tg::publish::slot_label(item.eta, now),
-                "eta_in": crate::tg::publish::format_duration(item.eta - now),
-            })).collect::<Vec<_>>(),
-        }),
-    )?;
-    Ok(Html(html))
+    Ok(Json(PreviewPage {
+        channel: ChannelTarget {
+            id: channel.id,
+            title: channel.title.clone(),
+            tg_id: channel.tg_id,
+        },
+        held,
+        stopped,
+        enable_item,
+        items: items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| PreviewRow {
+                slot: index + 1,
+                queue_id: item.queue_id,
+                post_id: item.post_id,
+                title: item.title.clone(),
+                caption: item.caption.clone(),
+                media: item.media,
+                messages: item.messages,
+                spoiler: item.spoiler,
+                nsfw: item.nsfw,
+                reason: item.reason.clone(),
+                eta: crate::tg::publish::slot_label(item.eta, now),
+                eta_in: crate::tg::publish::format_duration(item.eta - now),
+            })
+            .collect::<Vec<_>>(),
+    }))
 }
 
 // ---------------------------------------------------------------- storage
@@ -1862,7 +1832,7 @@ async fn storage_drain(
         Some(id) => format!("upload queued as job #{id} - watch the jobs panel"),
         None => "an upload is already queued".to_string(),
     };
-    Ok(with_job(flash_redirect("/", &note), job))
+    Ok(accepted("/", &note, job.into_iter().collect()))
 }
 
 // ---------------------------------------------------------------- publish
@@ -1912,26 +1882,20 @@ async fn publish_action(
     } else if let Some(channel_id) = channel_id {
         crate::jobs::create_publish_channel_job(app, channel_id).await
     } else {
-        return Ok(flash_redirect(&back, "nothing selected to publish"));
+        return Ok(action_result(&back, "nothing selected to publish"));
     };
 
-    let note = match &queued {
-        Ok(Some(id)) => format!("publish queued as job #{id} - the jobs panel shows it finish"),
-        Ok(None) => "a publish for this is already queued or running".to_string(),
-        Err(err) => format!("cannot queue the publish: {err}"),
+    let queued = queued?;
+    let note = match queued {
+        Some(id) => format!("publish queued as job #{id} - the jobs panel shows it finish"),
+        None => "a publish for this is already queued or running".to_string(),
     };
-    let mut response = flash_redirect(&back, &note);
-    if let Ok(Some(id)) = queued {
-        response
-            .extensions_mut()
-            .insert(super::admin::AcceptedJob(id));
-    }
-    Ok(response)
+    Ok(accepted(&back, &note, queued.into_iter().collect()))
 }
 /// Is the scheduler alive? Read by the dashboard banner and `/api/status`, so a
 /// queue that is not moving can be explained instead of guessed at.
 #[derive(serde::Serialize)]
-struct SchedulerView {
+pub(super) struct SchedulerView {
     last_tick: Option<String>,
     age_secs: Option<i64>,
     age: String,
@@ -1961,9 +1925,8 @@ async fn scheduler_view(
 
 // ---------------------------------------------------------------- jobs
 
-/// One job as both the templates and `/api/status` want it: same field names, so
-/// the page and the live updates cannot drift apart.
-pub fn job_view(job: &job_db::Job, now: chrono::DateTime<chrono::Utc>) -> Value {
+/// Job representation shared by initial admin reads and live status.
+pub fn job_view(job: &job_db::Job, now: chrono::DateTime<chrono::Utc>) -> JobView {
     let percent = if job.total > 0 {
         (job.progress * 100 / job.total).clamp(0, 100)
     } else if job.state == "done" {
@@ -1972,32 +1935,37 @@ pub fn job_view(job: &job_db::Job, now: chrono::DateTime<chrono::Utc>) -> Value 
         0
     };
     let age = now - job.updated_at;
-    json!({
-        "id": job.id,
-        "kind": job.kind,
-        "kind_label": kind_label(&job.kind),
-        "watch_id": (job.kind == crate::jobs::KIND_WATCH_CHECK)
-            .then(|| job.payload.as_deref()?.parse::<i64>().ok()).flatten(),
-        "payload": if crate::jobs::is_gallery_edit(&job.kind) {
+    JobView {
+        id: job.id,
+        kind: job.kind.clone(),
+        kind_label: kind_label(&job.kind).into(),
+        watch_id: (job.kind == crate::jobs::KIND_WATCH_CHECK)
+            .then(|| job.payload.as_deref()?.parse::<i64>().ok())
+            .flatten(),
+        payload: if crate::jobs::is_gallery_edit(&job.kind) {
             job.post_id.map(|id| format!("post #{id}"))
         } else {
             job.payload.clone()
         },
-        "state": job.state,
-        "progress": job.progress,
-        "total": job.total,
-        "percent": percent,
+        state: job.state.clone(),
+        progress: job.progress,
+        total: job.total,
+        percent,
         // a bar only means something when one job really processes many posts
         // (an artist page or a folder): `1/1` for a single-target job was noise
-        "track": job.total > 1,
-        "message": job.message,
-        "post_id": job.post_id,
-        "active": job.is_active(),
-        "retryable": job.kind == crate::jobs::KIND_IMPORT && job.state == "failed",
-        "age_secs": age.num_seconds().max(0),
-        "age": crate::tg::publish::format_duration(age),
-        "created": job.created_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string(),
-    })
+        track: job.total > 1,
+        message: job.message.clone(),
+        post_id: job.post_id,
+        active: job.is_active(),
+        retryable: job.kind == crate::jobs::KIND_IMPORT && job.state == "failed",
+        age_secs: age.num_seconds().max(0),
+        age: crate::tg::publish::format_duration(age),
+        created: job
+            .created_at
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string(),
+    }
 }
 
 /// What a job kind means to a person reading the page.
@@ -2015,10 +1983,7 @@ fn kind_label(kind: &str) -> &str {
     }
 }
 
-async fn jobs_page(
-    State(ws): State<Arc<WebState>>,
-    Query(query): Query<PostFilter>,
-) -> WebResult<Html<String>> {
+async fn jobs_page(State(ws): State<Arc<WebState>>) -> WebResult<Json<JobsPage>> {
     let app = &ws.app;
     let now = chrono::Utc::now();
     let jobs = app.db.call(|conn| job_db::list(conn, 50)).await?;
@@ -2026,18 +1991,14 @@ async fn jobs_page(
         .db
         .call(|conn| job_db::count_pending(conn, crate::jobs::KIND_IMPORT))
         .await?;
-    let html = ws.pages.render(
-        "jobs.html",
-        &json!({
-            "page": "jobs",
-            "csrf": ws.csrf,
-            "flash": decode_flash(&query.flash),
-            "jobs": jobs.iter().map(|job| job_view(job, now)).collect::<Vec<_>>(),
-            "parallel": app.cfg.max_concurrent_imports,
-            "waiting": waiting,
-        }),
-    )?;
-    Ok(Html(html))
+    Ok(Json(JobsPage {
+        jobs: jobs
+            .iter()
+            .map(|job| job_view(job, now))
+            .collect::<Vec<_>>(),
+        parallel: app.cfg.max_concurrent_imports,
+        waiting,
+    }))
 }
 
 /// Re-run a failed import as a new job row, so the history keeps both attempts.
@@ -2053,7 +2014,7 @@ async fn jobs_retry(
     };
     let app = &ws.app;
     let Some(id) = forms::field(&form, "id").and_then(|raw| raw.parse::<i64>().ok()) else {
-        return Ok(flash_redirect(back, "no job selected"));
+        return Ok(action_result(back, "no job selected"));
     };
     let job = app
         .db
@@ -2061,7 +2022,7 @@ async fn jobs_retry(
         .await?
         .ok_or_else(|| Error::NotFound(format!("job {id}")))?;
     if job.kind != crate::jobs::KIND_IMPORT {
-        return Ok(flash_redirect(
+        return Ok(action_result(
             back,
             "only imports can be retried - publishing has its own button",
         ));
@@ -2069,25 +2030,23 @@ async fn jobs_retry(
     // only a settled failure may be retried: a pending or running import would
     // otherwise be started twice for the same target
     if job.state != "failed" {
-        return Ok(flash_redirect(back, "only failed jobs can be retried"));
+        return Ok(action_result(back, "only failed jobs can be retried"));
     }
     let target = job.payload.clone().unwrap_or_default();
     if target.trim().is_empty() {
-        return Ok(flash_redirect(back, "that job has no target to retry"));
+        return Ok(action_result(back, "that job has no target to retry"));
     }
     let job = crate::jobs::create_import_job_unique(app, &target).await?;
     let note = match job {
         Some(new_id) => format!("job #{id} re-queued as #{new_id}"),
         None => format!("job #{id} is already queued or running"),
     };
-    Ok(with_job(flash_redirect(back, &note), job))
+    Ok(accepted(back, &note, job.into_iter().collect()))
 }
 
 // ---------------------------------------------------------------- status API
 
-/// Machine-readable state for the live UI: `static/app.js` polls this instead of
-/// re-downloading whole pages, so the templates stay server-rendered and nothing
-/// here needs a JS build step.
+/// Machine-readable state for existing status API consumers.
 #[derive(serde::Deserialize)]
 struct StatusQuery {
     tag_post: Option<i64>,
@@ -2163,8 +2122,8 @@ pub async fn status_payload(app: &AppState) -> crate::error::Result<Value> {
         });
         channel_views.push(json!({
             "id": channel_id,
-            "alias": channel.alias,
-            "title": channel.title,
+            "alias": channel.alias.clone(),
+            "title": channel.title.clone(),
             "queued": count(QueueState::Queued.as_str()),
             "in_flight": count(QueueState::Sending.as_str()),
             "publishing": queued_publish || count(QueueState::Sending.as_str()) > 0,
@@ -2187,10 +2146,7 @@ pub async fn status_payload(app: &AppState) -> crate::error::Result<Value> {
 
 // ---------------------------------------------------------------- import
 
-async fn import_page(
-    State(ws): State<Arc<WebState>>,
-    Query(query): Query<PostFilter>,
-) -> WebResult<Html<String>> {
+async fn import_page(State(ws): State<Arc<WebState>>) -> WebResult<Json<ImportPage>> {
     let app = &ws.app;
     let now = chrono::Utc::now();
     let jobs = app.db.call(|conn| job_db::list(conn, 15)).await?;
@@ -2198,19 +2154,15 @@ async fn import_page(
         .db
         .call(|conn| job_db::count_pending(conn, crate::jobs::KIND_IMPORT))
         .await?;
-    let html = ws.pages.render(
-        "import.html",
-        &json!({
-            "page": "import",
-            "csrf": ws.csrf,
-            "flash": decode_flash(&query.flash),
-            "jobs": jobs.iter().map(|job| job_view(job, now)).collect::<Vec<_>>(),
-            "parallel": app.cfg.max_concurrent_imports,
-            "waiting": waiting,
-            "cookies": app.cfg.cookies_dir().display().to_string(),
-        }),
-    )?;
-    Ok(Html(html))
+    Ok(Json(ImportPage {
+        jobs: jobs
+            .iter()
+            .map(|job| job_view(job, now))
+            .collect::<Vec<_>>(),
+        parallel: app.cfg.max_concurrent_imports,
+        waiting,
+        cookies: app.cfg.cookies_dir().display().to_string(),
+    }))
 }
 
 async fn import_submit(
@@ -2220,7 +2172,7 @@ async fn import_submit(
     check_csrf(&ws, &form.csrf)?;
     let targets = form.target_list();
     if targets.is_empty() {
-        return Ok(flash_redirect("/import", "no targets given"));
+        return Ok(action_result("/import", "no targets given"));
     }
     let app = &ws.app;
     let mut jobs = Vec::new();
@@ -2231,19 +2183,12 @@ async fn import_submit(
         "{} import job(s) queued. Open the results to review and queue artwork.",
         jobs.len()
     );
-    let mut response = flash_redirect("/import", &note);
-    response
-        .extensions_mut()
-        .insert(super::admin::AcceptedJobs(jobs));
-    Ok(response)
+    Ok(accepted("/import", &note, jobs))
 }
 
 // ---------------------------------------------------------------- users
 
-async fn users_page(
-    State(ws): State<Arc<WebState>>,
-    Query(query): Query<PostFilter>,
-) -> WebResult<Html<String>> {
+async fn users_page(State(ws): State<Arc<WebState>>) -> WebResult<Json<UsersPage>> {
     let app = &ws.app;
     let users = app
         .db
@@ -2264,32 +2209,28 @@ async fn users_page(
         // config wins at runtime, so show the role the bot will actually use
         // (the same helper the CLI and the bot's /users use)
         let role = crate::bot::access::display_role(config_admin, &user.role);
-        views.push(json!({
-            "tg_id": user.tg_id,
-            "label": user.label(),
-            "role": role,
-            "db_role": user.role,
-            "archived": archived,
-            "pushed": pushed,
-            "sent": sent,
-            "config_admin": config_admin,
-            "last_seen": user.last_seen_at
+        views.push(UserView {
+            tg_id: user.tg_id,
+            label: user.label(),
+            role: role.to_string(),
+            db_role: user.role.clone(),
+            archived,
+            pushed,
+            sent,
+            config_admin,
+            last_seen: user
+                .last_seen_at
                 .as_deref()
                 .and_then(crate::db::parse_ts)
-                .map(|ts| ts.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
+                .map(|ts| {
+                    ts.with_timezone(&chrono::Local)
+                        .format("%Y-%m-%d %H:%M")
+                        .to_string()
+                })
                 .unwrap_or_default(),
-        }));
+        });
     }
-    let html = ws.pages.render(
-        "users.html",
-        &json!({
-            "page": "users",
-            "csrf": ws.csrf,
-            "flash": decode_flash(&query.flash),
-            "users": views,
-        }),
-    )?;
-    Ok(Html(html))
+    Ok(Json(UsersPage { users: views }))
 }
 
 async fn users_action(
@@ -2298,14 +2239,14 @@ async fn users_action(
 ) -> WebResult<Response> {
     check_csrf(&ws, forms::field(&form, "csrf").unwrap_or_default())?;
     let Some(tg_id) = forms::field(&form, "tg_id").and_then(|raw| raw.parse::<i64>().ok()) else {
-        return Ok(flash_redirect("/users", "missing user id"));
+        return Ok(action_result("/users", "missing user id"));
     };
     let role = forms::field(&form, "role").unwrap_or("guest").to_string();
     if !matches!(role.as_str(), "admin" | "guest" | "banned") {
-        return Ok(flash_redirect("/users", "unknown role"));
+        return Ok(action_result("/users", "unknown role"));
     }
     if role != "admin" && ws.app.cfg.access.is_admin(tg_id) {
-        return Ok(flash_redirect(
+        return Ok(action_result(
             "/users",
             "that id is an admin in config.toml - edit the config to demote them",
         ));
@@ -2317,10 +2258,5 @@ async fn users_action(
         .await?;
     let app = ws.app.clone();
     tokio::spawn(async move { crate::bot::menus::sync_stored_user(&app, tg_id).await });
-    Ok(flash_redirect("/users", &format!("{tg_id} -> {role}")))
-}
-
-#[allow(dead_code)]
-fn unused() -> &'static str {
-    web_auth::COOKIE
+    Ok(action_result("/users", &format!("{tg_id} -> {role}")))
 }

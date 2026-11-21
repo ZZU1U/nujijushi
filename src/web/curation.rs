@@ -3,28 +3,29 @@
 use std::sync::Arc;
 
 use axum::{
-    Form,
+    Form, Json,
     extract::{Path, Query, State},
-    response::{Html, Response},
+    response::Response,
 };
 use serde::Deserialize;
-use serde_json::{Value, json};
 
 use crate::db::{self, duplicates, watches};
 use crate::error::{Error, Result};
 use crate::jobs;
 use crate::source::watch::Feed;
 
+use super::admin::action_result;
 use super::{
     WebState,
+    data::{
+        DuplicateImage, DuplicateMatch, DuplicatePair, DuplicatePost, DuplicateQueue,
+        DuplicatesPage, WatchView, WatchesPage,
+    },
     forms::PostFilter,
-    routes::{WebResult, check_csrf, flash_redirect, job_view},
+    routes::{WebResult, check_csrf, job_view},
 };
 
-pub async fn watches_page(
-    State(ws): State<Arc<WebState>>,
-    Query(query): Query<PostFilter>,
-) -> WebResult<Html<String>> {
+pub async fn watches_page(State(ws): State<Arc<WebState>>) -> WebResult<Json<WatchesPage>> {
     let now = chrono::Utc::now();
     let watches = ws
         .app
@@ -38,27 +39,19 @@ pub async fn watches_page(
                         .map(|id| db::jobs::get(conn, id))
                         .transpose()?
                         .flatten();
-                    Ok(json!({
-                        "id": watch.id,
-                        "name": watch.name,
-                        "url": watch.url,
-                        "initial_batch": watch.initial_batch,
-                        "enabled": watch.enabled,
-                        "job": job.as_ref().map(|job| job_view(job, now)),
-                    }))
+                    Ok(WatchView {
+                        id: watch.id,
+                        name: watch.name,
+                        url: watch.url,
+                        initial_batch: watch.initial_batch,
+                        enabled: watch.enabled,
+                        job: job.as_ref().map(|job| job_view(job, now)),
+                    })
                 })
                 .collect::<Result<Vec<_>>>()
         })
         .await?;
-    Ok(Html(ws.pages.render(
-        "watches.html",
-        &json!({
-            "page": "watches",
-            "csrf": ws.csrf,
-            "flash": query.flash,
-            "watches": watches,
-        }),
-    )?))
+    Ok(Json(WatchesPage { watches }))
 }
 
 #[derive(Deserialize)]
@@ -90,7 +83,7 @@ pub async fn create_watch(
         .db
         .call(move |conn| watches::create(conn, &name, &feed.url, initial_batch))
         .await?;
-    Ok(flash_redirect(
+    Ok(action_result(
         "/watches",
         if created {
             "Watch added"
@@ -113,16 +106,15 @@ pub async fn check_watch(
 ) -> WebResult<Response> {
     check_csrf(&ws, &form.csrf)?;
     let (job, queued) = jobs::create_watch_check_job(&ws.app, id).await?;
-    Ok(super::routes::with_job(
-        flash_redirect(
-            "/watches",
-            if queued {
-                "Check queued"
-            } else {
-                "A check is already active"
-            },
-        ),
-        Some(job),
+    let message = if queued {
+        "Watch check queued"
+    } else {
+        "A check is already active"
+    };
+    Ok(super::admin::accepted(
+        "/watches",
+        message,
+        queued.then_some(job).into_iter().collect(),
     ))
 }
 
@@ -151,7 +143,7 @@ pub async fn toggle_watch(
         .db
         .call(move |conn| watches::set_enabled(conn, id, enabled))
         .await?;
-    Ok(flash_redirect(
+    Ok(action_result(
         "/watches",
         if enabled {
             "Watch resumed"
@@ -172,7 +164,7 @@ pub async fn remove_watch(
         .db
         .call(move |conn| watches::remove(conn, id, jobs::KIND_WATCH_CHECK))
         .await?;
-    Ok(flash_redirect(
+    Ok(action_result(
         "/watches",
         if removed {
             "Watch removed"
@@ -185,7 +177,7 @@ pub async fn remove_watch(
 pub async fn duplicates_page(
     State(ws): State<Arc<WebState>>,
     Query(query): Query<PostFilter>,
-) -> WebResult<Html<String>> {
+) -> WebResult<Json<DuplicatesPage>> {
     let page = query.page.unwrap_or(1).max(1);
     let offset = (page - 1).saturating_mul(duplicates::PAGE_SIZE);
     let blobs = ws.app.blobs.clone();
@@ -201,50 +193,42 @@ pub async fn duplicates_page(
             for (left, right) in keys.into_iter().take(duplicates::PAGE_SIZE as usize) {
                 let evidence: Vec<_> = duplicates::evidence(&snapshot, left, right)?
                     .into_iter()
-                    .map(|item| {
-                        json!({
-                            "left": {
-                                "hash": item.left_hash,
-                                "position": item.left_position,
-                                "thumb": blobs.thumb_exists(&item.left_hash),
-                            },
-                            "right": {
-                                "hash": item.right_hash,
-                                "position": item.right_position,
-                                "thumb": blobs.thumb_exists(&item.right_hash),
-                            },
-                            "exact": item.exact,
-                        })
+                    .map(|item| DuplicateMatch {
+                        left: DuplicateImage {
+                            thumb: blobs.thumb_exists(&item.left_hash),
+                            hash: item.left_hash,
+                            position: item.left_position,
+                        },
+                        right: DuplicateImage {
+                            thumb: blobs.thumb_exists(&item.right_hash),
+                            hash: item.right_hash,
+                            position: item.right_position,
+                        },
+                        exact: item.exact,
                     })
                     .collect();
-                pairs.push(json!({
-                    "left": post_side(&snapshot, left, &channels)?,
-                    "right": post_side(&snapshot, right, &channels)?,
-                    "matches": evidence,
-                }));
+                pairs.push(DuplicatePair {
+                    left: post_side(&snapshot, left, &channels)?,
+                    right: post_side(&snapshot, right, &channels)?,
+                    matches: evidence,
+                });
             }
             Ok((pairs, has_next, duplicates::has_pending(&snapshot)?))
         })
         .await?;
-    Ok(Html(ws.pages.render(
-        "duplicates.html",
-        &json!({
-            "page": "duplicates",
-            "csrf": ws.csrf,
-            "flash": query.flash,
-            "pairs": pairs,
-            "previous": (page > 1).then_some(page - 1),
-            "next": has_next.then(|| page.saturating_add(1)),
-            "indexing": indexing,
-        }),
-    )?))
+    Ok(Json(DuplicatesPage {
+        pairs,
+        previous: (page > 1).then_some(page - 1),
+        next: has_next.then(|| page.saturating_add(1)),
+        indexing,
+    }))
 }
 
 fn post_side(
     conn: &rusqlite::Connection,
     id: i64,
     channels: &[crate::model::Channel],
-) -> Result<Value> {
+) -> Result<DuplicatePost> {
     let post = db::posts::get(conn, id)?;
     let url = post.url.as_deref().filter(|value| {
         url::Url::parse(value).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
@@ -255,19 +239,23 @@ fn post_side(
             let alias = channels
                 .iter()
                 .find(|channel| channel.id == channel_id)
-                .map(|channel| &channel.alias);
-            json!({"alias": alias, "state": state.as_str(), "channel_id": channel_id})
+                .map(|channel| channel.alias.clone());
+            DuplicateQueue {
+                alias,
+                state: state.as_str(),
+                channel_id,
+            }
         })
         .collect();
-    Ok(json!({
-        "id": id,
-        "title": post.title,
-        "artist": post.author_label(),
-        "source": post.source,
-        "url": url,
-        "state": post.state.as_str(),
-        "queues": statuses,
-    }))
+    Ok(DuplicatePost {
+        id,
+        artist: post.author_label(),
+        title: post.title,
+        source: post.source,
+        url: url.map(str::to_owned),
+        state: post.state.as_str(),
+        queues: statuses,
+    })
 }
 
 #[derive(Deserialize)]
@@ -288,7 +276,7 @@ pub async fn dismiss(
         .db
         .call(move |conn| duplicates::dismiss(conn, form.left, form.right))
         .await?;
-    Ok(flash_redirect(
+    Ok(action_result(
         "/duplicates",
         if dismissed {
             "Pair dismissed"

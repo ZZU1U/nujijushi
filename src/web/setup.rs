@@ -4,13 +4,14 @@ use std::sync::Arc;
 
 use axum::Form;
 use axum::extract::{Path, State};
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::response::Response;
 use serde::Deserialize;
-use serde_json::{Value, json};
 
 use super::WebState;
+use super::admin::action_result;
+use super::data::{HeldPreview, SetupStep, SetupView};
 use super::forms::empty_as_none;
-use super::routes::{WebResult, check_csrf, flash_redirect};
+use super::routes::{WebResult, check_csrf};
 use crate::config::Config;
 use crate::db::{channels, queue, tags::TagRules};
 use crate::error::{Error, Result};
@@ -36,7 +37,7 @@ pub(super) fn view(
     delivered: bool,
     channels: &[ChannelProgress],
     scheduler_running: bool,
-) -> Value {
+) -> Option<SetupView> {
     let connected = cfg.require_bot_token().is_ok();
     let held = channels.iter().find(|channel| channel.held);
     let ready = channels
@@ -44,7 +45,7 @@ pub(super) fn view(
         .any(|channel| channel.active && (channel.queued || channel.sending));
     let delivered = delivered || channels.iter().any(|channel| channel.sent);
     if held.is_none() && (delivered || (connected && ready && scheduler_running)) {
-        return Value::Null;
+        return None;
     }
 
     let to_preview = held.or_else(|| {
@@ -52,55 +53,59 @@ pub(super) fn view(
             .iter()
             .find(|channel| !ready && !channel.active && channel.queued)
     });
-    let steps = [
-        json!({
-            "title": "Connect Telegram",
-            "detail": "Configure the bot token used to publish to Telegram.",
-            "done": connected,
-            "href": "#telegram-setup",
-            "action": "Configure Telegram",
-        }),
-        json!({
-            "title": "Add a channel",
-            "detail": "Give the bot permission to post in your Telegram channel, then add the channel here.",
-            "done": !channels.is_empty(),
-            "href": "/channels#add-channel",
-            "action": "Add a channel",
-        }),
-        json!({
-            "title": "Import artwork",
-            "detail": "Add a folder or a supported artwork URL.",
-            "done": imported,
-            "href": "/import",
-            "action": "Import artwork",
-        }),
-        json!({
-            "title": "Queue a post",
-            "detail": "Choose one post to hold for preview.",
-            "done": held.is_some() || channels.iter().any(|channel| channel.queued || channel.sending),
-            "href": PICK_POST,
-            "action": "Choose artwork",
-        }),
-        json!({
-            "title": "Preview and enable scheduling",
-            "detail": "Review the artwork and caption before allowing the channel to publish.",
-            "done": ready && held.is_none(),
-            "href": to_preview.map(|channel| format!("/channels/{}/preview", channel.id)),
-            "action": "Open preview",
-        }),
-        json!({
-            "title": "Verify the scheduler",
-            "detail": "Start or keep the scheduler running and check for a recent tick.",
-            "done": ready && held.is_none() && scheduler_running,
-            "href": "/",
-            "action": "Refresh scheduler status",
-        }),
+    let steps = vec![
+        SetupStep {
+            title: "Connect Telegram",
+            detail: "Configure the bot token used to publish to Telegram.",
+            done: connected,
+            href: Some("#telegram-setup".into()),
+            action: "Configure Telegram",
+        },
+        SetupStep {
+            title: "Add a channel",
+            detail: "Give the bot permission to post in your Telegram channel, then add the channel here.",
+            done: !channels.is_empty(),
+            href: Some("/channels#add-channel".into()),
+            action: "Add a channel",
+        },
+        SetupStep {
+            title: "Import artwork",
+            detail: "Add a folder or a supported artwork URL.",
+            done: imported,
+            href: Some("/import".into()),
+            action: "Import artwork",
+        },
+        SetupStep {
+            title: "Queue a post",
+            detail: "Choose one post to hold for preview.",
+            done: held.is_some()
+                || channels
+                    .iter()
+                    .any(|channel| channel.queued || channel.sending),
+            href: Some(PICK_POST.into()),
+            action: "Choose artwork",
+        },
+        SetupStep {
+            title: "Preview and enable scheduling",
+            detail: "Review the artwork and caption before allowing the channel to publish.",
+            done: ready && held.is_none(),
+            href: to_preview.map(|channel| format!("/channels/{}/preview", channel.id)),
+            action: "Open preview",
+        },
+        SetupStep {
+            title: "Verify the scheduler",
+            detail: "Start or keep the scheduler running and check for a recent tick.",
+            done: ready && held.is_none() && scheduler_running,
+            href: Some("/".into()),
+            action: "Refresh scheduler status",
+        },
     ];
 
-    json!({
-        "steps": steps,
-        "next": steps.iter().find(|step| step["done"] == false),
-        "connected": connected,
+    let next = steps.iter().find(|step| !step.done).cloned();
+    Some(SetupView {
+        steps,
+        next,
+        connected,
     })
 }
 
@@ -119,7 +124,7 @@ pub(super) async fn queue_post(
     check_csrf(&ws, &form.csrf)?;
     ws.app.cfg.require_bot_token()?;
     let (Some(post_id), Some(channel_id)) = (form.post_id, form.channel) else {
-        return Ok(flash_redirect(
+        return Ok(action_result(
             PICK_POST,
             "Choose one post and its destination channel.",
         ));
@@ -130,14 +135,15 @@ pub(super) async fn queue_post(
         .call(move |conn| channels::get(conn, channel_id))
         .await?;
     match hold_for_preview(&ws.app, &channel, post_id).await? {
-        EnqueueOutcome::Queued(_) => {
-            Ok(Redirect::to(&format!("/channels/{channel_id}/preview")).into_response())
-        }
-        outcome => Ok(flash_redirect(PICK_POST, &outcome.describe())),
+        EnqueueOutcome::Queued(_) => Ok(action_result(
+            &format!("/channels/{channel_id}/preview"),
+            "",
+        )),
+        outcome => Ok(action_result(PICK_POST, &outcome.describe())),
     }
 }
 
-pub(super) async fn held_preview(app: &AppState, channel: &Channel) -> Result<Option<Value>> {
+pub(super) async fn held_preview(app: &AppState, channel: &Channel) -> Result<Option<HeldPreview>> {
     let id = channel.id;
     let preview = app
         .db
@@ -164,15 +170,16 @@ pub(super) async fn held_preview(app: &AppState, channel: &Channel) -> Result<Op
         decision.reason.clone()
     };
     let plan = build_plan(app, channel, &post, item.id, decision)?;
-    Ok(Some(json!({
-        "queue_id": item.id,
-        "post_id": post.id,
-        "allowed": allowed && plan.media_count() > 0,
-        "caption": plan.caption.text,
-        "media": plan.media_count(),
-        "messages": plan.messages.len(),
-        "reason": reason,
-    })))
+    let media = plan.media_count();
+    Ok(Some(HeldPreview {
+        queue_id: item.id,
+        post_id: post.id,
+        allowed: allowed && media > 0,
+        caption: plan.caption.text,
+        media,
+        messages: plan.messages.len(),
+        reason,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -234,7 +241,7 @@ pub(super) async fn start_scheduling(
             Ok(())
         })
         .await?;
-    Ok(flash_redirect(
+    Ok(action_result(
         "/",
         "Scheduling enabled. The scheduler can publish queued posts as soon as a slot is due.",
     ))

@@ -4,6 +4,8 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 pub struct LoginForm {
+    #[serde(default)]
+    pub csrf: String,
     pub token: String,
     #[serde(default)]
     pub next: Option<String>,

@@ -136,10 +136,14 @@ test('a failed merge keeps selection and its error beside the controls', async (
 test('merge 1, 2, and 4, then hide the remaining image in place', async ({ page }) => {
   const documents = countDocuments(page)
   await signIn(page, '/posts/1')
+  await page.getByText('Edit post details', { exact: true }).click()
+  const draft = page.getByLabel('Title', { exact: true })
+  await draft.fill('An unsaved title')
   await page.getByText('Media tools', { exact: true }).click()
   for (const index of [1, 2, 4]) await page.getByLabel('Include image ' + index + ' in merge').check()
   await page.getByRole('button', { name: 'Merge side by side' }).click()
   await expect(page.locator('.media-grid figure')).toHaveCount(2)
+  await expect(draft).toHaveValue('An unsaved title')
   await expect(page.locator('.media-grid figure').first()).toContainText('48×12')
   await page.getByRole('button', { name: 'Hide from outgoing copies' }).nth(1).click()
   await expect(page.locator('.media-grid figure').nth(1)).toContainText('Hidden from outgoing copies')
@@ -232,8 +236,8 @@ test('a completed import displays its summary exactly once', async ({ page }) =>
   await page.locator('textarea[name="targets"]').fill(join(directory, 'Different heights'))
   const response = page.waitForResponse((reply) => reply.url().endsWith('/api/v1/import') && reply.request().method() === 'POST')
   await page.getByRole('button', { name: 'start import' }).click()
-  const queued = await (await response).json() as { job_id: number }
-  const row = page.locator('[data-job="' + queued.job_id + '"]')
+  const queued = await (await response).json() as { job_ids: number[] }
+  const row = page.locator('[data-job="' + queued.job_ids[0] + '"]')
   await expect(row.getByRole('link', { name: 'Open post' })).toBeVisible({ timeout: 10_000 })
   await expect(row.locator('[data-role="message"]')).toHaveText('updated post · 2 files')
   await expect(page.locator('textarea[name="targets"]')).toBeEmpty()
@@ -256,11 +260,13 @@ test('queue reflects publishes from both tabs and scheduler delivery without rel
   await other.goto(base + '/channels/1/queue')
   const elsewhere = queueRow(other, 21)
   const otherId = await elsewhere.getAttribute('data-queue')
-  const publish = elsewhere.locator('form[action="/publish"]')
+  const publish = elsewhere.locator('form[action="/api/v1/publish"]')
   await page.bringToFront()
   const accepted = await publish.evaluate(async (form: HTMLFormElement) => {
     const body = new URLSearchParams()
     new FormData(form).forEach((value, name) => body.set(name, String(value)))
+    const session = await fetch('/api/v1/session').then((response) => response.json())
+    body.set('csrf', session.csrf)
     const response = await fetch('/api/v1/publish', { method: 'POST', body })
     return response.status
   })

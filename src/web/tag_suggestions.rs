@@ -2,38 +2,52 @@
 
 use std::sync::Arc;
 
+use super::data::JobView;
 use axum::{
     Form,
     extract::{Path, State},
     response::Response,
 };
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
 
 use crate::db::tag_suggestions;
 use crate::error::Error;
 
 use super::{
     WebState,
-    routes::{WebResult, check_csrf, flash_redirect, job_view},
+    routes::{WebResult, check_csrf, job_view},
 };
+
+#[derive(Serialize)]
+struct SuggestionView {
+    #[serde(flatten)]
+    suggestion: tag_suggestions::Suggestion,
+    wiki_url: Option<String>,
+}
+
+#[derive(Serialize)]
+pub(super) struct ReviewView {
+    job: JobView,
+    stale: bool,
+    suggestions: Vec<SuggestionView>,
+}
 
 pub(super) fn review_view(
     review: tag_suggestions::Review,
     now: chrono::DateTime<chrono::Utc>,
-) -> Value {
-    let suggestions = review
-        .suggestions
-        .iter()
-        .map(|suggestion| {
-            let mut view = json!(suggestion);
-            if let Some(title) = suggestion.wiki_title.as_deref() {
-                view["wiki_url"] = json!(wiki_url(title));
-            }
-            view
-        })
-        .collect::<Vec<_>>();
-    json!({ "job": job_view(&review.job, now), "stale": review.stale, "suggestions": suggestions })
+) -> ReviewView {
+    ReviewView {
+        job: job_view(&review.job, now),
+        stale: review.stale,
+        suggestions: review
+            .suggestions
+            .into_iter()
+            .map(|suggestion| SuggestionView {
+                wiki_url: suggestion.wiki_title.as_deref().and_then(wiki_url),
+                suggestion,
+            })
+            .collect(),
+    }
 }
 
 fn wiki_url(title: &str) -> Option<String> {
@@ -65,7 +79,7 @@ pub(super) async fn action(
     let message = match form.action.as_str() {
         "generate" => {
             let (job, queued) = crate::jobs::create_tag_suggestions_job(&ws.app, post_id).await?;
-            active_job = Some(job);
+            active_job = queued.then_some(job);
             if queued {
                 "Tag suggestions queued"
             } else {
@@ -100,8 +114,9 @@ pub(super) async fn action(
         }
         _ => return Err(Error::invalid("Unknown suggestion action").into()),
     };
-    Ok(super::routes::with_job(
-        flash_redirect(&format!("/posts/{post_id}?section=suggestions"), message),
-        active_job,
+    Ok(super::admin::accepted(
+        &format!("/posts/{post_id}?section=suggestions"),
+        message,
+        active_job.into_iter().collect(),
     ))
 }

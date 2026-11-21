@@ -23,6 +23,10 @@ NUJIJUSHI_REQUIRE_WEBUI=1 cargo install --path . --locked
 
 Install `gallery-dl` for gallery-site imports and `ffmpeg` if you want video thumbnails. Importing a folder of images only needs nujijushi.
 
+A Rust-only source build works with `cargo install --path . --locked`.
+If the Vite bundle is absent, the admin pages return build instructions and
+the CLI, bot, webhook, metrics, and job worker remain available.
+
 Release binaries embed the frontend and run with the usual `nujijushi run` or `nujijushi serve` command. Stop older processes and back up your archive before upgrading a database used by an older binary.
 
 ## Quick start

@@ -130,7 +130,7 @@ impl Harness {
     }
 
     fn get(&self, path: &str) -> Request<Body> {
-        Request::get(path)
+        Request::get(api_path(path))
             .header(
                 header::COOKIE,
                 format!("{}={}", auth::COOKIE, self.ws.session),
@@ -140,7 +140,7 @@ impl Harness {
     }
 
     fn post(&self, path: &str, body: &str) -> Request<Body> {
-        Request::post(path)
+        Request::post(api_path(path))
             .header(
                 header::COOKIE,
                 format!("{}={}", auth::COOKIE, self.ws.session),
@@ -151,27 +151,34 @@ impl Harness {
     }
 
     async fn send(&self, request: Request<Body>) -> axum::response::Response {
-        routes::router(self.ws.clone())
+        let response = routes::router(self.ws.clone())
             .oneshot(request)
             .await
-            .unwrap()
+            .unwrap();
+        let (mut parts, body) = response.into_parts();
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            parts.extensions.insert(value);
+        }
+        axum::response::Response::from_parts(parts, Body::from(bytes))
     }
 
-    /// Follow a POST through to its redirect target's flash message.
-    fn flash(response: &axum::response::Response) -> String {
-        let location = response
-            .headers()
-            .get(header::LOCATION)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default();
-        location
-            .split_once("flash=")
-            .map(|(_, raw)| {
-                raw.replace('+', " ")
-                    .replace("%23", "#")
-                    .replace("%20", " ")
-            })
-            .unwrap_or_else(|| location.to_string())
+    async fn page(&self, path: &str) -> serde_json::Value {
+        let response = self.send(self.get(path)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        Self::json(&response).clone()
+    }
+
+    fn json(response: &axum::response::Response) -> &serde_json::Value {
+        response.extensions().get().expect("JSON response")
+    }
+
+    fn message(response: &axum::response::Response) -> &str {
+        let body = Self::json(response);
+        body["message"]
+            .as_str()
+            .or_else(|| body["error"].as_str())
+            .unwrap_or("")
     }
 
     async fn jobs(&self) -> Vec<job_db::Job> {
@@ -208,6 +215,32 @@ impl Harness {
     }
 }
 
+fn api_path(path: &str) -> String {
+    match path {
+        "/" => "/api/v1/dashboard".into(),
+        uri if uri.starts_with("/api/") => uri.into(),
+        uri => format!("/api/v1{uri}"),
+    }
+}
+
+fn row(value: &serde_json::Value, id: i64) -> &serde_json::Value {
+    value
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == id)
+        .unwrap()
+}
+
+fn ids(value: &serde_json::Value) -> Vec<i64> {
+    value
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["id"].as_i64().unwrap())
+        .collect()
+}
+
 async fn body_text(response: axum::response::Response) -> String {
     let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
         .await
@@ -226,7 +259,7 @@ async fn importing_pasted_encoded_newlines_queues_each_link() {
         .append_pair("targets", &pasted)
         .finish();
     let response = h.send(h.post("/import", &form)).await;
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
     let jobs = h.jobs().await;
     let targets: Vec<_> = jobs
         .iter()
@@ -249,7 +282,7 @@ async fn direct_web_import_is_approved_when_the_job_creates_it() {
         .finish();
     assert_eq!(
         h.send(h.post("/import", &form)).await.status(),
-        StatusCode::SEE_OTHER
+        StatusCode::ACCEPTED
     );
     let reports = h.run_worker_once().await;
     let post_id = reports[0].post_ids()[0];
@@ -262,14 +295,6 @@ async fn direct_web_import_is_approved_when_the_job_creates_it() {
 }
 
 /// One job row of a rendered page, so a test can assert about *that* job.
-fn job_row(html: &str, id: i64) -> &str {
-    let start = html
-        .find(&format!("data-job=\"{id}\""))
-        .unwrap_or_else(|| panic!("no row for job {id}: {html}"));
-    let end = start + html[start..].find("</tr>").expect("row is closed");
-    &html[start..end]
-}
-
 #[tokio::test]
 async fn post_details_can_be_edited_and_cleared_across_source_refreshes() {
     use nujijushi::db::posts;
@@ -278,10 +303,9 @@ async fn post_details_can_be_edited_and_cleared_across_source_refreshes() {
     h.add_channel().await;
     let post_id = h.post_only("42").await;
     let path = format!("/posts/{post_id}");
-    let page = body_text(h.send(h.get(&path)).await).await;
-    assert!(page.contains("Edit post details"));
-    assert!(page.contains("name=\"title\" value=\"Artwork 42\""));
-    assert!(page.contains("<textarea name=\"description\""));
+    let page = h.page(&path).await;
+    assert_eq!(page["post"]["title"], "Artwork 42");
+    assert!(page["post"]["description"].is_null());
 
     let denied = h
         .send(h.post(&path, "csrf=bad&title=Blocked&description=Blocked"))
@@ -299,22 +323,14 @@ async fn post_details_can_be_edited_and_cleared_across_source_refreshes() {
             "A curated description & notes.\r\n\r\n</textarea><script>alert(1)</script>",
         )
         .finish();
-    assert_eq!(
-        h.send(h.post(&path, &form)).await.status(),
-        StatusCode::SEE_OTHER
-    );
+    assert_eq!(h.send(h.post(&path, &form)).await.status(), StatusCode::OK);
     let description = "A curated description & notes.\n\n</textarea><script>alert(1)</script>";
     assert_eq!(post().description.as_deref(), Some(description));
-    let page = body_text(h.send(h.get(&path)).await).await;
-    assert!(!page.contains("<script>alert(1)</script>"));
-    let caption = page.split_once("<pre class=\"caption\">").unwrap().1;
-    assert!(
-        caption
-            .split_once("</pre>")
-            .unwrap()
-            .0
-            .contains("A curated description")
-    );
+    let page = h.page(&path).await;
+    assert_eq!(page["post"]["description"], description);
+    let caption = page["captions"][0]["caption"].as_str().unwrap();
+    assert!(caption.contains("A curated description"));
+    assert!(!caption.contains("<script>"));
 
     let refresh = |title: &str| {
         let mut source = NormalizedPost::new("pixiv", "42");
@@ -333,13 +349,13 @@ async fn post_details_can_be_edited_and_cleared_across_source_refreshes() {
     let edit_title = format!("csrf={}&title=Curated+title", h.ws.csrf);
     assert_eq!(
         h.send(h.post(&path, &edit_title)).await.status(),
-        StatusCode::SEE_OTHER
+        StatusCode::OK
     );
     assert_eq!(post().description.as_deref(), Some(description));
     let clear_description = format!("csrf={}&description=+", h.ws.csrf);
     assert_eq!(
         h.send(h.post(&path, &clear_description)).await.status(),
-        StatusCode::SEE_OTHER
+        StatusCode::OK
     );
     assert_eq!(refresh("Another source title"), (post_id, false));
     let edited = post();
@@ -367,53 +383,51 @@ async fn post_detail_shows_tag_provenance_and_can_undo_a_source_removal() {
         .unwrap();
     let path = format!("/posts/{post_id}");
     let action = format!("{path}/tags");
-    let html = body_text(h.send(h.get(&path)).await).await;
-    assert!(
-        html.contains("aria-label=\"Remove source tag original\""),
-        "{html}"
-    );
-    assert!(html.contains("<span class=\"badge\">source</span>"));
-    assert!(html.contains("<span class=\"badge\">manual</span>"));
-    assert!(html.contains("name=\"tags\" value=\"original, favorite\""));
-    assert!(html.contains("<details class=\"panel post-disclosure\">\n      <summary>Tags"));
-    assert!(html.contains(
-        "<details id=\"media-tools\" class=\"panel post-disclosure\">\n      <summary>Media tools"
-    ));
-    assert!(
-        html.contains("<details class=\"panel post-disclosure\" open>\n      <summary>Review post")
-    );
+    let page = h.page(&path).await;
+    let tag = row(&page["post"]["tags"], tag_id);
+    assert_eq!(tag["source"], true);
+    assert_eq!(tag["manual"], true);
+    assert_eq!(page["post"]["manual_tags"], "original, favorite");
 
     let edit = format!("csrf={}&notes=reviewed", h.ws.csrf);
-    assert_eq!(
-        h.send(h.post(&path, &edit)).await.status(),
-        StatusCode::SEE_OTHER
-    );
+    assert_eq!(h.send(h.post(&path, &edit)).await.status(), StatusCode::OK);
     let invalid = h
         .send(h.post(&action, &format!("csrf=bad&tag_id={tag_id}&action=remove")))
         .await;
     assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
-    let html = body_text(h.send(h.get(&path)).await).await;
-    assert!(html.contains("Remove source tag original"));
+    assert_eq!(
+        row(&h.page(&path).await["post"]["tags"], tag_id)["source"],
+        true
+    );
 
     let remove = format!("csrf={}&tag_id={tag_id}&action=remove", h.ws.csrf);
     assert_eq!(
         h.send(h.post(&action, &remove)).await.status(),
-        StatusCode::SEE_OTHER
+        StatusCode::OK
     );
-    let html = body_text(h.send(h.get(&path)).await).await;
-    assert!(html.contains("Removed source tags"));
-    assert!(html.contains("Undo removal of source tag original"));
-    assert!(!html.contains("Remove source tag original"));
-    assert!(html.contains("name=\"tags\" value=\"original, favorite\""));
+    let removed = h.page(&path).await;
+    assert_eq!(
+        row(&removed["post"]["tag_removals"], tag_id)["name"],
+        "original"
+    );
+    assert_eq!(row(&removed["post"]["tags"], tag_id)["source"], false);
+    assert_eq!(removed["post"]["manual_tags"], "original, favorite");
 
     let undo = format!("csrf={}&tag_id={tag_id}&action=undo", h.ws.csrf);
     assert_eq!(
         h.send(h.post(&action, &undo)).await.status(),
-        StatusCode::SEE_OTHER
+        StatusCode::OK
     );
-    let html = body_text(h.send(h.get(&path)).await).await;
-    assert!(html.contains("Remove source tag original"));
-    assert!(!html.contains("Removed source tags"));
+    assert_eq!(
+        row(&h.page(&path).await["post"]["tags"], tag_id)["source"],
+        true
+    );
+    assert!(
+        h.page(&path).await["post"]["tag_removals"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -430,12 +444,12 @@ async fn publish_returns_at_once_and_the_worker_sends_it() {
         .await;
 
     // the request is over before Telegram is touched
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
     assert_eq!(h.mock.send_count(), 0, "no upload inside the request");
     assert!(
-        Harness::flash(&response).contains("queued as job #"),
+        Harness::message(&response).contains("queued as job #"),
         "flash: {}",
-        Harness::flash(&response)
+        Harness::message(&response)
     );
 
     let jobs = h.jobs().await;
@@ -472,13 +486,13 @@ async fn a_second_click_does_not_queue_a_second_publish() {
     let body = format!("csrf={}&channel_id={}&back=/", h.ws.csrf, channel.id);
 
     let first = h.send(h.post("/publish", &body)).await;
-    assert_eq!(first.status(), StatusCode::SEE_OTHER);
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
     let second = h.send(h.post("/publish", &body)).await;
-    assert_eq!(second.status(), StatusCode::SEE_OTHER);
+    assert_eq!(second.status(), StatusCode::OK);
     assert!(
-        Harness::flash(&second).contains("already queued or running"),
+        Harness::message(&second).contains("already queued or running"),
         "flash: {}",
-        Harness::flash(&second)
+        Harness::message(&second)
     );
 
     let jobs = h.jobs().await;
@@ -502,7 +516,7 @@ async fn a_single_queue_item_can_be_published_as_a_job() {
             &format!("csrf={}&queue_id={}&back=/", h.ws.csrf, queue_id),
         ))
         .await;
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
 
     let jobs = h.jobs().await;
     assert_eq!(jobs.len(), 1);
@@ -566,8 +580,7 @@ async fn web_review_validates_rewards_and_queues_new_suggestions_atomically() {
         .unwrap();
 
     let path = format!("/posts/{review_post}");
-    let html = body_text(h.send(h.get(&path)).await).await;
-    assert!(html.contains("Guest approval reward"));
+    assert_eq!(h.page(&path).await["guest_review"], true);
     for form in [
         "csrf=wrong&state=approved&approval_points=17".to_owned(),
         format!("csrf={}&state=approved&approval_points=21", h.ws.csrf),
@@ -585,10 +598,7 @@ async fn web_review_validates_rewards_and_queues_new_suggestions_atomically() {
         PostState::New
     );
     let form = format!("csrf={}&state=approved&approval_points=17", h.ws.csrf);
-    assert_eq!(
-        h.send(h.post(&path, &form)).await.status(),
-        StatusCode::SEE_OTHER
-    );
+    assert_eq!(h.send(h.post(&path, &form)).await.status(), StatusCode::OK);
     assert_eq!(
         h.state
             .db
@@ -605,7 +615,7 @@ async fn web_review_validates_rewards_and_queues_new_suggestions_atomically() {
     for _ in 0..2 {
         assert_eq!(
             h.send(h.post("/posts", &form)).await.status(),
-            StatusCode::SEE_OTHER
+            StatusCode::OK
         );
     }
     assert_eq!(
@@ -660,7 +670,7 @@ async fn storage_upload_is_queued_instead_of_running_in_the_request() {
     let response = h
         .send(h.post("/storage/drain", &format!("csrf={}", h.ws.csrf)))
         .await;
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
 
     let jobs = h.jobs().await;
     assert_eq!(jobs.len(), 1);
@@ -794,42 +804,25 @@ async fn the_jobs_page_lists_progress_and_a_retry_button() {
         .await
         .unwrap();
 
-    let response = h.send(h.get("/jobs")).await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let html = body_text(response).await;
-
-    assert!(html.contains("publish next"), "kind label: {html}");
-    assert!(job_row(&html, watch).contains(">watch check</span>"));
-    assert!(html.contains("class=\"job-table-scroll\""));
-    let tracked = job_row(&html, folder);
-    assert!(tracked.contains("class=\"hint job-target\""));
-    assert!(tracked.contains(&"folder".repeat(300)));
+    let page = h.page("/jobs").await;
+    let jobs = &page["jobs"];
+    assert_eq!(row(jobs, watch)["kind_label"], "watch check");
+    assert_eq!(row(jobs, running)["kind_label"], "publish next");
+    let tracked = row(jobs, folder);
     assert!(
-        tracked.contains("class=\"progress\""),
-        "a multi-post import gets a bar: {tracked}"
+        tracked["payload"]
+            .as_str()
+            .unwrap()
+            .contains(&"folder".repeat(300))
     );
-    assert!(tracked.contains("3/8"), "with its counts: {tracked}");
-    // `1/1` on a one-target job said nothing, so those rows show a dash instead
-    for (id, what) in [(failed, "a failed import"), (running, "a queued publish")] {
-        let row = job_row(&html, id);
-        assert!(
-            !row.contains("class=\"progress\""),
-            "{what} has nothing to track: {row}"
-        );
-        assert!(row.contains("—"), "{what} row: {row}");
+    assert_eq!(tracked["track"], true);
+    assert_eq!(tracked["progress"], 3);
+    assert_eq!(tracked["total"], 8);
+    for id in [failed, running] {
+        assert_eq!(row(jobs, id)["track"], false);
     }
-    assert!(
-        html.contains("action=\"/jobs/retry\""),
-        "retry form: {html}"
-    );
-    assert!(html.contains(&format!("name=\"csrf\" value=\"{}\"", h.ws.csrf)));
-    assert!(
-        html.contains("imports run in parallel")
-            || html.contains("import run in parallel")
-            || html.contains("in\n    parallel")
-            || html.contains("in parallel"),
-        "concurrency hint: {html}"
-    );
+    assert_eq!(row(jobs, failed)["retryable"], true);
+    assert_eq!(page["parallel"], h.state.cfg.max_concurrent_imports);
 }
 
 #[tokio::test]
@@ -849,11 +842,11 @@ async fn retrying_a_failed_import_queues_a_new_job() {
     let response = h
         .send(h.post("/jobs/retry", &format!("csrf={}&id={failed}", h.ws.csrf)))
         .await;
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
     assert!(
-        Harness::flash(&response).contains("re-queued"),
+        Harness::message(&response).contains("re-queued"),
         "flash: {}",
-        Harness::flash(&response)
+        Harness::message(&response)
     );
 
     let jobs = h.jobs().await;
@@ -890,17 +883,17 @@ async fn a_publish_job_is_not_retryable() {
     let response = h
         .send(h.post("/jobs/retry", &format!("csrf={}&id={id}", h.ws.csrf)))
         .await;
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(response.status(), StatusCode::OK);
     assert!(
-        Harness::flash(&response).contains("only imports can be retried"),
+        Harness::message(&response).contains("only imports can be retried"),
         "flash: {}",
-        Harness::flash(&response)
+        Harness::message(&response)
     );
     assert_eq!(h.jobs().await.len(), 1, "nothing new was queued");
 }
 
 #[tokio::test]
-async fn the_dashboard_and_import_pages_expose_the_live_hooks() {
+async fn initial_views_and_status_share_job_data() {
     let h = harness();
     let channel = h.add_channel().await;
     nujijushi::jobs::create_publish_channel_job(&h.state, channel.id)
@@ -931,27 +924,23 @@ async fn the_dashboard_and_import_pages_expose_the_live_hooks() {
         .call(|conn| job_db::create(conn, nujijushi::jobs::KIND_WATCH_CHECK, "1", 0))
         .await
         .unwrap();
-    let dashboard = body_text(h.send(h.get("/")).await).await;
-    assert!(dashboard.contains("class=\"compact dashboard-jobs\""));
-    assert!(job_row(&dashboard, watch).contains(">watch check</span>"));
+    let dashboard = h.page("/").await;
+    let import = h.page("/import").await;
+    let job = row(&dashboard["jobs"], watch);
+    assert_eq!(job["kind_label"], "watch check");
+    let polled = h.page(&format!("/jobs/{watch}/status")).await;
+    for field in ["id", "kind", "state", "progress", "total", "retryable"] {
+        assert_eq!(job[field], row(&import["jobs"], watch)[field]);
+        assert_eq!(job[field], polled[field]);
+    }
+    assert_eq!(row(&dashboard["channels"], channel.id)["queued"], 0);
     assert!(
-        dashboard.contains(&format!("data-channel=\"{}\"", channel.id)),
-        "channel hook: {dashboard}"
+        import["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|job| job["progress"] == 1 && job["total"] == 4)
     );
-    assert!(
-        dashboard.contains("data-role=\"publishing\""),
-        "{dashboard}"
-    );
-    assert!(dashboard.contains("data-role=\"queued\""), "{dashboard}");
-    assert!(
-        dashboard.contains("href=\"/jobs\""),
-        "link to /jobs: {dashboard}"
-    );
-
-    let import = body_text(h.send(h.get("/import")).await).await;
-    assert!(import.contains("data-job="), "job hook: {import}");
-    assert!(import.contains("class=\"progress\""), "progress: {import}");
-    assert!(import.contains("data-live-hint"), "{import}");
 }
 
 /// Retrying a job that is still pending or running would fetch and store the
@@ -973,11 +962,11 @@ async fn retrying_an_unfinished_import_is_refused() {
     let response = h
         .send(h.post("/jobs/retry", &format!("csrf={}&id={running}", h.ws.csrf)))
         .await;
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(response.status(), StatusCode::OK);
     assert!(
-        Harness::flash(&response).contains("only failed jobs can be retried"),
+        Harness::message(&response).contains("only failed jobs can be retried"),
         "flash: {}",
-        Harness::flash(&response)
+        Harness::message(&response)
     );
     assert_eq!(
         h.jobs().await.len(),
@@ -1000,22 +989,14 @@ async fn the_grid_hides_sent_posts_until_asked() {
         .await
         .unwrap();
 
-    let card = |id: i64| format!("href=\"/posts/{id}\"");
-
-    let html = body_text(h.send(h.get("/posts")).await).await;
-    assert!(html.contains(&card(waiting)), "unsent post is listed");
-    assert!(
-        !html.contains(&card(sent_post)),
-        "sent post is hidden by default"
+    assert_eq!(ids(&h.page("/posts").await["cards"]), vec![waiting]);
+    let mut all = ids(&h.page("/posts?sent=all").await["cards"]);
+    all.sort();
+    assert_eq!(all, vec![sent_post, waiting]);
+    assert_eq!(
+        ids(&h.page("/posts?sent=yes").await["cards"]),
+        vec![sent_post]
     );
-    assert!(html.contains("hide sent"), "the filter says what it does");
-
-    let all = body_text(h.send(h.get("/posts?sent=all")).await).await;
-    assert!(all.contains(&card(sent_post)) && all.contains(&card(waiting)));
-
-    let only = body_text(h.send(h.get("/posts?sent=yes")).await).await;
-    assert!(only.contains(&card(sent_post)));
-    assert!(!only.contains(&card(waiting)), "sent-only means sent only");
 }
 
 #[tokio::test]
@@ -1060,15 +1041,8 @@ async fn both_pager_links_preserve_all_filters() {
             .extend_pairs(filters)
             .finish()
     );
-    let link = |html: &str, rel: &str, page: &str| {
-        let href = html
-            .split_once(&format!("rel=\"{rel}\" href=\""))
-            .unwrap()
-            .1
-            .split_once('"')
-            .unwrap()
-            .0;
-        let href = htmlescape::decode_html(href).unwrap();
+    let link = |data: &serde_json::Value, key: &str, page: &str| {
+        let href = data[key].as_str().unwrap();
         let parsed: std::collections::HashMap<_, _> =
             url::form_urlencoded::parse(href.strip_prefix("/posts?").unwrap().as_bytes()).collect();
         assert_eq!(parsed.len(), filters.len() + 2);
@@ -1077,22 +1051,21 @@ async fn both_pager_links_preserve_all_filters() {
             assert_eq!(parsed[key], value);
         }
         assert_eq!(parsed["page"], page);
-        href
+        href.to_string()
     };
 
-    let first = body_text(h.send(h.get(&path)).await).await;
-    assert!(first.contains("25 post(s)"));
-    assert_eq!(first.matches("class=\"post-link\"").count(), 24);
-    let second = body_text(h.send(h.get(&link(&first, "next", "2"))).await).await;
-    assert!(second.contains("25 post(s)"));
-    assert_eq!(second.matches("class=\"post-link\"").count(), 1);
-    assert!(second.contains(&format!("href=\"/posts/{}\"", matching[0])));
-    assert!(!second.contains(&format!("href=\"/posts/{nonmatching}\"")));
-    assert!(!second.contains("rel=\"next\""));
-    let back = body_text(h.send(h.get(&link(&second, "prev", "1"))).await).await;
-    assert!(back.contains("25 post(s)"));
-    assert_eq!(back.matches("class=\"post-link\"").count(), 24);
-    assert!(!back.contains("rel=\"prev\""));
+    let first = h.page(&path).await;
+    assert_eq!(first["total"], 25);
+    assert_eq!(ids(&first["cards"]).len(), 24);
+    let second = h.page(&link(&first, "next_page", "2")).await;
+    assert_eq!(second["total"], 25);
+    assert_eq!(ids(&second["cards"]), vec![matching[0]]);
+    assert!(!ids(&second["cards"]).contains(&nonmatching));
+    assert!(second["next_page"].is_null());
+    let back = h.page(&link(&second, "previous_page", "1")).await;
+    assert_eq!(back["total"], 25);
+    assert_eq!(ids(&back["cards"]), ids(&first["cards"]));
+    assert!(back["previous_page"].is_null());
 }
 
 /// A rejected post is the curator's "no", so the grid hides it — but an explicit
@@ -1107,36 +1080,16 @@ async fn the_grid_hides_rejected_posts_until_asked() {
         .call(move |conn| nujijushi::db::posts::set_state(conn, rejected, PostState::Rejected))
         .await
         .unwrap();
-    let card = |id: i64| format!("href=\"/posts/{id}\"");
-    let counted = |n: usize| format!("{n} post(s)");
-
-    let html = body_text(h.send(h.get("/posts")).await).await;
-    assert!(html.contains(&card(kept)), "{html}");
-    assert!(
-        !html.contains(&card(rejected)),
-        "a rejected post is hidden: {html}"
-    );
-    assert!(html.contains(&counted(1)), "the count agrees: {html}");
-    assert!(
-        html.contains("not rejected"),
-        "the filter says what it does: {html}"
-    );
-
-    let all = body_text(h.send(h.get("/posts?state=all")).await).await;
-    assert!(all.contains(&card(rejected)) && all.contains(&card(kept)));
-    assert!(all.contains(&counted(2)), "{all}");
-
-    let only = body_text(h.send(h.get("/posts?state=rejected")).await).await;
-    assert!(only.contains(&card(rejected)), "{only}");
-    assert!(
-        !only.contains(&card(kept)),
-        "rejected-only means rejected only: {only}"
-    );
-    assert!(only.contains(&counted(1)), "{only}");
-    assert!(
-        only.contains("<option value=\"rejected\" selected"),
-        "the select keeps the choice: {only}"
-    );
+    let page = h.page("/posts").await;
+    assert_eq!(ids(&page["cards"]), vec![kept]);
+    assert_eq!(page["total"], 1);
+    let all = h.page("/posts?state=all").await;
+    assert!(ids(&all["cards"]).contains(&rejected));
+    assert_eq!(all["total"], 2);
+    let only = h.page("/posts?state=rejected").await;
+    assert_eq!(ids(&only["cards"]), vec![rejected]);
+    assert_eq!(only["total"], 1);
+    assert_eq!(only["filters"]["state"], "rejected");
 }
 
 /// The post page says how much is stored for the post, not just how many files.
@@ -1170,11 +1123,9 @@ async fn the_post_page_totals_the_media_size() {
         .0;
 
     let total = nujijushi::model::format_bytes(sizes.iter().sum::<i64>() as u64);
-    let html = body_text(h.send(h.get(&format!("/posts/{post_id}"))).await).await;
-    assert!(
-        html.contains(&format!("{} item(s) · {total}", sizes.len())),
-        "the heading totals the media: {html}"
-    );
+    let page = h.page(&format!("/posts/{post_id}")).await;
+    assert_eq!(page["media_total"], total);
+    assert_eq!(page["media"].as_array().unwrap().len(), sizes.len());
 }
 
 /// A post that a non-admin submitted says so, with their handle; an admin's own
@@ -1199,21 +1150,13 @@ async fn a_guest_submission_is_badged_in_the_grid() {
         .await
         .unwrap();
 
-    let html = body_text(h.send(h.get("/posts")).await).await;
-    assert!(html.contains("via @fan"), "the guest is named: {html}");
-    assert_eq!(
-        html.matches("badge amber").count(),
-        1,
-        "exactly the guest's post is badged: {html}"
-    );
-    assert!(
-        !html.contains("via @boss") && !html.contains("via <"),
-        "an admin (or an absent submitter) needs no badge: {html}"
-    );
-
-    let detail = body_text(h.send(h.get(&format!("/posts/{guest_post}"))).await).await;
-    assert!(detail.contains("@fan"));
-    assert!(detail.contains("not an admin"));
+    let page = h.page("/posts").await;
+    assert_eq!(row(&page["cards"], guest_post)["submitter"], "@fan");
+    assert_eq!(row(&page["cards"], guest_post)["submitter_guest"], true);
+    assert_eq!(row(&page["cards"], admin_post)["submitter_guest"], false);
+    let detail = h.page(&format!("/posts/{guest_post}")).await;
+    assert_eq!(detail["submitter"]["label"], "@fan");
+    assert_eq!(detail["submitter"]["admin"], false);
 }
 
 /// A queue that is not moving is explained: no heartbeat means the scheduler is
@@ -1221,19 +1164,12 @@ async fn a_guest_submission_is_badged_in_the_grid() {
 #[tokio::test]
 async fn the_dashboard_says_when_the_scheduler_is_not_running() {
     let h = harness();
-    let html = body_text(h.send(h.get("/")).await).await;
-    assert!(
-        html.contains("first run setup"),
-        "fresh dashboard should guide setup: {html}"
-    );
-    assert!(html.contains("Add a channel"), "{html}");
-    assert!(html.contains("Import artwork"), "{html}");
-    assert!(html.contains("Queue a post"), "{html}");
-    assert!(
-        html.contains("nothing is publishing on a schedule"),
-        "banner missing: {html}"
-    );
-    assert!(html.contains("nujijushi run"), "the hint names the command");
+    let page = h.page("/").await;
+    assert_eq!(page["scheduler"]["stale"], true);
+    let steps = page["setup"]["steps"].as_array().unwrap();
+    for title in ["Add a channel", "Import artwork", "Queue a post"] {
+        assert!(steps.iter().any(|step| step["title"] == title));
+    }
 
     h.state
         .db
@@ -1242,11 +1178,7 @@ async fn the_dashboard_says_when_the_scheduler_is_not_running() {
             &chrono::Utc::now().to_rfc3339(),
         )
         .unwrap();
-    let html = body_text(h.send(h.get("/")).await).await;
-    assert!(
-        !html.contains("nothing is publishing on a schedule"),
-        "a fresh heartbeat settles the banner: {html}"
-    );
+    assert_eq!(h.page("/").await["scheduler"]["stale"], false);
 
     let status: serde_json::Value =
         serde_json::from_str(&body_text(h.send(h.get("/api/status")).await).await).unwrap();
@@ -1263,25 +1195,15 @@ async fn the_queue_and_post_pages_show_when_a_post_goes_out() {
     let (post_id, _) = h.queue_a_post("1", &channel).await;
     h.queue_a_post("2", &channel).await;
 
-    let html = body_text(
-        h.send(h.get(&format!("/channels/{}/queue", channel.id)))
-            .await,
-    )
-    .await;
-    assert!(
-        html.contains(">est.<") || html.contains("est."),
-        "the column is labelled: {html}"
-    );
-    assert!(
-        html.contains("in 30m"),
-        "the second queued post is 30 minutes out: {html}"
-    );
-
-    let detail = body_text(h.send(h.get(&format!("/posts/{post_id}"))).await).await;
-    assert!(
-        detail.contains("est. "),
-        "the post page says when it would go out: {detail}"
-    );
+    let queue = h.page(&format!("/channels/{}/queue", channel.id)).await;
+    let items = queue["items"].as_array().unwrap();
+    assert!(items.iter().any(|item| item["eta_in"] == "30m"));
+    let detail = h.page(&format!("/posts/{post_id}")).await;
+    let item = items
+        .iter()
+        .find(|item| item["post_id"] == post_id)
+        .unwrap();
+    assert_eq!(detail["captions"][0]["eta_in"], item["eta_in"]);
 }
 
 #[cfg(unix)]
@@ -1339,7 +1261,7 @@ fi
     );
     assert_eq!(
         h.send(h.post("/watches", &save)).await.status(),
-        StatusCode::SEE_OTHER
+        StatusCode::OK
     );
     let watch_id = h
         .state
@@ -1358,12 +1280,13 @@ fi
     std::fs::write(base.join("listing.json"), body(&[(3, 3), (2, 2), (1, 1)])).unwrap();
     std::fs::write(base.join("fail-2"), "").unwrap();
 
-    assert_eq!(h.send(check(&h)).await.status(), StatusCode::SEE_OTHER);
+    assert_eq!(h.send(check(&h)).await.status(), StatusCode::ACCEPTED);
     let second = h.send(check(&h)).await;
-    assert_eq!(Harness::flash(&second), "A check is already active");
+    assert_eq!(Harness::message(&second), "A check is already active");
     assert!(!base.join("listing-args").exists());
-    let html = body_text(h.send(h.get("/watches")).await).await;
-    assert!(html.contains("Pixiv Art") && html.contains("data-watch-action"));
+    let watches = h.page("/watches").await;
+    assert_eq!(watches["watches"][0]["name"], "Pixiv Art");
+    assert_eq!(watches["watches"][0]["job"]["active"], true);
     let status = body_text(h.send(h.get("/api/status")).await).await;
     assert!(status.contains("\"watch_jobs\"") && status.contains("\"watch_check\""));
 
@@ -1402,11 +1325,9 @@ fi
     let pause = h
         .send(h.post(&toggle_url, &format!("{form}&action=pause")))
         .await;
-    assert_eq!(Harness::flash(&pause), "Watch paused");
+    assert_eq!(Harness::message(&pause), "Watch paused");
     assert_eq!(h.send(check(&h)).await.status(), StatusCode::BAD_REQUEST);
-    let paused_page = body_text(h.send(h.get("/watches")).await).await;
-    assert!(paused_page.contains("data-watch-paused disabled"));
-    assert!(paused_page.contains(">Resume</button>"));
+    assert_eq!(h.page("/watches").await["watches"][0]["enabled"], false);
 
     std::fs::remove_file(base.join("fail-2")).unwrap();
     let already_archived = h.post_only("6").await;
@@ -1433,9 +1354,9 @@ fi
     let resume = h
         .send(h.post(&toggle_url, &format!("{form}&action=resume")))
         .await;
-    assert_eq!(Harness::flash(&resume), "Watch resumed");
+    assert_eq!(Harness::message(&resume), "Watch resumed");
     let worker = JobWorker::new(reopened);
-    assert_eq!(h.send(check(&h)).await.status(), StatusCode::SEE_OTHER);
+    assert_eq!(h.send(check(&h)).await.status(), StatusCode::ACCEPTED);
     assert_eq!(worker.drain().await.unwrap(), 1);
     let downloads = std::fs::read_to_string(base.join("downloads")).unwrap();
     assert_eq!(downloads, "2\n3\n4\n5\n2\n");
@@ -1494,7 +1415,7 @@ fi
     let remove_url = format!("/watches/{watch_id}/remove");
     assert_eq!(
         h.send(h.post(&remove_url, &form)).await.status(),
-        StatusCode::SEE_OTHER
+        StatusCode::OK
     );
     assert!(h.state.db.with(|conn| posts::get(conn, post_id)).is_ok());
 }
@@ -1591,17 +1512,33 @@ async fn duplicate_inbox_indexes_and_dismisses_cross_source_media_pairs() {
             Ok(())
         })
         .unwrap();
-    let page = body_text(h.send(h.get("/duplicates")).await).await;
-    assert!(page.contains("data-duplicates-indexing"));
+    assert_eq!(h.page("/duplicates").await["indexing"], true);
     nujijushi::duplicates::index_batch(&h.state).await.unwrap();
     let pairs = h.state.db.with(|conn| duplicates::pairs(conn, 0)).unwrap();
     assert_eq!(pairs.first(), Some(&(left, exact)));
     assert!(pairs.contains(&(left, right)));
     assert_eq!(pairs.len(), 3, "{pairs:?}");
-    let html = body_text(h.send(h.get("/duplicates")).await).await;
-    assert!(html.contains("Exact file") && html.contains("Visually similar"));
-    assert!(html.contains("Image 2") && html.contains("approved") && html.contains("queued"));
-    assert!(html.contains("https:&#x2f;&#x2f;example.test&#x2f;twitter&#x2f;102"));
+    let page = h.page("/duplicates").await;
+    let pair = page["pairs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|pair| pair["left"]["source"] == "twitter" || pair["right"]["source"] == "twitter")
+        .unwrap();
+    let matches = page["pairs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|pair| pair["matches"].as_array().unwrap())
+        .collect::<Vec<_>>();
+    assert!(matches.iter().any(|item| item["exact"] == true));
+    assert!(matches.iter().any(|item| item["exact"] == false));
+    let twitter = [&pair["left"], &pair["right"]]
+        .into_iter()
+        .find(|post| post["source"] == "twitter")
+        .unwrap();
+    assert_eq!(twitter["url"], "https://example.test/twitter/102");
+
     let reject = format!("csrf=bad&left={left}&right={right}");
     assert_eq!(
         h.send(h.post("/duplicates/dismiss", &reject))
@@ -1614,7 +1551,7 @@ async fn duplicate_inbox_indexes_and_dismisses_cross_source_media_pairs() {
         h.send(h.post("/duplicates/dismiss", &confirm))
             .await
             .status(),
-        StatusCode::SEE_OTHER
+        StatusCode::OK
     );
     let reopened = AppState::open((*h.state.cfg).clone(), h.state.transport.clone()).unwrap();
     let updated = archive_test_images(
@@ -1737,9 +1674,8 @@ async fn post_detail_renders_with_tag_suggestions_enabled_before_the_first_job()
         let body = body_text(response).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         let view: serde_json::Value = serde_json::from_str(&body).unwrap();
-        let html = view["html"].as_str().unwrap();
-        assert!(html.contains("Suggest tags"), "{html}");
-        assert!(!html.contains("Suggest again"), "{html}");
+        assert_eq!(view["can_suggest_tags"], true);
+        assert!(view["tag_review"].is_null());
     }
 }
 
@@ -1872,7 +1808,7 @@ async fn tag_suggestions_review_is_explicit_and_preserves_existing_tags_and_remo
     let generate = format!("csrf={}&action=generate", h.ws.csrf);
     let mut anonymous = h.post(&path, &generate);
     anonymous.headers_mut().remove(header::COOKIE);
-    assert!(h.send(anonymous).await.status().is_redirection());
+    assert_eq!(h.send(anonymous).await.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(
         h.send(h.post(&path, "action=generate&csrf=bad"))
             .await
@@ -1883,8 +1819,9 @@ async fn tag_suggestions_review_is_explicit_and_preserves_existing_tags_and_remo
         h.send(h.post(&path, &generate)),
         h.send(h.post(&path, &generate))
     );
-    assert_eq!(first.status(), StatusCode::SEE_OTHER);
-    assert_eq!(second.status(), StatusCode::SEE_OTHER);
+    let mut statuses = [first.status(), second.status()];
+    statuses.sort();
+    assert_eq!(statuses, [StatusCode::OK, StatusCode::ACCEPTED]);
     assert!(h.jobs().await.len() == 1);
     assert_eq!(requests.load(Ordering::Relaxed), 0);
     let job = &h.jobs().await[0];
@@ -1922,18 +1859,21 @@ async fn tag_suggestions_review_is_explicit_and_preserves_existing_tags_and_remo
             .await
             .is_err()
     );
-    let detail = h.send(h.get(&format!("/posts/{post_id}"))).await;
-    let html = String::from_utf8(
-        to_bytes(detail.into_body(), usize::MAX)
-            .await
+    let detail = h.page(&format!("/posts/{post_id}")).await;
+    let suggestions = detail["tag_review"]["suggestions"].as_array().unwrap();
+    let positions = suggestions
+        .iter()
+        .flat_map(|suggestion| suggestion["images"].as_array().unwrap())
+        .collect::<Vec<_>>();
+    assert!(positions.iter().any(|position| **position == 1));
+    assert!(positions.iter().any(|position| **position == 3));
+    assert!(!positions.iter().any(|position| **position == 2));
+    assert!(suggestions.iter().any(|suggestion| {
+        suggestion["evidence"]
+            .as_str()
             .unwrap()
-            .to_vec(),
-    )
-    .unwrap();
-    assert!(html.contains("href=\"#media-1\">Image 1"), "{html}");
-    assert!(html.contains("href=\"#media-3\">Image 3"));
-    assert!(!html.contains("href=\"#media-2\">Image 2"));
-    assert!(html.contains("Low confidence"));
+            .contains("Low confidence")
+    }));
     let review = h
         .state
         .db
@@ -1982,14 +1922,14 @@ async fn tag_suggestions_review_is_explicit_and_preserves_existing_tags_and_remo
     let saved = h
         .send(h.post(&path, &resolve(character, "accept", "Variant+Spelling")))
         .await;
-    assert_eq!(saved.status(), StatusCode::SEE_OTHER);
+    assert_eq!(saved.status(), StatusCode::OK);
     let discarded = h
         .send(h.post(
             &path,
             &resolve(review.suggestions[4].id, "discard", "pokemon"),
         ))
         .await;
-    assert_eq!(discarded.status(), StatusCode::SEE_OTHER);
+    assert_eq!(discarded.status(), StatusCode::OK);
     h.state
         .db
         .with(|conn| {
@@ -2232,8 +2172,7 @@ async fn gallery_merges_keep_the_post_and_can_restore_source_panels_after_reopen
         }
         body
     };
-    let page = body_text(h.send(h.get(&format!("/posts/{id}"))).await).await;
-    assert!(page.contains("Merge side by side"));
+    assert_eq!(h.page(&format!("/posts/{id}")).await["can_merge"], true);
     assert_eq!(
         h.send(h.post(&path, "csrf=wrong&action=merge"))
             .await
@@ -2249,14 +2188,14 @@ async fn gallery_merges_keep_the_post_and_can_restore_source_panels_after_reopen
     let first_merge = form(&originals.media, &[1, 0]);
     let mut anonymous = h.post(&path, &first_merge);
     anonymous.headers_mut().remove(header::COOKIE);
-    assert!(h.send(anonymous).await.status().is_redirection());
+    assert_eq!(h.send(anonymous).await.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(
         h.send(h.post(&path, &first_merge)).await.status(),
-        StatusCode::SEE_OTHER
+        StatusCode::ACCEPTED
     );
     assert_eq!(
         h.send(h.post(&path, &first_merge)).await.status(),
-        StatusCode::SEE_OTHER
+        StatusCode::OK
     );
     let pending = h
         .state
@@ -2279,12 +2218,16 @@ async fn gallery_merges_keep_the_post_and_can_restore_source_panels_after_reopen
     assert!(partial.media[0].sensitive);
     assert_eq!(partial.media[1].blob_hash, originals.media[2].blob_hash);
     assert!(h.state.blobs.thumb_exists(&partial.media[0].blob_hash));
-    let done = body_text(h.send(h.get(&format!("/posts/{id}"))).await).await;
+    let done = h.page(&format!("/posts/{id}")).await;
+    assert!(done["media"][0]["undo_id"].is_number());
     assert!(
-        done.contains("Undo merge") && done.contains("Merged 2 images"),
-        "{done}"
+        done["merge_job"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Merged 2 images")
     );
-    assert!(done.contains("data-role=\"counts\">2/2"));
+    assert_eq!(done["merge_job"]["progress"], 2);
+    assert_eq!(done["merge_job"]["total"], 2);
 
     let panel = std::fs::read(&imported.files[0].path).unwrap();
     let other = encode_image(
@@ -2321,7 +2264,7 @@ async fn gallery_merges_keep_the_post_and_can_restore_source_panels_after_reopen
         ))
         .await
         .status(),
-        StatusCode::SEE_OTHER
+        StatusCode::ACCEPTED
     );
     assert_eq!(worker.drain().await.unwrap(), 1);
     check_retained_match();
@@ -2338,7 +2281,7 @@ async fn gallery_merges_keep_the_post_and_can_restore_source_panels_after_reopen
         h.send(h.post(&path, &form(&partial.media, &[2, 3])))
             .await
             .status(),
-        StatusCode::SEE_OTHER
+        StatusCode::ACCEPTED
     );
     assert_eq!(worker.drain().await.unwrap(), 1);
     let two_merges = get_post();
@@ -2388,7 +2331,7 @@ async fn gallery_merges_keep_the_post_and_can_restore_source_panels_after_reopen
         h.send(h.post(&path, &form(&kept.media, &[0, 1, 2])))
             .await
             .status(),
-        StatusCode::SEE_OTHER
+        StatusCode::ACCEPTED
     );
     assert_eq!(worker.drain().await.unwrap(), 1);
     let combined = get_post();
@@ -2446,10 +2389,7 @@ async fn gallery_merges_keep_the_post_and_can_restore_source_panels_after_reopen
         "csrf={}&action=undo&merge_id={undo_id}&gallery_version={version}",
         h.ws.csrf
     );
-    assert_eq!(
-        h.send(h.post(&path, &undo)).await.status(),
-        StatusCode::SEE_OTHER
-    );
+    assert_eq!(h.send(h.post(&path, &undo)).await.status(), StatusCode::OK);
     let restored = h.state.db.with(|conn| posts::get(conn, id)).unwrap();
     assert_eq!(
         restored
@@ -2599,9 +2539,9 @@ async fn fit_photo_is_reversible_and_merge_output_can_use_the_same_settings() {
     let original = get(&h.state);
     let first = &original.media[0];
     let version = media_merges::gallery_version(&original.media);
-    let page = body_text(h.send(h.get(&post_url)).await).await;
-    assert!(page.contains("Compress image"));
-    assert!(page.contains("Exceeds the photo upload limits"));
+    let page = h.page(&post_url).await;
+    assert_eq!(page["media"][0]["can_compress"], true);
+    assert_eq!(page["media"][0]["over_photo_limit"], true);
     let form = format!(
         "action=compress&media_id={}&gallery_version={version}&output=fit",
         first.id
@@ -2624,7 +2564,7 @@ async fn fit_photo_is_reversible_and_merge_output_can_use_the_same_settings() {
         h.send(h.post(&action_url, &format!("{form}&quality=101")))
             .await
             .status(),
-        StatusCode::SEE_OTHER
+        StatusCode::ACCEPTED
     );
     let job = h
         .state
@@ -2650,8 +2590,7 @@ async fn fit_photo_is_reversible_and_merge_output_can_use_the_same_settings() {
     let status: serde_json::Value = serde_json::from_str(&status).unwrap();
     assert_eq!(status["media_merge_job"]["kind"], "compress_media");
     assert_eq!(status["media_merge_job"]["state"], "done");
-    let page = body_text(h.send(h.get(&post_url)).await).await;
-    assert!(page.contains("Undo compression"));
+    assert_eq!(h.page(&post_url).await["media"][0]["compressed"], true);
 
     assert_eq!(
         archive_test_images(&h.state, "twitter", "panorama", &inputs),
@@ -2675,7 +2614,7 @@ async fn fit_photo_is_reversible_and_merge_output_can_use_the_same_settings() {
     );
     assert_eq!(
         h.send(h.post(&action_url, &undo)).await.status(),
-        StatusCode::SEE_OTHER
+        StatusCode::OK
     );
     let restored = get(&h.state);
     assert_eq!(restored.media[0].blob_hash, first.blob_hash);
@@ -2686,7 +2625,7 @@ async fn fit_photo_is_reversible_and_merge_output_can_use_the_same_settings() {
     );
     assert_eq!(
         h.send(h.post(&action_url, &merge_form)).await.status(),
-        StatusCode::SEE_OTHER
+        StatusCode::ACCEPTED
     );
     assert_eq!(worker.drain().await.unwrap(), 1);
     let merged = get(&h.state);
@@ -2699,11 +2638,7 @@ async fn fit_photo_is_reversible_and_merge_output_can_use_the_same_settings() {
         ),
         ("jpg", Some(440), Some(22))
     );
-    assert!(
-        body_text(h.send(h.get(&post_url)).await)
-            .await
-            .contains("Undo merge")
-    );
+    assert!(h.page(&post_url).await["media"][0]["undo_id"].is_number());
 }
 
 #[tokio::test]
@@ -2714,20 +2649,18 @@ async fn setup_explains_credentials_and_accepts_web_only_publishing() {
     cfg.bot_enabled = false;
     cfg.access.admins.clear();
     h.ws = WebState::new(h.state.clone()).unwrap();
-    let html = body_text(h.send(h.get("/")).await).await;
-    assert!(html.contains("href=\"#telegram-setup\">Configure Telegram"));
-    assert!(html.contains("[telegram] bot_token"));
-    assert!(html.contains("[access] admins"));
-    assert!(html.contains("Restart nujijushi"));
+    assert_eq!(
+        h.page("/").await["setup"]["next"]["href"],
+        "#telegram-setup"
+    );
 
     Arc::make_mut(&mut h.state.cfg).bot_token = token;
     h.ws = WebState::new(h.state.clone()).unwrap();
-    let html = body_text(h.send(h.get("/")).await).await;
-    assert!(html.contains(">Add a channel →"));
-    assert!(!html.contains("[access] admins"));
+    assert_eq!(
+        h.page("/").await["setup"]["next"]["href"],
+        "/channels#add-channel"
+    );
 
-    let html = body_text(h.send(h.get("/channels")).await).await;
-    assert!(html.contains("name=\"enabled\"> enable scheduled publishing now"));
     (*h.mock)
         .clone()
         .with_chat(nujijushi::tg::botapi::ChatInfo {
@@ -2746,7 +2679,7 @@ async fn setup_explains_credentials_and_accepts_web_only_publishing() {
             ),
         ))
         .await;
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(response.status(), StatusCode::OK);
     let channel = h
         .state
         .db
@@ -2771,16 +2704,14 @@ async fn setup_holds_the_first_post_until_preview_and_survives_an_empty_queue() 
         )
         .unwrap();
 
-    let html = body_text(h.send(h.get("/posts?setup=true")).await).await;
-    assert!(html.contains("action=\"/setup/queue\""));
-    assert!(html.contains("Hold for preview"));
+    assert_eq!(h.page("/posts?setup=true").await["setup"], true);
     let preview_path = format!("/channels/{}/preview", channel.id);
     let form = format!(
         "csrf={}&channel={}&post_id={post_id}",
         h.ws.csrf, channel.id
     );
     let response = h.send(h.post("/setup/queue", &form)).await;
-    assert_eq!(response.headers()[header::LOCATION], preview_path);
+    assert_eq!(Harness::json(&response)["location"], preview_path);
     let item = h
         .state
         .db
@@ -2800,14 +2731,16 @@ async fn setup_holds_the_first_post_until_preview_and_survives_an_empty_queue() 
     ));
     assert_eq!(h.mock.send_count(), 0);
 
-    let html = body_text(h.send(h.get("/")).await).await;
-    assert!(html.contains("first run setup"));
-    assert!(html.contains(">Open preview →"));
-    let preview = body_text(h.send(h.get(&preview_path)).await).await;
-    assert!(preview.contains("held for review"));
-    assert!(preview.contains(&format!("View artwork #{post_id}")));
-    assert!(preview.contains("Confirm preview and release post"));
-    assert!(preview.contains("#original"));
+    assert_eq!(h.page("/").await["setup"]["next"]["action"], "Open preview");
+    let preview = h.page(&preview_path).await;
+    assert_eq!(preview["held"]["post_id"], post_id);
+    assert_eq!(preview["enable_item"]["post_id"], post_id);
+    assert!(
+        preview["held"]["caption"]
+            .as_str()
+            .unwrap()
+            .contains("#original")
+    );
     assert_eq!(h.mock.send_count(), 0);
 
     let confirm = |csrf| {
@@ -2838,7 +2771,7 @@ async fn setup_holds_the_first_post_until_preview_and_survives_an_empty_queue() 
         .unwrap();
 
     let response = h.send(h.post(&preview_path, &confirm(&h.ws.csrf))).await;
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(response.status(), StatusCode::OK);
     let duplicate = h.send(h.post(&preview_path, &confirm(&h.ws.csrf))).await;
     assert_eq!(duplicate.status(), StatusCode::BAD_REQUEST);
     assert_eq!(h.mock.send_count(), 0, "the web request never sends");
@@ -2857,9 +2790,8 @@ async fn setup_holds_the_first_post_until_preview_and_survives_an_empty_queue() 
         .db
         .set_setting(nujijushi::queue::scheduler::TICK_KEY, "stale")
         .unwrap();
-    let html = body_text(h.send(h.get("/")).await).await;
-    assert!(!html.contains("first run setup"));
-    assert!(html.contains("nothing is publishing on a schedule"));
+    assert!(h.page("/").await["setup"].is_null());
+    assert_eq!(h.page("/").await["scheduler"]["stale"], true);
 }
 
 #[tokio::test]
@@ -2882,22 +2814,22 @@ async fn setup_links_to_preview_when_only_stopped_channels_have_queued_posts() {
         )
         .unwrap();
 
-    let html = body_text(h.send(h.get("/")).await).await;
-    assert!(html.contains("first run setup"));
-    assert!(html.contains(">Open preview →"));
+    assert_eq!(h.page("/").await["setup"]["next"]["action"], "Open preview");
     let path = format!("/channels/{}/preview", channel.id);
-    let preview = body_text(h.send(h.get(&path)).await).await;
-    assert!(preview.contains("Scheduling is off for this channel"));
-    assert!(preview.contains("Confirm preview and enable scheduling"));
-    assert!(preview.contains("#original"));
+    let preview = h.page(&path).await;
+    assert_eq!(preview["stopped"], true);
+    assert_eq!(preview["enable_item"]["post_id"], post_id);
+    assert!(
+        preview["items"][0]["caption"]
+            .as_str()
+            .unwrap()
+            .contains("#original")
+    );
     let form = format!(
         "csrf={}&queue_id={queue_id}&post_id={post_id}&held=false&target=%40test_channel",
         h.ws.csrf
     );
-    assert_eq!(
-        h.send(h.post(&path, &form)).await.status(),
-        StatusCode::SEE_OTHER
-    );
+    assert_eq!(h.send(h.post(&path, &form)).await.status(), StatusCode::OK);
     let stored = h
         .state
         .db
@@ -2905,54 +2837,29 @@ async fn setup_links_to_preview_when_only_stopped_channels_have_queued_posts() {
         .unwrap();
     assert!(stored.enabled && !stored.paused);
     assert_eq!(h.mock.send_count(), 0);
-    let html = body_text(h.send(h.get("/")).await).await;
-    assert!(!html.contains("first run setup"));
+    assert!(h.page("/").await["setup"].is_null());
 }
 
 #[tokio::test]
-async fn posts_per_page_is_bounded_remembered_and_preserved_while_paging() {
+async fn posts_per_page_is_bounded_and_preserved_while_paging() {
     let h = harness();
     for n in 1..=51 {
         h.post_only(&n.to_string()).await;
     }
-    let count_cards = |html: &str| html.matches(r#"aria-label="Open post #"#).count();
-
-    let defaults = body_text(h.send(h.get("/posts?per_page=10000")).await).await;
-    assert_eq!(count_cards(&defaults), 24);
-
-    let response = h
-        .send(h.get("/posts?per_page=48&source=pixiv&search=Artwork&setup=true"))
+    let defaults = h.page("/posts?per_page=10000").await;
+    assert_eq!(ids(&defaults["cards"]).len(), 24);
+    let first = h
+        .page("/posts?per_page=48&source=pixiv&search=Artwork&setup=true")
         .await;
-    let cookie = response.headers()[header::SET_COOKIE].to_str().unwrap();
-    assert!(cookie.starts_with("nujijushi_posts_per_page=48;"));
-    let html = body_text(response).await;
-    assert_eq!(count_cards(&html), 48);
-    assert!(html.contains(r#"<option value="48" selected>"#));
-    assert!(html.contains("Page 1 of 2"));
-    assert!(
-        html.contains("search=Artwork&amp;source=pixiv&amp;setup=true&amp;per_page=48&amp;page=2")
-    );
-
-    let mut request = h.get("/posts?page=999");
-    request.headers_mut().insert(
-        header::COOKIE,
-        format!(
-            "{}={}; nujijushi_posts_per_page=48",
-            auth::COOKIE,
-            h.ws.session
-        )
-        .parse()
-        .unwrap(),
-    );
-    let response = h.send(request).await;
-    assert!(!response.headers().contains_key(header::SET_COOKIE));
-    let html = body_text(response).await;
-    assert_eq!(count_cards(&html), 3);
-    assert!(html.contains("Page 2 of 2"));
-    assert!(!html.contains(r#"rel="next""#));
-
-    let expanded = body_text(h.send(h.get("/posts?per_page=96")).await).await;
-    assert_eq!(count_cards(&expanded), 51);
+    assert_eq!(ids(&first["cards"]).len(), 48);
+    assert_eq!(first["page_count"], 2);
+    let next = first["next_page"].as_str().unwrap();
+    assert!(next.contains("search=Artwork&source=pixiv&setup=true&per_page=48&page=2"));
+    let second = h.page("/posts?page=999&per_page=48").await;
+    assert_eq!(ids(&second["cards"]).len(), 3);
+    assert_eq!(second["page_number"], 2);
+    assert!(second["next_page"].is_null());
+    assert_eq!(ids(&h.page("/posts?per_page=96").await["cards"]).len(), 51);
 }
 
 #[tokio::test]
@@ -2966,12 +2873,9 @@ async fn post_page_deletion_requires_confirmation_and_waits_for_an_active_send()
     let other = h.post_only("66").await;
     let path = format!("/posts/{id}");
     let confirmation = format!("{path}/delete");
-    let html = body_text(h.send(h.get(&path)).await).await;
-    assert!(html.contains(&format!(r#"href="{confirmation}">Delete post…"#)));
-    let html = body_text(h.send(h.get(&confirmation)).await).await;
-    assert!(html.contains(&format!("Delete post #{id}?")));
-    assert!(html.contains("queue entries"));
-    assert!(html.contains("Copies already published to Telegram or mirrored to storage stay"));
+    let view = h.page(&confirmation).await;
+    assert_eq!(view["id"], id);
+    assert_eq!(view["sending"], false);
     assert_eq!(h.send(h.get(&path)).await.status(), StatusCode::OK);
 
     let imported = h
@@ -3005,9 +2909,8 @@ async fn post_page_deletion_requires_confirmation_and_waits_for_an_active_send()
             .is_some()
     );
     let blocked = h.send(h.post(&confirmation, &valid)).await;
-    assert!(Harness::flash(&blocked).contains("Wait for the current send"));
-    let html = body_text(h.send(h.get(&confirmation)).await).await;
-    assert!(!html.contains(&format!(r#"action="{confirmation}""#)));
+    assert!(Harness::message(&blocked).contains("Wait for the current send"));
+    assert_eq!(h.page(&confirmation).await["sending"], true);
     assert_eq!(
         h.state
             .db
@@ -3019,11 +2922,8 @@ async fn post_page_deletion_requires_confirmation_and_waits_for_an_active_send()
     lease::release(&h.state, queue_id).await.unwrap();
 
     let response = h.send(h.post(&confirmation, &valid)).await;
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    assert_eq!(
-        response.headers()[header::LOCATION],
-        "/posts?flash=Post+deleted"
-    );
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(Harness::json(&response)["location"], "/posts");
     assert_eq!(h.send(h.get(&path)).await.status(), StatusCode::NOT_FOUND);
     assert!(h.state.db.with(|conn| queue::get(conn, queue_id)).is_err());
     assert!(h.state.db.with(|conn| posts::get(conn, other)).is_ok());
@@ -3071,7 +2971,7 @@ async fn gapped_merge_visibility_and_outgoing_copies_use_the_same_gallery() {
     let response = h.send(h.post(&path, &form)).await;
     assert_eq!(response.status(), StatusCode::ACCEPTED);
     let body: serde_json::Value = serde_json::from_str(&body_text(response).await).unwrap();
-    let job = body["job_id"].as_i64().unwrap();
+    let job = body["job_ids"][0].as_i64().unwrap();
     assert_eq!(JobWorker::new(h.state.clone()).drain().await.unwrap(), 1);
     let status: serde_json::Value = serde_json::from_str(
         &body_text(h.send(h.get(&format!("/api/v1/jobs/{job}/status"))).await).await,
@@ -3464,32 +3364,34 @@ async fn posts_cursor_filter_and_web_default_follow_archive_state() {
         })
         .unwrap();
 
-    let shown = |html: &str, post: i64| html.contains(&format!("data-post-card=\"{post}\""));
-    let html = body_text(h.send(h.get("/posts?sent=not_queued")).await).await;
+    let page = h.page("/posts?sent=not_queued").await;
+    let shown = ids(&page["cards"]);
     for included in [first, second, third] {
-        assert!(shown(&html, included));
+        assert!(shown.contains(&included));
     }
     for excluded in [fourth, private, history] {
-        assert!(!shown(&html, excluded));
+        assert!(!shown.contains(&excluded));
     }
-    let tagged = body_text(h.send(h.get("/posts?tag=rare&sent=not_queued")).await).await;
-    assert!(
-        tagged.contains("aria-current=\"true\"") && tagged.contains("#rare <span class=\"hint\">1")
-    );
+    let tagged = h.page("/posts?tag=rare&sent=not_queued").await;
+    assert_eq!(tagged["top_tags"][0]["active"], true);
+    assert_eq!(tagged["top_tags"][0]["tag"], "rare");
+    assert_eq!(tagged["top_tags"][0]["count"], 1);
+
     let cursor = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("cursor", &format!("2025-01-01T00:00:00+00:00|{third}"))
         .append_pair("sent", "not_queued")
         .finish();
-    let result = h
-        .send(h.get(&format!("/api/v1/posts/cards?{cursor}")))
-        .await;
-    assert_eq!(result.status(), StatusCode::OK);
-    let batch: serde_json::Value = serde_json::from_str(&body_text(result).await).unwrap();
-    let cards = batch["html"].as_str().unwrap();
-    assert!(shown(cards, first) && shown(cards, second) && !shown(cards, third));
-    assert!(
-        cards.contains("#rare") && cards.contains("#landscape") && !cards.contains("#fourth_tag")
-    );
+    let batch = h.page(&format!("/api/v1/posts/cards?{cursor}")).await;
+    let shown = ids(&batch["cards"]);
+    assert!(shown.contains(&first) && shown.contains(&second) && !shown.contains(&third));
+    let tags = batch["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|card| card["tags"].as_array().unwrap())
+        .map(|tag| tag["name"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(tags.contains(&"rare") && tags.contains(&"landscape") && !tags.contains(&"fourth_tag"));
 
     let form = format!("csrf={}&channel={}", h.ws.csrf, channel.id);
     let response = h.send(h.post("/api/v1/settings", &form)).await;
@@ -3503,14 +3405,57 @@ async fn posts_cursor_filter_and_web_default_follow_archive_state() {
         Some(channel.id)
     );
     for path in ["/posts".into(), format!("/posts/{second}")] {
-        let html = body_text(h.send(h.get(&path)).await).await;
-        assert!(html.contains(&format!("value=\"{}\" selected", channel.id)));
+        assert_eq!(h.page(&path).await["default_channel"], channel.id);
     }
 
     h.state
         .db
         .with(|conn| channels::delete(conn, channel.id))
         .unwrap();
-    let response = body_text(h.send(h.get("/settings")).await).await;
-    assert!(response.contains("No default"));
+    assert!(h.page("/settings").await["default_channel"].is_null());
+}
+
+#[tokio::test]
+async fn admin_login_uses_a_separate_challenge_and_bootstraps_the_session() {
+    let h = harness();
+    let request = |path, form: Option<String>, cookie: Option<&str>| {
+        let mut builder =
+            Request::builder()
+                .uri(path)
+                .method(if form.is_some() { "POST" } else { "GET" });
+        if let Some(cookie) = cookie {
+            builder = builder.header(header::COOKIE, cookie);
+        }
+        if form.is_some() {
+            builder = builder.header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
+        }
+        builder.body(Body::from(form.unwrap_or_default())).unwrap()
+    };
+
+    let challenge = h.send(request("/api/v1/login", None, None)).await;
+    assert_eq!(challenge.headers()[header::CACHE_CONTROL], "no-store");
+    let csrf = Harness::json(&challenge)["csrf"].as_str().unwrap();
+    assert_ne!(csrf, h.ws.csrf);
+    let cookie = challenge.headers()[header::SET_COOKIE].to_str().unwrap();
+    assert!(cookie.contains("HttpOnly; SameSite=Strict"));
+    let cookie = cookie.split(';').next().unwrap();
+    let form = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("csrf", csrf)
+        .append_pair("token", UI_TOKEN)
+        .append_pair("next", "/posts?nsfw=no")
+        .finish();
+    let denied = h
+        .send(request("/api/v1/login", Some(form.clone()), None))
+        .await;
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    let login = h
+        .send(request("/api/v1/login", Some(form), Some(cookie)))
+        .await;
+    assert_eq!(login.status(), StatusCode::OK);
+    assert_eq!(Harness::json(&login)["location"], "/posts?nsfw=no");
+    let session = h.page("/api/v1/session").await;
+    assert_eq!(session["csrf"], h.ws.csrf);
+    let expired = h.send(request("/api/v1/session", None, None)).await;
+    assert_eq!(expired.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(expired.headers()[header::CACHE_CONTROL], "no-store");
 }

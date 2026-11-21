@@ -14,7 +14,7 @@ use crate::media::compress::Compression;
 use super::{
     WebState,
     forms::{self, FormMap},
-    routes::{WebResult, check_csrf, flash_redirect},
+    routes::{WebResult, check_csrf},
 };
 
 pub(super) async fn action(
@@ -101,13 +101,11 @@ pub(super) async fn action(
         }
         _ => return Err(Error::invalid("Unknown gallery action").into()),
     };
-    let mut response = flash_redirect(&format!("/posts/{post_id}?section=media"), message);
-    if let Some(id) = job_id {
-        response
-            .extensions_mut()
-            .insert(super::admin::AcceptedJob(id));
-    }
-    Ok(response)
+    Ok(super::admin::accepted(
+        &format!("/posts/{post_id}?section=media"),
+        message,
+        job_id.into_iter().collect(),
+    ))
 }
 
 fn compression_settings(form: &FormMap, mode: &str) -> WebResult<Compression> {

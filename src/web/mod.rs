@@ -1,25 +1,23 @@
-//! Embedded admin UI: server-rendered pages over the same services as the CLI.
+//! Embedded React admin and HTTP endpoints over the same services as the CLI.
 
 mod admin;
 pub mod auth;
 mod curation;
+mod data;
 pub mod forms;
 mod media_merges;
 mod queue_status;
 pub mod routes;
 mod setup;
 mod tag_suggestions;
-pub mod views;
 
 use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::state::AppState;
-use views::PageRenderer;
 
 pub struct WebState {
     pub app: AppState,
-    pub pages: PageRenderer,
     /// Expected session cookie value (derived from the ui token).
     pub session: String,
     /// CSRF token embedded in every form.
@@ -47,7 +45,6 @@ impl WebState {
         };
         Ok(Arc::new(Self {
             app,
-            pages: PageRenderer::new()?,
             session,
             csrf,
             webhook_secret,
@@ -70,7 +67,11 @@ pub async fn serve(state: AppState, bind: Option<String>) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(socket)
         .await
         .map_err(|e| Error::other(format!("cannot bind {socket}: {e}")))?;
-    println!("admin UI   http://{socket}/");
+    if admin::assets_available() {
+        println!("admin UI   http://{socket}/");
+    } else {
+        tracing::info!("admin UI assets missing; HTTP service listening on {socket}");
+    }
     if ws.webhook_secret.is_some() {
         let app = ws.app.clone();
         tokio::spawn(async move { crate::bot::menus::initialize(&app).await });
@@ -79,10 +80,12 @@ pub async fn serve(state: AppState, bind: Option<String>) -> Result<()> {
             Err(err) => println!("webhook    misconfigured: {err}"),
         }
     }
-    println!(
-        "log in with the ui token from {}",
-        ws.app.cfg.home.join("config.toml").display()
-    );
+    if admin::assets_available() {
+        println!(
+            "log in with the ui token from {}",
+            ws.app.cfg.home.join("config.toml").display()
+        );
+    }
 
     // the UI can queue imports, so it also runs the import worker
     let worker = crate::jobs::worker::JobWorker::new(ws.app.clone());

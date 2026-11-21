@@ -159,22 +159,19 @@ async fn the_endpoint_only_exists_in_webhook_mode() {
 }
 
 #[tokio::test]
-async fn the_ui_still_requires_its_cookie() {
+async fn the_admin_api_requires_its_session_cookie() {
     let harness = harness();
-    let status = routes::router(harness.ws.clone())
-        .oneshot(Request::get("/").body(Body::empty()).unwrap())
-        .await
-        .unwrap()
-        .status();
-    assert_eq!(status, StatusCode::SEE_OTHER, "redirect to /login");
-
-    // and the webhook path does not leak the UI
-    let status = routes::router(harness.ws.clone())
-        .oneshot(Request::get("/posts").body(Body::empty()).unwrap())
-        .await
-        .unwrap()
-        .status();
-    assert_eq!(status, StatusCode::SEE_OTHER);
+    for path in ["/api/v1/dashboard", "/api/v1/posts"] {
+        let response = routes::router(harness.ws.clone())
+            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+        assert_eq!(
+            response.headers()[axum::http::header::CACHE_CONTROL],
+            "no-store"
+        );
+    }
 }
 
 #[tokio::test]
@@ -246,23 +243,49 @@ async fn metrics_are_scrapable_without_the_ui_cookie() {
 }
 
 #[tokio::test]
-async fn static_assets_bypass_the_cookie_gate() {
+async fn admin_shell_and_assets_bypass_the_cookie_gate() {
     let harness = harness();
-    for (path, kind) in [
-        ("/static/app.js", "text/javascript"),
-        ("/static/app.css", "text/css"),
-    ] {
-        let response = routes::router(harness.ws.clone())
-            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+    let router = routes::router(harness.ws.clone());
+    let response = router
+        .clone()
+        .oneshot(Request::get("/posts/42").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        response.headers()[axum::http::header::CACHE_CONTROL],
+        "no-store"
+    );
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let body = std::str::from_utf8(&bytes).unwrap();
+    if status == StatusCode::SERVICE_UNAVAILABLE {
+        assert!(body.contains("npm run build --prefix webui"));
+    } else {
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("id=\"app\""));
+        let asset = body
+            .split_once("src=\"/admin-assets/")
+            .unwrap()
+            .1
+            .split('"')
+            .next()
+            .unwrap();
+        let response = router
+            .oneshot(
+                Request::get(format!("/admin-assets/{asset}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK, "{path}");
-        let content_type = response
-            .headers()
-            .get(axum::http::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default()
-            .to_string();
-        assert!(content_type.starts_with(kind), "{path}: {content_type}");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response.headers()[axum::http::header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .starts_with("text/javascript")
+        );
     }
 }

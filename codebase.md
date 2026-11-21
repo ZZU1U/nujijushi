@@ -159,36 +159,30 @@ cut through. Templates: `templates/captions/default.html.j2` plus per-channel in
 
 ## Flow 3 — the web UI
 
-`web::serve` builds `WebState { app, pages, session, csrf, webhook_secret }` and serves the
-router on `[web] bind`. Requests pass through `auth::require_session`: the session cookie is
-`blake3("nujijushi-ui-v1" + "session" + token)`, so it needs no session table; `/login`,
-`/static/*` and the Telegram webhook path are exempt. Handlers (`web/routes.rs`) call
-the same services as the CLI, then render a template with `PageRenderer`
-(`views.rs`; `serde_json` → minijinja values, `null` becomes an empty string). Every POST
-form carries `csrf` and handlers call `check_csrf`. Media is served from the blob store at
-`/thumb/{hash}` and `/media/{hash}` (hash validated to `[A-Za-z0-9]`).
+Axum serves the React admin shell at the browser URLs and JSON at `/api/v1/*`.
+The Vite bundle is embedded when built before Cargo. A Rust-only build still
+starts the HTTP server and job worker. Known admin pages return 503 with build
+instructions. Assets, metrics and the Telegram webhook have their own routes.
 
-Slow actions are queued, never awaited in the request:
+The React app loads its CSRF token from `GET /api/v1/session` using the HttpOnly
+session cookie. Sign-in uses a short-lived cookie-bound challenge. Protected API
+requests with an expired session return 401. Admin writes are URL-encoded,
+validate CSRF and return an action message, optional location and any new job IDs.
+Media and thumbnails are served from the authenticated blob routes.
 
 ```
-POST /publish        → jobs::create_publish_channel_job / create_publish_item_job → 303
-POST /storage/drain  → jobs::create_drain_job                                   → 303
-POST /import         → one import job per target                                 → 303
-POST /jobs/retry     → a new import job with the same payload (failed imports only)
+POST /api/v1/publish        → enqueue a publish job              → 202
+POST /api/v1/storage/drain  → enqueue a storage upload job       → 202
+POST /api/v1/import         → enqueue one import job per target  → 202
+POST /api/v1/jobs/retry     → enqueue a new failed import retry  → 202
 ```
 
-`enqueue_unique` refuses a duplicate while the same kind + payload is `pending`/`running`
-(`db::jobs::find_active`), so a double click cannot send twice; the lease still protects the
-send itself. The worker (`jobs::run_job` → `run_kind`) dispatches on `kind` and reports
-progress into the row, which is what the UI reads.
-
-`GET /api/status` (session-cookie gated, `Cache-Control: no-store`) returns
-`{now, jobs[], channels[]}` from `db::jobs::list` + `db::queue::counts`; `job_view` builds
-each entry so the templates and the JSON cannot drift apart. `static/app.js` polls it every
-2 s while something is live, repaints job rows, progress bars and the per-channel
-`data-role="publishing"` badges in place, and raises a toast when a job settles. Templates
-stay server-rendered: with JS off the same numbers are simply static, and nothing needs a
-build step. `/jobs` lists the last 50 jobs with a progress bar and a retry form.
+`enqueue_unique` refuses a duplicate while the same kind and payload is active.
+The worker dispatches the job and records its progress. The JSON read handlers
+and per-job status endpoint share `JobView`. React polls active jobs and refreshes
+the current data on completion. While a channel queue is open, its status endpoint
+also supplies a revision so sends from the scheduler or another tab appear.
+The existing `GET /api/status` endpoint remains session-gated.
 
 The grid (`db::posts::card_select`) is one projection with three shared rules: nsfw
 (`Rating::nsfw_sql`), delivered (`db::queue::DELIVERED_STATES`) and how a submitter is named

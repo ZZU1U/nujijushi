@@ -4,26 +4,67 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    body::to_bytes,
     extract::{Path, Request, State},
     http::{Method, StatusCode, header},
     middleware::Next,
     response::{Html, IntoResponse, Response},
 };
-use serde_json::{Value, json};
+use serde::Serialize;
 
 use super::{WebState, routes::job_view};
 
 include!(concat!(env!("OUT_DIR"), "/admin_assets.rs"));
 
-#[derive(Clone)]
-pub(super) struct ClientError(pub String);
+const MISSING_ASSETS: &str = "The React admin was not bundled. Run npm ci --prefix webui and npm run build --prefix webui, then rebuild nujijushi.";
 
-#[derive(Clone, Copy)]
-pub(super) struct AcceptedJob(pub i64);
+pub(super) fn assets_available() -> bool {
+    SHELL.is_some()
+}
 
-#[derive(Clone)]
-pub(super) struct AcceptedJobs(pub Vec<i64>);
+#[derive(Serialize)]
+struct ActionResult<'a> {
+    message: &'a str,
+    job_ids: Vec<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    location: Option<&'a str>,
+}
+
+pub(super) fn action_result(location: &str, message: &str) -> Response {
+    accepted(location, message, Vec::new())
+}
+
+pub(super) fn accepted(location: &str, message: &str, job_ids: Vec<i64>) -> Response {
+    let status = if job_ids.is_empty() {
+        StatusCode::OK
+    } else {
+        StatusCode::ACCEPTED
+    };
+    let location = super::auth::local_page(location).map(|_| location);
+    (
+        status,
+        Json(ActionResult {
+            message,
+            job_ids,
+            location,
+        }),
+    )
+        .into_response()
+}
+
+#[derive(Serialize)]
+struct ErrorResponse {
+    error: String,
+}
+
+pub(super) fn error(status: StatusCode, message: impl Into<String>) -> Response {
+    (
+        status,
+        Json(ErrorResponse {
+            error: message.into(),
+        }),
+    )
+        .into_response()
+}
 
 fn ui_page(path: &str) -> bool {
     matches!(
@@ -46,16 +87,16 @@ fn ui_page(path: &str) -> bool {
 }
 
 pub(super) async fn navigation(req: Request, next: Next) -> Response {
-    if let Some(shell) = SHELL
-        && req.method() == Method::GET
-        && ui_page(req.uri().path())
-        && req
-            .headers()
-            .get(header::ACCEPT)
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| value.contains("text/html"))
-    {
-        return ([(header::CACHE_CONTROL, "no-store")], Html(shell)).into_response();
+    if matches!(*req.method(), Method::GET | Method::HEAD) && ui_page(req.uri().path()) {
+        return match SHELL {
+            Some(shell) => ([(header::CACHE_CONTROL, "no-store")], Html(shell)).into_response(),
+            None => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(header::CACHE_CONTROL, "no-store")],
+                MISSING_ASSETS,
+            )
+                .into_response(),
+        };
     }
     next.run(req).await
 }
@@ -89,123 +130,28 @@ pub(super) async fn job(State(ws): State<Arc<WebState>>, Path(id): Path<i64>) ->
         .await
     {
         Ok(Some(job)) => Json(job_view(&job, chrono::Utc::now())).into_response(),
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error":"Job not found"})),
-        )
-            .into_response(),
+        Ok(None) => error(StatusCode::NOT_FOUND, "Job not found"),
         Err(err) => super::routes::WebError::from(err).into_response(),
     }
 }
 
-pub(super) async fn api_response(req: Request, next: Next) -> Response {
-    let response = next.run(req).await;
+pub(super) async fn api_headers(req: Request, next: Next) -> Response {
+    let mut response = next.run(req).await;
     let status = response.status();
-    let mime = response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("");
-    if mime.starts_with("application/json") {
-        let mut response = response;
-        response.headers_mut().insert(
-            header::CACHE_CONTROL,
-            header::HeaderValue::from_static("no-store"),
-        );
-        return response;
-    }
-
-    let mut cookies = response
-        .headers()
-        .get_all(header::SET_COOKIE)
-        .iter()
-        .cloned()
-        .collect::<Vec<_>>();
-    let (status, data) = if status.is_redirection() {
-        let location = response
+    if !status.is_success()
+        && !response
             .headers()
-            .get(header::LOCATION)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or("/");
-        let job_ids = response
-            .extensions()
-            .get::<AcceptedJobs>()
-            .map(|jobs| jobs.0.clone())
-            .unwrap_or_else(|| {
-                response
-                    .extensions()
-                    .get::<AcceptedJob>()
-                    .map(|job| job.0)
-                    .into_iter()
-                    .collect()
-            });
-        let job_id = job_ids.first().copied();
-        let mut message = None;
-        let mut destination = url::Url::parse("http://localhost")
-            .ok()
-            .and_then(|base| base.join(location).ok());
-        if let Some(url) = destination.as_mut() {
-            let query: Vec<_> = url
-                .query_pairs()
-                .filter_map(|(key, value)| {
-                    if key == "flash" {
-                        message = Some(value.into_owned());
-                        None
-                    } else {
-                        Some((key.into_owned(), value.into_owned()))
-                    }
-                })
-                .collect();
-            url.set_query(None);
-            if !query.is_empty() {
-                url.query_pairs_mut().extend_pairs(query);
-            }
-        }
-        let destination = destination
-            .as_ref()
-            .filter(|url| {
-                url.host_str() == Some("localhost") && super::auth::local_page(location).is_some()
-            })
-            .map(|url| &url[url::Position::BeforePath..])
-            .unwrap_or("/");
-        let status = if job_id.is_some() {
-            StatusCode::ACCEPTED
-        } else {
-            StatusCode::OK
-        };
-        (
+            .get(header::CONTENT_TYPE)
+            .is_some_and(|value| value.as_bytes().starts_with(b"application/json"))
+    {
+        response = error(
             status,
-            json!({"location":destination, "message":message, "job_id":job_id,"job_ids":job_ids}),
-        )
-    } else if status.is_success() && mime.starts_with("text/html") {
-        match to_bytes(response.into_body(), 32 * 1024 * 1024).await {
-            Ok(body) => (status, json!({"html":String::from_utf8_lossy(&body)})),
-            Err(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json!({"error":"The page could not be loaded"}),
-            ),
-        }
-    } else {
-        let detail = response
-            .extensions()
-            .get::<ClientError>()
-            .map(|error| error.0.clone())
-            .unwrap_or_else(|| {
-                status
-                    .canonical_reason()
-                    .unwrap_or("Request failed")
-                    .to_string()
-            });
-        (status, json!({"error":detail}))
-    };
-    let mut response = (
-        status,
-        [(header::CACHE_CONTROL, "no-store")],
-        Json::<Value>(data),
-    )
-        .into_response();
-    for cookie in cookies.drain(..) {
-        response.headers_mut().append(header::SET_COOKIE, cookie);
+            status.canonical_reason().unwrap_or("Request failed"),
+        );
     }
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-store"),
+    );
     response
 }
