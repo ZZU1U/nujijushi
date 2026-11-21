@@ -53,7 +53,7 @@ For guided web setup, run `nujijushi init`, then `nujijushi run` and open the [a
 
    ```bash
    nujijushi import ./artwork
-   nujijushi ls --state new
+   nujijushi ls --state approved
    nujijushi show 1 --channel art
    nujijushi queue add 1 --channel art
    ```
@@ -99,7 +99,7 @@ The optional online fallback checks local mappings and the cache, then queries D
 |---|---|
 | [Usage reference](docs/usage.md) | CLI commands, channel discovery, scheduling, NSFW policy, captions, and the admin UI |
 | [Operations guide](docs/operations.md) | Configuration, cookies, bot commands and roles, webhooks, proxies, mirrors, and troubleshooting |
-| [Example config](config.example.toml) | Core settings with comments and defaults |
+| [Example config](config.example.toml) · [Environment overrides](.env.example) | Settings, defaults, and environment variable names |
 | [Browser extension](extension/README.md) | Clip artwork URLs for batch import |
 | [Architecture](codebase.md) · [Contributing](AGENTS.md) | Request flows, invariants, and development checks |
 

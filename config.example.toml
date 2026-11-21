@@ -1,5 +1,5 @@
 # nujijushi configuration — copy to $NUJIJUSHI_HOME/config.toml (default ~/.nujijushi/config.toml)
-# Environment overrides: TG_BOT_TOKEN, NUJIJUSHI_UI_TOKEN, NUJIJUSHI_BIND, NUJIJUSHI_HOME, NUJIJUSHI_GALLERY_DL
+# See .env.example for environment overrides.
 
 [telegram]
 # From @BotFather. The bot must be an administrator of every channel it posts to.
@@ -65,5 +65,31 @@ queue_quota_per_day = 20
 [limits]
 # Telegram caption limit; nujijushi clips and closes tags to fit.
 caption_chars = 1024
-# Bot API upload limit per file.
+# General upload limit in bytes. Fit to Telegram uses at most 10,000,000 bytes for photos.
 max_upload_bytes = 52428800
+
+[proxy]
+# Optional proxy for Telegram, WebDAV, the public Telegram embed fallback, and Danbooru lookups.
+# gallery-dl receives the configured URL via --proxy.
+# url = "socks5h://127.0.0.1:1080"
+# no_proxy = "localhost,127.0.0.1,.lan"
+
+[storage]
+# Queue new imports for the enabled sinks. `nujijushi storage sync` backfills the archive.
+on_import = true
+# Optional subfolder for local and WebDAV mirrors.
+root = ""
+
+# [storage.local]
+# enabled = false
+# path = "/path/to/archive"
+
+# [storage.webdav]
+# enabled = false
+# url = "https://cloud.example.com/remote.php/dav/files/you/art"
+# username = "you"
+# password = "app-password"
+
+# [storage.telegram]
+# enabled = false
+# chat_id = "-1001234567890"

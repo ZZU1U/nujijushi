@@ -9,11 +9,11 @@ nujijushi's `/import` box. One URL per line, no duplicates, no typing.
 It is deliberately standalone:
 
 * no network requests, no account, no token, no server — it only fills your clipboard;
-* no `host_permissions` for anything but the sites whose pages it decorates
-  (`x.com`, `twitter.com`, `pixiv.net`) plus `activeTab` for the keyboard shortcut;
-* it never talks to nujijushi. `nujijushi import`/`/import` already accept one
-  target per line and ignore blank lines and `#` comments, so the clipboard is the
-  whole integration.
+* page buttons are injected on `x.com`, `twitter.com`, and `pixiv.net`. The
+  keyboard shortcut uses `activeTab`;
+* paste the copied URLs into the admin **Import** page, which accepts one target
+  per line and ignores blank lines and `#` comments. For the CLI, pass each URL
+  as a separate argument.
 
 ## Install
 
@@ -73,15 +73,15 @@ of these are one entry:
 | pixiv | `/artworks/<id>`, `/en/artworks/<id>`, `/i/<id>`, `member_illust.php?illust_id=`, `?p=3` (page kept as a hint only) | `pixiv:<id>` |
 | danbooru / gelbooru / safebooru | `/posts/<id>`, `index.php?s=view&id=` | `<source>:<id>` |
 | artstation / deviantart / tumblr / bluesky / mastodon / t.me | id- or slug-based | `<source>:<id>` |
-| anything else | `utm_*`, `fbclid`, `si`, `s`, `t`, `ref`, fragments and trailing slashes stripped, query sorted | `url:<host><path>` |
+| anything else | `utm_*`, `fbclid`, `si`, `s`, `t`, `ref`, fragments and trailing slashes stripped, query sorted | `url:<host><path>[?<query>]` |
 
 Non-links (folder paths, `javascript:`, `chrome://`, loose words) are refused rather
 than stored as junk. A list that arrives percent-encoded (`...status/1%0A...status/2`)
 is split like real newlines, and a single "link" that still contains `%0A` is refused
 instead of being stored as one broken URL.
 
-URLs are also normalised before copying: an X post is always written as
-`https://x.com/<handle>/status/<id>`, which is the form gallery-dl handles best.
+URLs are also normalised before copying. An X post is written as
+`https://x.com/<handle>/status/<id>`, with `i` in place of the handle on handle-free links.
 
 ## Adding a site
 
@@ -89,7 +89,8 @@ Two parts, and most sites only need the first.
 
 1. **Identity** — add a `match<Site>()` to `lib/canonical.js` and cases to
    `lib/canonical.test.mjs`. That alone makes the paste box, the shortcut and the
-   context menus work, plus the "clip this page" pill on any single-post page.
+   context menus use that identity. The fallback pill uses it on pages matched by
+   `content_scripts` in `manifest.json`.
 2. **Per-post buttons on a timeline** — add `content/sites/<site>.js`:
 
 ```js
@@ -108,8 +109,8 @@ window.NJS.register({
 });
 ```
 
-then add the file to `content_scripts[0].js` in `manifest.json` (after `lib/`,
-before nothing in particular) and to the `matches` list. Set `fallback: true` if it
+Then add the file to `content_scripts[0].js` in `manifest.json` after the `lib/`
+scripts, and add the site's URLs to `matches`. Set `fallback: true` if it
 should only run when no real adapter matched (that is how the page pill works).
 
 **The engine owns the rest** (`content/clip.js`):

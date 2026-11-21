@@ -8,19 +8,19 @@
 |---|---|
 | `nujijushi init` | create home dir, `config.toml`, database |
 | `nujijushi doctor [--offline] [--strict]` | check tooling, cookies, token, channel admin rights, disk |
-| `nujijushi import <url\|dir>… [--channel C]` | import; optionally queue straight into a channel |
-| `nujijushi ls [--state/--source/--tag/--nsfw/--search]` | browse the archive |
+| `nujijushi import <url\|dir>… [--channel C] [--priority N]` | import, with optional queue destination and priority |
+| `nujijushi ls [--state/--source/--tag/--nsfw/--search] [--limit N]` | browse the archive |
 | `nujijushi show <id> [--channel C] [--raw]` | details + rendered caption; `--raw` dumps the stored source metadata, post-level and per item |
-| `nujijushi tag <id> <tag>… [--remove]` · `rate` · `nsfw auto\|yes\|no` | curation |
+| `nujijushi tag <id> <tag>… [--remove]` · `rate <id> <sfw\|questionable\|explicit>` · `nsfw <id> <auto\|yes\|no>` | curation |
 | `nujijushi approve/reject <id>…` · `rm <id>` | post state |
 | `nujijushi approve --points N ID` | approve one guest suggestion with a 5–20 point reward |
-| `nujijushi channel add [alias] <@name\|id>` | register a channel (validated with `getChat`) |
+| `nujijushi channel add [alias] <@name\|id> [--no-verify]` | register a channel, checking `getChat` when a bot token is available |
 | `nujijushi channel ls\|edit\|rm\|pause\|resume` | channel + schedule management |
 | `nujijushi channel discover\|enable\|disable` | channels the bot was added to, waiting for a name |
 | `nujijushi queue add\|ls\|skip\|pin\|reset\|rm` | queue management |
 | `nujijushi preview <channel> [--count N]` | what the next N slots would publish |
 | `nujijushi push --channel C [--dry-run] [--force]` | publish one post now |
-| `nujijushi run [--once] [--tick 15] [--no-web] [--no-bot]` | scheduler + UI + bot |
+| `nujijushi run [--once] [--tick 15] [--no-web] [--no-bot] [--bind ADDR]` | scheduler + UI + bot |
 | `nujijushi serve [--bind ADDR]` | admin UI and its background jobs |
 | `nujijushi bot [--once]` | Telegram command interface only |
 | `nujijushi users ls\|grant\|ban` | who may talk to the bot, and their roles |
@@ -30,8 +30,10 @@
 | `nujijushi tagger unmap <character-id>` | remove your override and use the catalog or cache again |
 | `nujijushi tagger mappings` | list effective mappings, IDs, and their origins |
 | `nujijushi log [--limit N]` | send audit log |
+| `nujijushi storage ls\|test\|sync` | list, check, or backfill [storage mirrors](operations.md#external-storage-mirrors) |
 | `nujijushi gc [--dry-run]` | delete unreferenced blobs and thumbnails |
 | `nujijushi export [--out DIR] [--with-media]` | backup: DB snapshot + JSONL + channels.json (+ blobs) |
+| `nujijushi export --share --out DIR` | export outgoing artwork and its `post.json` sidecars |
 
 Global: `--home DIR` (or `$NUJIJUSHI_HOME`), `-v/-vv` for more logging.
 
@@ -51,25 +53,27 @@ Set the interval, time zone, active hours, daily cap, jitter, and artist cooldow
 
 Use `nujijushi preview <alias>` or the channel’s **preview** page to see what the scheduler is likely to send. Queue or policy changes can affect the result. `nujijushi run` starts the scheduler. `nujijushi serve` starts the admin UI and its background jobs.
 
-Three consecutive permanent send failures pause a channel. If a send is interrupted or partially delivered, the dashboard marks it unconfirmed. Check the channel before resolving the item in the dashboard. Unconfirmed items require manual resolution.
+Three consecutive failed publishing attempts pause a channel. A partial delivery is marked unconfirmed immediately. On `nujijushi run` startup, a send left in progress for more than 10 minutes is also marked unconfirmed. Check Telegram, then use **Confirm delivered** or **Requeue entire post** on the dashboard or channel queue. Confirming delivery accepts an optional Telegram message ID. Requeueing sends the entire post on the next attempt.
+
+`push --dry-run` renders the selected payload without sending it. It can still mark policy-vetoed queue items as skipped. Use `preview` to inspect the queue without changing it.
 
 See the [publishing flow](../codebase.md#flow-2--publishing-the-important-one) for selection, leases, and retries.
 
 ## NSFW handling
 
-Three layers, in order:
+The policy checks these conditions in order.
 
 1. **Hard blocks** (never publish, never even queued): `nujijushi rule add <tag> block`,
    or a blocked author (`authors.blocked`).
-2. **Rating** — taken from site metadata (`pixiv x_restrict`, booru `rating`, Twitter
+2. **Channel gates** check blocked and required tags and the number of outgoing media items.
+3. **Rating** — taken from site metadata (`pixiv x_restrict`, booru `rating`, Twitter
    `possibly_sensitive`), refined by `rule … nsfw` tags and tag heuristics, and
    overridable per post (`nujijushi nsfw <id> yes|no`, `rate <id>`).
-3. **Channel policy** — `--nsfw allow` (post normally), `spoil` (Bot API `has_spoiler`
+4. **Channel policy** — `--nsfw allow` (post normally), `spoil` (Bot API `has_spoiler`
    blur + `#nsfw` tag), `reject` (skipped with a reason).
 
-Channel `blocked_tags`/`required_tags` gate posts at enqueue **and** again at send time,
-so policy edits apply to the existing queue. Posts vetoed at send time become `skipped`
-with the reason in `last_error`.
+The same policy runs at enqueue and send time. Posts vetoed at send time become
+`skipped` with the reason in `last_error`.
 
 ## Captions
 
@@ -108,12 +112,12 @@ wants to ping someone.
 Filters: `truncate_words(n)`, `hashtags`, `tag_links(base)`, `one_line`.
 
 Generated Telegram hashtags turn punctuation such as brackets into word boundaries. For example, `character_name_(franchise_name)` becomes `#character_name_franchise_name`. Use the `hashtags` template filter for the same formatting in custom captions.
-Autoescaping is on — `{{ source_link }}` is the only pre-built HTML.
+Text values are HTML-escaped. `{{ source_link }}` supplies the prebuilt attribution
+link, and `tag_links(base)` renders escaped HTML links for the supplied tags.
 
-Per-channel options: `--tag-style hashtags|plain|none`, `--max-tags N`,
-`--attribution footer|link|none`, `--include-source-tag`, `--silent`, `--protect`.
-The source tag is **off by default** (no `#twitter`/`#pixiv` appended); pass
-`--include-source-tag` to bring it back per channel.
+Per-channel options include `--tag-style hashtags|plain|none`, `--max-tags N`,
+`--attribution footer|link|none`, `--include-source-tag true`, `--silent true`, and
+`--protect true`. Enable the source tag to append tags such as `#twitter` or `#pixiv`.
 Multiline text is kept, but `#hashtags` and `@mentions` are stripped at import, runs of blank
 lines collapse to one, and a body longer than 1000 characters is cut with `…`.
 
@@ -123,7 +127,7 @@ lines collapse to one, and a body longer than 1000 characters is cut with `…`.
 token (`[web] token`) exchanged for an HttpOnly cookie; forms carry a CSRF token.
 Binding to a non-loopback address is possible but logs a warning.
 
-Before upgrading an existing archive, stop older nujijushi workers and take a full backup with `nujijushi export --with-media --out <backup-directory>`. The new binary applies the gallery migration when it opens the archive.
+Before upgrading an existing archive, stop older nujijushi workers and take a full backup with `nujijushi export --with-media --out <backup-directory>`. The new binary applies pending SQLite migrations when it opens the archive.
 
 Pages: dashboard (queue depth, next slot per channel, unconfirmed sends, recent sends,
 recent jobs) · posts grid with filters + bulk approve/reject/NSFW/queue/delete (sent and
@@ -133,6 +137,8 @@ channel and the total size of the media · channel list + create · channel edit
 with live next-slot preview · ordered queue with pin/skip/requeue/remove ·
 next-slots preview · import box with job progress · **jobs** (every action, live) ·
 **users** (roles, quotas, ban/promote).
+
+When you add a channel or change its Telegram destination in the UI, it verifies that the destination is a broadcast channel and the bot has permission to post there. The dashboard's first-run setup can hold the first queued post for caption preview before you start scheduling.
 
 On **Posts**, filters apply as you change them and more cards load as you scroll. **Not queued** shows new and approved artwork that has no queue assignment or recorded delivery. Open **Tags** to browse popular tags and see the active filter. Use **Settings → Default queue channel** to preselect a destination for web queue actions.
 
@@ -150,10 +156,9 @@ Use `nujijushi export --share --out <new-directory>` to copy outgoing images and
 
 Open **Compress image** on a gallery item or **Merge output options** when stitching panels. **Use exact JPEG quality** keeps the pixel dimensions and uses the quality you enter. **Fit to Telegram** starts with a quality ceiling of 85 and can lower it or reduce the dimensions to fit the photo limits. It may add white borders to very wide or tall images. JPEG fills transparency with white. **Undo compression** restores the original image or merged PNG.
 
-`GET /metrics` answers in the Prometheus text format (posts by state and nsfw, channels by
-enabled, queue depth per channel/state, import jobs, storage mirrors). It sits outside the
-cookie gate because a scraper has no session and the document carries counts only — bind the
-UI to loopback, or block the path in your proxy if the port is reachable from outside.
+`GET /metrics` provides Prometheus text metrics for build information, posts, channels,
+queue depth, recent jobs, and storage mirrors. It is accessible without a session.
+Bind the UI to loopback or restrict this path at the proxy if the port is reachable from outside.
 
 **Publishing on demand** is available from the dashboard and the queue.
 
@@ -167,8 +172,8 @@ The request queues a background job. Open **jobs** to see progress or retry a fa
 ### Watched sources and duplicate artwork
 
 Use **Watched sources** to save a Pixiv artist page, an X or Bluesky artist media feed,
-or a newest-first Danbooru or Gelbooru tag search. **Check now** starts a background
-check. The first check uses the configured post limit for that watch. Later checks
+or a newest-first Danbooru or Gelbooru tag search. Use **Check now** to start each
+background check. The first check uses the configured post limit for that watch. Later checks
 look for newly published artwork and retry pending downloads. Use **Pause** to block
 new checks and **Resume** to keep checking from the same point. Already queued or
 running checks can finish. Artist and search access
@@ -181,9 +186,10 @@ files and likely resize or recompression matches, with the matched image positio
 indexes existing and new artwork in small batches, and the inbox shows when indexing
 is in progress.
 
-## Telegram limits nujijushi respects
+## Telegram media limits
 
 * ≤ 10 items per media group; larger posts are split into several albums.
-* The publisher sends videos separately from photo albums and uses an ffmpeg-generated poster when available.
-* Caption ≤ 1024 chars, upload ≤ 50 MB, download ≤ 20 MB.
+* The publisher sends videos individually and uses an ffmpeg-generated poster when available. The first item carries the post caption.
+* Captions are capped at 1024 characters. Imports warn when a file exceeds `[limits] max_upload_bytes` (50 MiB by default). Telegram imports cap downloads at 20 MiB per file.
+* **Fit to Telegram** targets the 10,000,000-byte photo limit, a maximum combined width and height of 10,000 pixels, and a maximum aspect ratio of 20:1.
 * `429 retry_after` is honoured; retries use exponential backoff with jitter.

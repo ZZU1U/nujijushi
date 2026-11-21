@@ -70,9 +70,10 @@ https://x.com/Artist/status/777%0Ahttps://x.com/Artist/status/888%0A
 ## 6. the actual goal: into nujijushi
 
 1. `nujijushi run` (or `serve`) is up, `http://127.0.0.1:8788/import` open in a tab.
-2. Paste the copied list into the box, pick a channel, *start import*.
-3. Expect one line per URL, the jobs table showing one `import` job per link, and
-   after a few seconds the posts appearing in `/posts`.
+2. Paste the copied list into the box and click **start import**.
+3. Expect one line per URL and one `import` job per link. After each job finishes,
+   check for the artwork under **Posts**. To queue artwork, select the imported
+   posts there and choose a destination channel.
 
 ## 7. other ingest paths
 
