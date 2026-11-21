@@ -40,7 +40,9 @@ pub async fn acquire_for_gallery(
         .db
         .call(move |conn| {
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            if crate::db::media_merges::current_revision(&tx, post_id)? != revision {
+            if !queue_db::matches_target(&tx, queue_id, post_id, &target)?
+                || crate::db::media_merges::current_revision(&tx, post_id)? != revision
+            {
                 return Ok(false);
             }
             let claimed = queue_db::acquire_for_target(&tx, queue_id, &lease, Some(&target))?;

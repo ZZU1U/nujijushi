@@ -260,6 +260,7 @@ async fn store_post(
     submitted_by: Option<i64>,
     insert_only: bool,
 ) -> Result<StoredImport> {
+    let _storage = state.storage_read().await?;
     let mut media: Vec<NewMedia> = Vec::new();
     for file in &post.files {
         let (ingested, thumb) = ingest(state, &file.path).await?;
@@ -349,7 +350,9 @@ async fn poster_for(state: &AppState, video: &Path, hash: &str) -> Result<Option
 pub const KIND_IMPORT: &str = "import";
 pub const KIND_PUBLISH_CHANNEL: &str = "publish_channel";
 pub const KIND_PUBLISH_ITEM: &str = "publish_item";
+pub const KIND_FLUSH_CHANNEL: &str = "flush_channel";
 pub const KIND_STORAGE_DRAIN: &str = "storage_drain";
+pub const KIND_STORAGE_CLEANUP: &str = "storage_cleanup";
 pub const KIND_WATCH_CHECK: &str = "watch_check";
 pub const KIND_TAG_SUGGESTIONS: &str = "suggest_tags";
 pub const KIND_MERGE_MEDIA: &str = "merge_media";
@@ -393,9 +396,30 @@ pub async fn create_publish_item_job(state: &AppState, queue_id: i64) -> Result<
     enqueue_unique(state, KIND_PUBLISH_ITEM, queue_id.to_string()).await
 }
 
+pub async fn create_flush_channel_job(state: &AppState, channel_id: i64) -> Result<Option<i64>> {
+    enqueue_unique(state, KIND_FLUSH_CHANNEL, channel_id.to_string()).await
+}
+
+async fn flush_job_lock(state: &AppState, channel_id: i64) -> Result<Option<std::fs::File>> {
+    state
+        .try_staging_lock(&format!("flush-job-{channel_id}.lock"))
+        .await
+}
+
 /// Queue a storage drain (uploads whatever mirrors are waiting).
 pub async fn create_drain_job(state: &AppState, limit: usize) -> Result<Option<i64>> {
     enqueue_unique(state, KIND_STORAGE_DRAIN, limit.to_string()).await
+}
+
+pub async fn create_cleanup_job(
+    state: &AppState,
+    confirmation: crate::storage::cleanup::Confirmation,
+) -> Result<Option<i64>> {
+    let payload = serde_json::to_string(&confirmation)?;
+    state
+        .db
+        .call(move |conn| job_db::enqueue_cleanup(conn, &payload))
+        .await
 }
 
 pub async fn create_watch_check_job(state: &AppState, watch_id: i64) -> Result<(i64, bool)> {
@@ -437,7 +461,7 @@ pub async fn create_merge_media_job(
 pub async fn create_compress_media_job(
     state: &AppState,
     post_id: i64,
-    media_id: i64,
+    media_id: Option<i64>,
     version: String,
     settings: crate::media::compress::Compression,
 ) -> Result<Option<i64>> {
@@ -464,10 +488,13 @@ async fn enqueue_unique(
     state
         .db
         .call(move |conn| {
-            if job_db::find_active(conn, kind, &payload)?.is_some() {
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            if job_db::find_active(&tx, kind, &payload)?.is_some() {
                 return Ok(None);
             }
-            Ok(Some(job_db::create_for(conn, kind, &payload, 0, None)?))
+            let id = job_db::create_for(&tx, kind, &payload, 0, None)?;
+            tx.commit()?;
+            Ok(Some(id))
         })
         .await
 }
@@ -476,7 +503,7 @@ async fn enqueue_unique(
 #[derive(Debug, Clone)]
 pub enum JobReport {
     Import(ImportOutcome),
-    Watch {
+    Batch {
         message: String,
         attempted: i64,
     },
@@ -491,20 +518,38 @@ impl JobReport {
     pub fn message(&self) -> String {
         match self {
             JobReport::Import(outcome) => outcome.summary(),
-            JobReport::Done { message, .. } | JobReport::Watch { message, .. } => message.clone(),
+            JobReport::Done { message, .. } | JobReport::Batch { message, .. } => message.clone(),
         }
     }
 
     pub fn post_ids(&self) -> &[i64] {
         match self {
             JobReport::Import(outcome) => &outcome.post_ids,
-            JobReport::Done { .. } | JobReport::Watch { .. } => &[],
+            JobReport::Done { .. } | JobReport::Batch { .. } => &[],
         }
     }
 }
 
 /// Run a job that is already marked `running`, then record how it went.
 pub async fn run_job(state: &AppState, job: &job_db::Job) -> Result<JobReport> {
+    let _flush_lock = if job.kind == KIND_FLUSH_CHANNEL {
+        let lock = flush_job_lock(state, payload_i64(job)?)
+            .await?
+            .ok_or_else(|| Error::other("The queue flush job is locked by another worker"))?;
+        let id = job.id;
+        if !state
+            .db
+            .call(move |conn| Ok(job_db::get(conn, id)?.is_some_and(|job| job.state == "running")))
+            .await?
+        {
+            return Err(Error::other(
+                "The queue flush job was interrupted before it started",
+            ));
+        }
+        Some(lock)
+    } else {
+        None
+    };
     let _watch_lock = if job.kind == KIND_WATCH_CHECK {
         let watch_id = payload_i64(job)?;
         let lock = watch::lock(state, watch_id)
@@ -533,16 +578,18 @@ pub async fn run_job(state: &AppState, job: &job_db::Job) -> Result<JobReport> {
         KIND_MERGE_MEDIA => "merging images",
         KIND_COMPRESS_MEDIA => "compressing image",
         KIND_PUBLISH_CHANNEL | KIND_PUBLISH_ITEM => "publishing",
+        KIND_FLUSH_CHANNEL => "Flushing queue",
         KIND_STORAGE_DRAIN => "uploading mirrors",
+        KIND_STORAGE_CLEANUP => "checking cleanup preview",
         other => return Err(Error::invalid(format!("unknown job kind: {other}"))),
     };
     state
         .db
         .call({
             let id = job.id;
-            let gallery_edit = is_gallery_edit(&job.kind);
+            let guarded = is_gallery_edit(&job.kind) || job.kind == KIND_STORAGE_CLEANUP;
             move |conn| {
-                if gallery_edit {
+                if guarded {
                     job_db::label_running(conn, id, label)
                 } else {
                     job_db::set_state(conn, id, "running", Some(label))
@@ -564,7 +611,7 @@ pub async fn run_job(state: &AppState, job: &job_db::Job) -> Result<JobReport> {
                     outcome.post_ids.first().copied(),
                 ),
                 JobReport::Done { post_id, .. } => (1, *post_id),
-                JobReport::Watch { attempted, .. } => (*attempted, None),
+                JobReport::Batch { attempted, .. } => (*attempted, None),
             };
             state
                 .db
@@ -611,6 +658,21 @@ async fn run_kind(state: &AppState, job: &job_db::Job) -> Result<JobReport> {
         KIND_TAG_SUGGESTIONS => tag_suggestions::run(state, payload_i64(job)?, job.id).await,
         KIND_MERGE_MEDIA => media_merge::run(state, job).await,
         KIND_COMPRESS_MEDIA => media_merge::compress(state, job).await,
+        KIND_STORAGE_CLEANUP => {
+            let confirmation: crate::storage::cleanup::Confirmation =
+                serde_json::from_str(job.payload.as_deref().unwrap_or_default())?;
+            let report = crate::storage::cleanup::run(
+                state,
+                confirmation.cutoff,
+                Some(confirmation.revision),
+                Some(job.id),
+            )
+            .await?;
+            Ok(JobReport::Done {
+                message: report.describe(),
+                post_id: None,
+            })
+        }
         KIND_PUBLISH_CHANNEL => {
             let channel_id = payload_i64(job)?;
             let channel = state
@@ -629,6 +691,14 @@ async fn run_kind(state: &AppState, job: &job_db::Job) -> Result<JobReport> {
             Ok(JobReport::Done {
                 message: outcome.describe(),
                 post_id: published_post(&outcome),
+            })
+        }
+        KIND_FLUSH_CHANNEL => {
+            let report =
+                crate::tg::publish::flush_channel(state, payload_i64(job)?, Some(job.id)).await?;
+            Ok(JobReport::Batch {
+                message: report.describe(),
+                attempted: report.total,
             })
         }
         KIND_STORAGE_DRAIN => {
@@ -708,7 +778,7 @@ pub async fn import_and_record(state: &AppState, target: &str) -> Result<ImportO
         .ok_or_else(|| crate::error::Error::NotFound(format!("job {job_id}")))?;
     match run_job(state, &job).await? {
         JobReport::Import(outcome) => Ok(outcome),
-        JobReport::Done { .. } | JobReport::Watch { .. } => {
+        JobReport::Done { .. } | JobReport::Batch { .. } => {
             Err(Error::other("expected an import job"))
         }
     }

@@ -10,6 +10,8 @@ export function Queue({ data }: { data: QueuePage }) {
   const { channel, activity, items, eta_hint } = data
   const attempt = activity.latest_attempt
   const channelRoot = channelPath(channel.id)
+  const flushing = activity.jobs.some((job) => job.kind === 'flush_channel'
+    && (job.state === 'pending' || job.state === 'running'))
   return <section className="panel" data-queue-revision={activity.revision}>
     <h2>queue · {channel.title} <span className="hint">{channel.tg_id}</span></h2>
     <p className="hint">
@@ -22,6 +24,10 @@ export function Queue({ data }: { data: QueuePage }) {
         </button>
       </ActionForm>
       : <p className="hint">Scheduling is off. <a href={channelRoot + '/preview'}>Review the preview to start</a>.</p>}
+    <ActionForm action={channelRoot + '/flush'} className="inline"
+      data-confirm={`Publish all queued posts to ${channel.title} (${channel.tg_id}) now? This ignores the schedule and daily cap.`}>
+      <button className="small" type="submit" disabled={activity.queued === 0 || flushing}>Flush queue</button>
+    </ActionForm>
     {attempt && <p className="queue-attempt">
       Latest send attempt{attempt.post_id && <> for <a href={postPath(attempt.post_id)}>post #{attempt.post_id}</a></>}
       {' '}<Badge tone={attempt.state === 'Sent' ? 'green' : 'red'}>{attempt.state}</Badge>
@@ -29,8 +35,10 @@ export function Queue({ data }: { data: QueuePage }) {
     </p>}
     {activity.jobs.length > 0 && <ul id="queue-publish-jobs" className="queue-jobs">
       {activity.jobs.map((job) => <li key={job.id} data-publish-job={job.id}>
-        <span>{job.queue_id ? 'Queue item #' + job.queue_id : 'Publish next'}</span>
+        <span>{job.queue_id ? 'Queue item #' + job.queue_id : job.kind === 'flush_channel' ? 'Flush queue' : 'Publish next'}</span>
         <Badge tone={job.state === 'failed' ? 'red' : undefined} data-live-state={job.state}>{job.label}</Badge>
+        {job.kind === 'flush_channel' && job.state === 'running' && job.total > 0 &&
+          <span className="hint">{job.progress}/{job.total} processed</span>}
         {job.message && <span className="hint">{job.message}</span>}
       </li>)}
     </ul>}

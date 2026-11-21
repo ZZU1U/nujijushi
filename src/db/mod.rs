@@ -1,6 +1,7 @@
 //! SQLite access: one connection behind a mutex, sync helpers plus an async wrapper.
 
 pub mod channels;
+pub(crate) mod cleanup;
 pub mod duplicates;
 pub mod jobs;
 pub mod media_merges;

@@ -26,26 +26,32 @@ pub fn supports(item: &MediaItem) -> bool {
 }
 
 pub(super) fn decoder(path: &Path, max_edge: Option<u32>) -> Result<Box<dyn ImageDecoder>> {
+    still_decoder(path, max_edge)?.ok_or_else(|| Error::invalid("Animated images cannot be edited"))
+}
+
+pub(super) fn still_decoder(
+    path: &Path,
+    max_edge: Option<u32>,
+) -> Result<Option<Box<dyn ImageDecoder>>> {
     let reader = ImageReader::new(BufReader::new(File::open(path)?)).with_guessed_format()?;
     let format = reader.format();
     let reader = reader.into_inner();
     let mut limits = Limits::default();
     limits.max_image_width = max_edge;
     limits.max_image_height = max_edge;
-    let animated = || Error::invalid("Animated images cannot be edited");
     let mut decoder: Box<dyn ImageDecoder> = match format {
         Some(ImageFormat::Jpeg) => Box::new(JpegDecoder::new(reader)?),
         Some(ImageFormat::Png) => {
             let decoder = PngDecoder::with_limits(reader, limits.clone())?;
             if decoder.is_apng()? {
-                return Err(animated());
+                return Ok(None);
             }
             Box::new(decoder)
         }
         Some(ImageFormat::WebP) => {
             let decoder = WebPDecoder::new(reader)?;
             if decoder.has_animation() {
-                return Err(animated());
+                return Ok(None);
             }
             Box::new(decoder)
         }
@@ -55,7 +61,7 @@ pub(super) fn decoder(path: &Path, max_edge: Option<u32>) -> Result<Box<dyn Imag
     if decoder.total_bytes() > MAX_DECODE_BYTES {
         return Err(Error::invalid("The image is too large to decode"));
     }
-    Ok(decoder)
+    Ok(Some(decoder))
 }
 
 fn dimensions(decoder: &dyn ImageDecoder, orientation: Orientation) -> (u32, u32) {

@@ -14,14 +14,14 @@ let server: ChildProcess
 let base: string
 let cli: (...args: string[]) => Buffer
 
-function png(height: number, color: number) {
-  const width = 16
+function png(height: number, color: number, width = 16) {
   const header = Buffer.alloc(13)
   header.writeUInt32BE(width, 0)
   header.writeUInt32BE(height, 4)
   header.set([8, 2], 8)
-  const rows = Buffer.alloc(height * (1 + width * 3))
-  for (let y = 0; y < height; y++) rows.fill(color, y * 49 + 1, (y + 1) * 49)
+  const stride = 1 + width * 3
+  const rows = Buffer.alloc(height * stride)
+  for (let y = 0; y < height; y++) rows.fill(color, y * stride + 1, (y + 1) * stride)
   function chunk(name: string, data: Buffer) {
     const value = Buffer.concat([Buffer.alloc(4), Buffer.from(name), data, Buffer.alloc(4)])
     value.writeUInt32BE(data.length)
@@ -117,33 +117,6 @@ test('queue on page 3 and return from a post in the same browser document', asyn
   await expect(page.locator('#bulk')).toHaveAttribute('data-grid-page', '3')
   await expect.poll(() => page.evaluate(() => scrollY)).toBe(savedScroll)
   expect(documents()).toBe(1)
-})
-
-test('the gallery reuses the archive thumbnail from the browser cache', async ({ page }) => {
-  await signIn(page, '/posts?search=Different+heights')
-  const card = page.locator('[data-post-card="2"]')
-  const thumbnail = card.locator('img')
-  await thumbnail.scrollIntoViewIfNeeded()
-  await expect.poll(() => thumbnail.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0)
-  const src = (await thumbnail.getAttribute('src'))!
-
-  await card.getByRole('link', { name: 'Open post #2' }).click()
-  const firstImage = page.locator('.media-grid figure').first()
-  await expect(firstImage.locator('img')).toHaveAttribute('src', src)
-  await expect(firstImage.getByRole('link')).toHaveAttribute('href', new RegExp('^/media/'))
-  await expect.poll(() => page.evaluate(async (path) => {
-    const cached = await fetch(path, { cache: 'only-if-cached', mode: 'same-origin' })
-    return cached.status
-  }, src)).toBe(200)
-})
-
-test('the gallery opens the original when a thumbnail is missing', async ({ page }) => {
-  await page.route('**/thumb/*', (route) => route.fulfill({ status: 404 }))
-  await signIn(page, '/posts/2')
-  const image = page.locator('.media-grid figure img').first()
-  await image.scrollIntoViewIfNeeded()
-  await expect(image).toHaveAttribute('src', new RegExp('^/media/'))
-  await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBeGreaterThan(0)
 })
 
 test('a failed merge keeps selection and its error beside the controls', async ({ page }) => {
@@ -482,4 +455,103 @@ test('table headers align with their rows and stick to the table scrollport', as
   await expect.poll(() => importHeader.evaluate((cell) =>
     Math.abs(cell.getBoundingClientRect().top - cell.closest('[role=region]')!.getBoundingClientRect().top),
   )).toBeLessThan(1)
+})
+
+test('flushing a channel queue asks for confirmation and shows the job result', async ({ page }) => {
+  cli('channel', 'add', 'flush-test', '@flush_test_channel', '--no-verify')
+  const db = new DatabaseSync(join(directory, 'archive', 'nujijushi.sqlite3'), { readOnly: true })
+  const channel = db.prepare("SELECT id FROM channels WHERE alias = 'flush-test'").get()!
+  db.close()
+  const path = `/channels/${channel.id}/queue`
+  await signIn(page, path)
+  const button = page.getByRole('button', { name: 'Flush queue', exact: true })
+  await expect(button).toBeDisabled()
+  cli('queue', 'add', '20', '21', '--channel', 'flush-test')
+  await expect(button).toBeEnabled()
+
+  page.once('dialog', (dialog) => {
+    expect(dialog.message()).toContain('@flush_test_channel')
+    void dialog.dismiss()
+  })
+  await button.click()
+  await expect(page.locator('[data-publish-job]')).toHaveCount(0)
+
+  page.once('dialog', (dialog) => void dialog.accept())
+  const response = page.waitForResponse((reply) => reply.url().endsWith(`/api/v1/channels/${channel.id}/flush`)
+    && reply.request().method() === 'POST')
+  await button.click()
+  expect((await response).status()).toBe(202)
+  const job = page.locator('[data-publish-job]').filter({ hasText: 'Flush queue' })
+  await expect(job).toContainText('Failed', { timeout: 12_000 })
+  await expect(job).toContainText('0 published · 0 skipped')
+  await expect(button).toBeEnabled()
+})
+
+test('the archive grid caches thumbnails and the post gallery loads full-resolution images', async ({ page }) => {
+  const artwork = join(directory, 'Full resolution')
+  await mkdir(artwork)
+  await writeFile(join(artwork, 'post.json'), JSON.stringify({ id: 'full-resolution', title: 'Full resolution' }))
+  await writeFile(join(artwork, 'artwork.png'), png(640, 200, 1024))
+  cli('import', artwork)
+
+  await signIn(page, '/posts?search=Full+resolution')
+  const card = page.locator('[data-post-card]')
+  const thumbnail = card.locator('img')
+  await expect(thumbnail).toHaveAttribute('src', /^\/thumb\//)
+  await expect.poll(() => thumbnail.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBe(512)
+  const thumbnailPath = (await thumbnail.getAttribute('src'))!
+
+  await card.getByRole('link', { name: /Open post/ }).click()
+  const fullSizeLink = page.getByRole('link', { name: 'Open image 1 at full size' })
+  const image = fullSizeLink.locator('img')
+  const mediaPath = thumbnailPath.replace('/thumb/', '/media/')
+  await expect(fullSizeLink).toHaveAttribute('href', mediaPath)
+  await expect(fullSizeLink).toHaveAttribute('target', '_blank')
+  await expect(image).toHaveAttribute('src', mediaPath)
+  await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(1024)
+  await expect.poll(() => page.evaluate(async (path) => {
+    const cached = await fetch(path, { cache: 'only-if-cached', mode: 'same-origin' })
+    return cached.status
+  }, thumbnailPath)).toBe(200)
+})
+
+test('compress all updates the post and Settings cleans a confirmed sent gallery', async ({ page }) => {
+  const artwork = await gallery('Cleanup example', [14, 14])
+  cli('import', artwork)
+  const db = new DatabaseSync(join(directory, 'archive', 'nujijushi.sqlite3'))
+  db.exec('PRAGMA busy_timeout = 5000')
+  const item = db.prepare("SELECT id FROM posts WHERE title = 'Cleanup example'").get()!
+  const id = String(item.id)
+  try {
+    await signIn(page, '/posts/' + id)
+    await page.getByText('Media tools', { exact: true }).click()
+    await page.getByText('Compress all images', { exact: true }).click()
+    await page.getByRole('button', { name: 'Compress all', exact: true }).click()
+    await expect(page.getByText('2 compressed · 0 skipped', { exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Undo compression' })).toHaveCount(2)
+
+    cli('queue', 'add', id, '--channel', 'art')
+    db.prepare('UPDATE posts SET imported_at = ? WHERE id = ?')
+      .run(new Date(Date.now() - 32 * 86400000).toISOString(), item.id)
+    db.prepare("UPDATE queue SET state = 'sent', sent_at = ?, tg_message_ids = '123' WHERE post_id = ?")
+      .run(new Date(Date.now() - 31 * 86400000).toISOString(), item.id)
+    await page.getByRole('link', { name: 'settings', exact: true }).click()
+    const cleanup = page.getByRole('heading', { name: 'Storage cleanup' }).locator('..')
+    await expect(cleanup.getByRole('spinbutton')).toHaveValue('30')
+    await cleanup.getByRole('button', { name: 'Preview cleanup' }).click()
+    await expect(cleanup.getByText(/1 eligible post/)).toBeVisible()
+    page.once('dialog', (dialog) => void dialog.dismiss())
+    await cleanup.getByRole('button', { name: 'Apply cleanup' }).click()
+    await expect(cleanup.getByRole('button', { name: 'Apply cleanup' })).toBeVisible()
+    page.once('dialog', (dialog) => void dialog.accept())
+    await cleanup.getByRole('button', { name: 'Apply cleanup' }).click()
+    await expect(cleanup.getByText(/1 post\(s\) cleaned.*0 file\(s\) to retry/)).toBeVisible()
+
+    await page.goto(base + '/posts/' + id)
+    await page.getByText('Media tools', { exact: true }).click()
+    await expect(page.getByRole('button', { name: 'Undo compression' })).toHaveCount(0)
+    await expect(page.locator('.media-grid figcaption').first()).toContainText('jpg')
+  } finally {
+    db.close()
+  }
 })

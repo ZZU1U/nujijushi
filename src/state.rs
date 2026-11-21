@@ -10,6 +10,8 @@ use crate::error::Result;
 use crate::render::Renderer;
 use crate::tg::Transport;
 
+const STORAGE_LOCK: &str = "blob-storage.lock";
+
 #[derive(Clone)]
 pub struct AppState {
     pub cfg: Arc<Config>,
@@ -21,6 +23,22 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub(crate) async fn storage_read(&self) -> Result<File> {
+        loop {
+            if let Some(lock) = self.try_staging_shared_lock(STORAGE_LOCK).await? {
+                return Ok(lock);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
+    pub(crate) async fn storage_cleanup(&self) -> Result<File> {
+        self.try_staging_lock(STORAGE_LOCK).await?.ok_or_else(|| {
+            crate::error::Error::invalid(
+                "Archive storage is busy. Try cleanup again when active operations finish.",
+            )
+        })
+    }
     pub fn open(cfg: Config, transport: Option<Arc<dyn Transport>>) -> Result<Self> {
         cfg.ensure_layout()?;
         let db = Db::open(cfg.db_path())?;
@@ -44,14 +62,28 @@ impl AppState {
 
     /// Keep lock files in place so worker processes always share the same inode.
     pub(crate) async fn try_staging_lock(&self, name: &str) -> Result<Option<File>> {
+        self.try_staging_lock_mode(name, false).await
+    }
+
+    pub(crate) async fn try_staging_shared_lock(&self, name: &str) -> Result<Option<File>> {
+        self.try_staging_lock_mode(name, true).await
+    }
+
+    async fn try_staging_lock_mode(&self, name: &str, shared: bool) -> Result<Option<File>> {
         let path = self.cfg.staging_dir().join(name);
         tokio::task::spawn_blocking(move || {
             let file = OpenOptions::new()
+                .read(true)
                 .write(true)
                 .create(true)
                 .truncate(false)
                 .open(path)?;
-            match file.try_lock() {
+            let locked = if shared {
+                file.try_lock_shared()
+            } else {
+                file.try_lock()
+            };
+            match locked {
                 Ok(()) => Ok(Some(file)),
                 Err(TryLockError::WouldBlock) => Ok(None),
                 Err(TryLockError::Error(err)) => Err(err.into()),

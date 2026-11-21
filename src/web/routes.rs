@@ -85,6 +85,7 @@ pub fn router(ws: Arc<WebState>) -> Router {
             get(channel_edit_page).post(channel_update),
         )
         .route("/channels/{id}/queue", get(queue_page))
+        .route("/channels/{id}/flush", post(flush_action))
         .route("/channels/{id}/schedule", post(channel_schedule))
         .route(
             "/channels/{id}/preview",
@@ -94,6 +95,7 @@ pub fn router(ws: Arc<WebState>) -> Router {
         .route("/queue/action", post(queue_action))
         .route("/publish", post(publish_action))
         .route("/storage/drain", post(storage_drain))
+        .route("/storage/cleanup", get(cleanup_preview).post(cleanup_apply))
         .route("/jobs", get(jobs_page))
         .route("/jobs/retry", post(jobs_retry))
         .route("/import", get(import_page).post(import_submit))
@@ -744,10 +746,64 @@ async fn posts_more(
 
 async fn settings_page(State(ws): State<Arc<WebState>>) -> WebResult<Json<SettingsPage>> {
     let (channels, default_channel) = queue_channels(&ws.app).await?;
+    let cleanup_job = ws
+        .app
+        .db
+        .call(|conn| job_db::latest_kind(conn, crate::jobs::KIND_STORAGE_CLEANUP))
+        .await?;
     Ok(Json(SettingsPage {
         channels: channels.iter().map(ChannelChoice::from).collect(),
         default_channel,
+        cleanup_job: cleanup_job
+            .as_ref()
+            .map(|job| job_view(job, chrono::Utc::now())),
     }))
+}
+
+#[derive(serde::Deserialize)]
+struct CleanupQuery {
+    older_than_days: Option<u32>,
+}
+
+async fn cleanup_preview(
+    State(ws): State<Arc<WebState>>,
+    Query(query): Query<CleanupQuery>,
+) -> WebResult<Json<crate::storage::cleanup::Preview>> {
+    let days = query
+        .older_than_days
+        .unwrap_or(crate::storage::cleanup::DEFAULT_AGE_DAYS);
+    Ok(Json(crate::storage::cleanup::preview(&ws.app, days).await?))
+}
+
+#[derive(serde::Deserialize)]
+struct CleanupForm {
+    csrf: String,
+    #[serde(flatten)]
+    confirmation: crate::storage::cleanup::Confirmation,
+}
+
+async fn cleanup_apply(
+    State(ws): State<Arc<WebState>>,
+    Form(form): Form<CleanupForm>,
+) -> WebResult<Response> {
+    check_csrf(&ws, &form.csrf)?;
+    if form.confirmation.cutoff > chrono::Utc::now()
+        || form.confirmation.revision.len() != 64
+        || !form
+            .confirmation
+            .revision
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(Error::invalid("Preview cleanup before applying it").into());
+    }
+    let job = crate::jobs::create_cleanup_job(&ws.app, form.confirmation).await?;
+    let message = if job.is_some() {
+        "Storage cleanup queued"
+    } else {
+        "Storage cleanup is already queued or running"
+    };
+    Ok(accepted("/settings", message, job.into_iter().collect()))
 }
 
 async fn settings_save(
@@ -1932,6 +1988,29 @@ async fn publish_action(
     };
     Ok(accepted(&back, &note, queued.into_iter().collect()))
 }
+
+async fn flush_action(
+    State(ws): State<Arc<WebState>>,
+    Path(channel_id): Path<i64>,
+    Form(form): Form<FormMap>,
+) -> WebResult<Response> {
+    check_csrf(&ws, forms::field(&form, "csrf").unwrap_or_default())?;
+    ws.app
+        .db
+        .call(move |conn| channel_db::get(conn, channel_id))
+        .await?;
+    let job = crate::jobs::create_flush_channel_job(&ws.app, channel_id).await?;
+    let note = match job {
+        Some(id) => format!("Queue flush scheduled as job #{id}"),
+        None => "A queue flush is already queued or running".to_string(),
+    };
+    Ok(accepted(
+        &format!("/channels/{channel_id}/queue"),
+        &note,
+        job.into_iter().collect(),
+    ))
+}
+
 /// Is the scheduler alive? Read by the dashboard banner and `/api/status`, so a
 /// queue that is not moving can be explained instead of guessed at.
 #[derive(serde::Serialize)]
@@ -2014,7 +2093,9 @@ fn kind_label(kind: &str) -> &str {
         crate::jobs::KIND_IMPORT => "import",
         crate::jobs::KIND_PUBLISH_CHANNEL => "publish next",
         crate::jobs::KIND_PUBLISH_ITEM => "publish item",
+        crate::jobs::KIND_FLUSH_CHANNEL => "flush queue",
         crate::jobs::KIND_STORAGE_DRAIN => "storage upload",
+        crate::jobs::KIND_STORAGE_CLEANUP => "storage cleanup",
         crate::jobs::KIND_WATCH_CHECK => "watch check",
         crate::jobs::KIND_TAG_SUGGESTIONS => "suggest tags",
         crate::jobs::KIND_MERGE_MEDIA => "merge images",
@@ -2156,8 +2237,10 @@ pub async fn status_payload(app: &AppState) -> crate::error::Result<Value> {
         };
         let payload = channel_id.to_string();
         let queued_publish = jobs.iter().any(|job| {
-            job.kind == crate::jobs::KIND_PUBLISH_CHANNEL
-                && job.is_active()
+            matches!(
+                job.kind.as_str(),
+                crate::jobs::KIND_PUBLISH_CHANNEL | crate::jobs::KIND_FLUSH_CHANNEL
+            ) && job.is_active()
                 && job.payload.as_deref() == Some(payload.as_str())
         });
         channel_views.push(json!({

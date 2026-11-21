@@ -47,13 +47,17 @@ pub(super) async fn action(
                 "A gallery edit is already queued for this post"
             }
         }
-        Some("compress") => {
+        Some(action @ ("compress" | "compress_all")) => {
             let mode = forms::field(&form, "output").unwrap_or("fit");
             let settings = compression_settings(&form, mode)?;
             job_id = crate::jobs::create_compress_media_job(
                 &ws.app,
                 post_id,
-                media_id(&form)?,
+                if action == "compress_all" {
+                    None
+                } else {
+                    Some(media_id(&form)?)
+                },
                 version,
                 settings,
             )

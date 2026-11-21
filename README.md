@@ -53,7 +53,7 @@ For guided web setup, run `nujijushi init`, then `nujijushi run` and open the [a
 
    ```bash
    nujijushi import ./artwork
-   nujijushi ls --state new
+   nujijushi ls --state approved
    nujijushi show 1 --channel art
    nujijushi queue add 1 --channel art
    ```
@@ -75,6 +75,8 @@ For guided web setup, run `nujijushi init`, then `nujijushi run` and open the [a
 
    Open the [admin UI](http://127.0.0.1:8788/) with the token from step 1. Use `nujijushi serve` when you want the UI and its background jobs without scheduled sends.
 
+   To publish a whole queue on demand, use **Flush queue** on the channel’s queue page or `nujijushi flush --channel <alias>`. See the [flush workflow](docs/usage.md#flush-a-channel-queue).
+
    Set `[bot] queue_alerts = true` to DM the Telegram users in `[access] admins` about empty queues and unconfirmed sends. Each recipient must start a private chat with the bot first.
    Set `[bot] guest_reputation = true` to score guest suggestions and show their balance in `/whoami`.
 
@@ -95,11 +97,13 @@ The optional online fallback checks local mappings and the cache, then queries D
 
 ## Documentation
 
+Use `nujijushi gc --sent` to preview reclaimable storage from sent posts. Add `--yes` to apply the cleanup. See the [storage cleanup guide](docs/usage.md#storage-cleanup).
+
 | Guide | Covers |
 |---|---|
 | [Usage reference](docs/usage.md) | CLI commands, channel discovery, scheduling, NSFW policy, captions, and the admin UI |
 | [Operations guide](docs/operations.md) | Configuration, cookies, bot commands and roles, webhooks, proxies, mirrors, and troubleshooting |
-| [Example config](config.example.toml) | Core settings with comments and defaults |
+| [Example config](config.example.toml) · [Environment overrides](.env.example) | Settings, defaults, and environment variable names |
 | [Browser extension](extension/README.md) | Clip artwork URLs for batch import |
 | [Architecture](codebase.md) · [Contributing](AGENTS.md) | Request flows, invariants, and development checks |
 

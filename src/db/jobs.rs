@@ -116,6 +116,31 @@ pub fn get(conn: &Connection, id: i64) -> Result<Option<Job>> {
         .optional()?)
 }
 
+pub fn latest_kind(conn: &Connection, kind: &str) -> Result<Option<Job>> {
+    Ok(conn
+        .query_row(
+            &format!("SELECT {COLUMNS} FROM jobs WHERE kind = ?1 ORDER BY id DESC LIMIT 1"),
+            [kind],
+            from_row,
+        )
+        .optional()?)
+}
+
+pub(crate) fn enqueue_cleanup(conn: &mut Connection, payload: &str) -> Result<Option<i64>> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let active: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM jobs WHERE kind = 'storage_cleanup' AND state IN ('pending', 'running'))",
+        [],
+        |row| row.get(0),
+    )?;
+    if active {
+        return Ok(None);
+    }
+    let id = create(&tx, "storage_cleanup", payload, 0)?;
+    tx.commit()?;
+    Ok(Some(id))
+}
+
 pub fn list(conn: &Connection, limit: i64) -> Result<Vec<Job>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {COLUMNS} FROM jobs ORDER BY id DESC LIMIT ?1"
@@ -148,7 +173,7 @@ pub fn channel_publish_activity(conn: &Connection, channel_id: i64) -> Result<Ve
     let mut stmt = conn.prepare(&format!(
         "WITH channel_jobs AS (
              SELECT {COLUMNS} FROM jobs
-             WHERE (kind = 'publish_channel' AND payload = CAST(?1 AS TEXT))
+             WHERE (kind IN ('publish_channel', 'flush_channel') AND payload = CAST(?1 AS TEXT))
                 OR (kind = 'publish_item' AND EXISTS (
                     SELECT 1 FROM queue q WHERE q.id = CAST(jobs.payload AS INTEGER)
                     AND q.channel_id = ?1 AND jobs.created_at >= q.added_at

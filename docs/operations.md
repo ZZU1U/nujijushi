@@ -6,20 +6,20 @@
 
 `nujijushi init` creates `config.toml` in `~/.nujijushi`. Set `NUJIJUSHI_HOME` to use a different directory. See [config.example.toml](../config.example.toml) for core settings.
 
-Environment overrides `TG_BOT_TOKEN`, `NUJIJUSHI_UI_TOKEN`, `NUJIJUSHI_BIND`,
-`NUJIJUSHI_HOME`, `NUJIJUSHI_GALLERY_DL`, `NUJIJUSHI_ADMINS`, `NUJIJUSHI_BOT`, `NUJIJUSHI_BOT_MODE`,
-`NUJIJUSHI_WEBHOOK_URL`, `NUJIJUSHI_WEBHOOK_SECRET`. `config.toml` is written with mode `0600`.
+You can override the data directory, Telegram and web settings, gallery-dl path,
+and proxy settings with environment variables. `init` writes `config.toml` with mode
+`0600`. See [.env.example](../.env.example) for the full list of overrides.
 
 Data layout:
 
 ```
 $NUJIJUSHI_HOME/
-├── config.toml          # 0600
-├── nujijushi.sqlite3       # metadata (WAL: posts, channels, queue, users, usage)
-├── blobs/aa/<hash>.png  # content-addressed media
+├── config.toml           # 0600
+├── nujijushi.sqlite3     # archive metadata and operational state (SQLite WAL)
+├── blobs/aa/<hash>.ext   # content-addressed originals and derivatives
 ├── thumbs/aa/<hash>.webp
-├── cookies/             # pixiv.txt, twitter.txt (Netscape format)
-├── staging/             # transient import dirs
+├── cookies/             # site cookies in Netscape format
+├── staging/             # transient imports and worker lock files
 └── export/              # backups
 ```
 
@@ -29,18 +29,24 @@ Export cookies for the site in Netscape format (e.g. with the "Get cookies.txt"
 browser extension) into `$NUJIJUSHI_HOME/cookies/`:
 
 ```
-cookies/pixiv.txt      cookies/twitter.txt     cookies/danbooru.txt
-cookies/gelbooru.txt   cookies/artstation.txt  cookies/deviantart.txt
-cookies/bluesky.txt    cookies/tumblr.txt      (or <host>.txt)
+cookies/pixiv.txt      cookies/fanbox.txt      cookies/twitter.txt
+cookies/danbooru.txt   cookies/gelbooru.txt    cookies/artstation.txt
+cookies/deviantart.txt cookies/bluesky.txt     cookies/tumblr.txt
 ```
+
+For these supported sites, the importer looks up the site filename first and then
+falls back to a file named after the exact host, such as `cookies/x.com.txt`.
+For `fanbox.cc` and creator subdomains, export the cookies from your signed-in
+FANBOX session to `cookies/fanbox.txt`. The export must include `FANBOXSESSID`.
 
 `nujijushi doctor` reports each cookie file's age — refresh anything older than ~30 days.
 Public content (many sites) imports fine without cookies.
 
 ## Talking to the bot
 
-`nujijushi run` also long-polls Telegram, so admins (and, if you allow it, guests) can drive
-the archive from a chat. `--no-bot` or `[bot] enabled = false` turns just this off.
+`nujijushi run` starts the Telegram command interface in polling mode by default.
+Admins and authorized guests can use it from a private chat. Use `--no-bot` or
+`[bot] enabled = false` to skip starting the bot interface from `run`.
 
 ### Queue alerts
 
@@ -79,13 +85,14 @@ Every guest submission is also **DM'd to the admins** (who submitted, how many l
 and the post carries an amber `via @handle` badge in the grid — a guest can add to the
 archive, but never invisibly.
 
-Importing a **Telegram post** (`t.me/<name>/<id>` or `t.me/c/<id>/<n>`) works when the bot is
-a member of that channel: the post is forwarded into your own chat, the files are downloaded,
-and the copy is deleted. Albums are reconstructed from the neighbouring message ids.
-Constraints are Telegram's: 20 MB per file, and a public channel the bot is not in can only be
-scraped from its `?embed=1` page — one image, reduced size, marked
-`public embed (degraded)` on the post. Real fidelity for arbitrary channels needs MTProto,
-which nujijushi does not do.
+For Telegram links (`t.me/<name>/<id>` or `t.me/c/<id>/<n>`), the bot forwards the
+post into the submitter's private chat, or the first configured admin's chat for
+CLI and web imports. It downloads files up to 20 MiB, deletes the temporary
+messages, and reconstructs albums from neighbouring message IDs. CLI and web
+imports therefore need a bot token and a configured admin who has started a private
+chat. If a public post cannot be forwarded, `[import] public_telegram_fallback`
+allows the importer to try its `?embed=1` page. This produces one reduced-size image
+marked `public embed (degraded)`. Private posts require Bot API access to the source.
 
 ### Guest reputation
 
@@ -163,8 +170,9 @@ url = "socks5h://127.0.0.1:1080"   # or http://10.0.0.5:8080
 no_proxy = "localhost,127.0.0.1"   # LAN storage stays direct
 ```
 
-The proxy applies to outbound Telegram Bot API calls, storage uploads, and the `t.me` embed fallback.
-`gallery-dl` receives the proxy via `--proxy`.
+The proxy applies to outbound Telegram Bot API calls, WebDAV, the `t.me` embed fallback,
+and optional Danbooru catalog lookups. `gallery-dl` receives the proxy URL via `--proxy`.
+The local FoidFinder connection uses loopback directly.
 
 * Schemes: `http://`, `https://`, `socks5://`, `socks5h://` (`socks5h` resolves DNS
   through the proxy — usually what you want when the resolver is poisoned).
@@ -183,9 +191,11 @@ Every imported post can be copied to one or more sinks, independently of publish
 |---|---|
 | `local` | any mounted/synced folder — Dropbox, iCloud Drive, Google Drive, an external disk |
 | `webdav` | Nextcloud, ownCloud, Synology, HiDrive, Box, pCloud, … (plain PUT, basic auth) |
-| `telegram` | a private channel used as an image drive (albums of ≤10, one message group per post) |
+| `telegram` | a private backup channel using albums of up to 10 photos and individual videos |
 
-Configure one or more sinks in `config.toml`. Each sink gets a portable layout with a metadata sidecar.
+Configure one or more sinks in `config.toml`. Local and WebDAV sinks write the folder
+layout below with a metadata sidecar. The Telegram sink stores media as messages with
+an attribution caption and records the message IDs.
 
 ```toml
 [storage]
@@ -218,25 +228,26 @@ chat_id = "-1001234567890"
 * `nujijushi storage ls` — sinks, target, and done/pending/failed counts.
 * `nujijushi storage test` — reachability + credentials (writable folder, WebDAV
   `PROPFIND`/`MKCOL`, Telegram `getChat`).
-* `nujijushi storage sync [--post ID] [--limit N] [--dry-run]` — backfill everything that
-  is not mirrored yet (this is the "send my whole existing archive" command).
+* `nujijushi storage sync [--sink NAME] [--post ID] [--limit N] [--dry-run]` backfills
+  posts that still need a mirror. The default limit is 500 posts per invocation.
 * The dashboard shows mirror counts per sink and has an **upload pending** button.
 
-Mirrors run independently of the publishing queue.
+Mirrors run independently of the publishing queue. New mirror uploads use the
+current outgoing gallery. Completed mirrors keep the media from the original upload.
 
 ## Troubleshooting
 
 | symptom | cause / fix |
 |---|---|
 | `gallery-dl produced no media` | wrong URL form, `Cloudflare challenge`, or login required → add `cookies/<site>.txt` and retry |
-| `[danbooru][error] ChallengeError` | Cloudflare: cookies are mandatory for boorus |
+| `[danbooru][error] ChallengeError` | Cloudflare challenged the request. Try a fresh cookie export for the site |
 | `not enough rights to send photos` | bot is not an admin with "post messages" in that channel |
 | `chat not found` | wrong id; use the numeric `-100…` id for private channels |
 | `curl: tlsv1 unrecognized name` when testing your own domain | a local proxy (Clash/sing-box TUN, fake-IP) is intercepting it: the handshake never reaches your server. Test from the VPS, or add `DOMAIN-SUFFIX,<your-domain>,DIRECT` + a `fake-ip-filter` entry and reload the profile |
-| a twitter artist shows the display name in place of the handle (or the other way round) | gallery-dl's twitter user object is `{name: <screen name>, nick: <display name>}`, which older builds read backwards; with the default `metadata-user = false` it hands over the raw `core.screen_name` / `core.name` instead. Fixed: a handle must *look* like one (`[A-Za-z0-9_]{1,50}`), the display name is kept beside it, and `x.com/<handle>/status/…` is the fallback. Authors are stored at import time, so re-import that post (`nujijushi import <url>`) — a stored row keeps what it was written with |
+| an older X import shows the wrong artist name or handle | re-import the URL with `nujijushi import <url>` to refresh the stored author fields. The importer handles both gallery-dl user metadata formats and can recover the handle from the post URL |
 | bot refuses `/publish` | publishing from Telegram is admin-only *and* opt-in: your effective role must be admin and `[access] allow_publish` must be `true`. `/whoami` shows the id and the role the bot actually uses; `nujijushi doctor` prints the effective switches and the config file it read |
-| `users ls` says `guest (config admin)` | that is only the stored row: a config admin is admin at runtime (`/whoami` proves it). Since v0.2.x the listings print the effective role — rebuild to get it. Editing `[access] admins` takes effect on restart; `/grant <id> admin` is live |
-| a post the platform flagged sensitive is stored as `sfw` | the flag was nested (retweet/quote objects, per-media `sensitive`) where the mapper did not look — fixed, so rebuild and re-import. Ratings are stored at import, so an existing row keeps its value: `nujijushi nsfw <id> yes`, or "mark nsfw" in the web grid |
+| a user listing shows `admin` and `db: guest` | `[access] admins` sets the effective role to admin even when the database row says guest. Config edits take effect on restart. `/grant <id> admin` takes effect immediately |
+| a post the platform flagged sensitive is stored as `sfw` | re-import to refresh the source rating, including nested and per-media sensitivity flags. To set a manual override, run `nujijushi nsfw <id> yes` or use the NSFW action in the web grid |
 | `webhook registered` but the bot never answers | registration only stores the URL — Telegram only fails *later*, when it POSTs. `nujijushi doctor` prints a `webhook delivery` line with Telegram's last error (e.g. `Wrong response from the webhook: 502 Bad Gateway`); no error but still silence means nothing reaches nginx. Also: commands only work in a **private chat** with the bot, channel posts are ignored by design |
 | webhook cannot work at all | the host must accept inbound HTTPS from Telegram. If you are behind CGNAT, cannot port-forward, or your ISP blocks 80/88/443/8443, use `[bot] mode = "polling"` (the default): outbound only, works anywhere, and the next `nujijushi run` deletes the stale webhook |
 | a full queue never drains | the dashboard banner says whether the scheduler is alive. `serve` does not schedule — run `nujijushi run`. If it *is* running, the channel's own state (paused, outside active hours, daily cap, `next_due_at`) is on the dashboard and in `nujijushi channel ls` |

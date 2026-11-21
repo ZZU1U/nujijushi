@@ -70,6 +70,25 @@ fn default_caption() {
 }
 
 #[test]
+fn fanbox_attribution_uses_the_site_label() {
+    let channel = Channel::new("night shift", "@night_shift");
+    let mut post = post();
+    post.source = "fanbox".into();
+    post.url = Some("https://nightjar.fanbox.cc/posts/123456".into());
+    post.author = None;
+    post.description = None;
+    post.tags.clear();
+
+    let caption = render(&channel, &post, false, false);
+    insta::assert_snapshot!("fanbox_caption", caption);
+
+    for host in ["fanbox.cc", "nightjar.fanbox.cc"] {
+        post.source = host.into();
+        assert_eq!(render(&channel, &post, false, false), caption);
+    }
+}
+
+#[test]
 fn nsfw_caption_with_spoiler_and_plain_tags() {
     let mut channel = Channel::new("after dark", "@after_dark");
     channel.nsfw_policy = NsfwPolicy::Spoil;
