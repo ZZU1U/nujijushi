@@ -3,6 +3,7 @@ import { api, expired, friendly, type Card, type CardsPage, type PostsPage } fro
 import { Actions, ActionForm, useActions } from '../ui'
 import { Badge } from '../components/Badge'
 import { ChannelSelect } from '../components/ChannelSelect'
+import { Thumbnail } from '../components/Thumbnail'
 
 export interface GridSnapshot {
   page: PostsPage
@@ -30,7 +31,7 @@ function PostCard({ card, setup, selected, select }: {
       data-post-pick="" checked={selected} onChange={select} />
     <label className="post-pick-area" htmlFor={inputId} aria-hidden="true" />
     <div className="thumb">
-      {card.thumb ? <img loading="lazy" src={'/thumb/' + card.thumb} alt="" /> : <span className="noimg">no media</span>}
+      {card.thumb ? <Thumbnail hash={card.thumb} alt="" /> : <span className="noimg">no media</span>}
       {card.media_count > 1 && <span className="count">{card.media_count}</span>}
       {card.nsfw && <Badge tone="red" className="corner">nsfw</Badge>}
     </div>

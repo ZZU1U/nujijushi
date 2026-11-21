@@ -3,6 +3,7 @@ import { ActionForm, TextField, SelectField, TextArea, JobProgress, CaptionPrevi
 import { Badge } from '../components/Badge'
 import { ChannelSelect } from '../components/ChannelSelect'
 import type { Post, PostDetailPage, TagSuggestions } from '../api'
+import { Thumbnail, thumbnailUrl } from '../components/Thumbnail'
 
 export function PostDetail({ data }: { data: PostDetailPage }) {
   const { post, open_section, guest_review, outgoing_count, tag_review, can_suggest_tags, captions, default_channel, ratings, states, channels } = data
@@ -177,9 +178,15 @@ function Gallery({ data }: { data: PostDetailPage }) {
             {media.map((m, index) => <Fragment key={listKey(m, index)}>
               <figure id={text("media-", (index + 1))}>
                 {m.is_video ? <>
-                  <video controls preload="none" poster={text("/thumb/", m.thumb)} src={text("/media/", m.hash)}></video>
+                  <video controls preload="none" poster={thumbnailUrl(m.thumb)} src={text("/media/", m.hash)}></video>
                 </> : <>
-                  <a href={text("/media/", m.hash)} target="_blank"><img loading="lazy" src={text("/media/", m.hash)} alt="" /></a>
+                  <a href={'/media/' + m.hash} target="_blank">
+                    {m.ext === 'gif'
+                      ? <img loading="lazy" decoding="async" src={'/media/' + m.hash} alt=""
+                        width={m.width ?? undefined} height={m.height ?? undefined} />
+                      : <Thumbnail hash={m.thumb} fallback={'/media/' + m.hash} alt=""
+                        width={m.width ?? undefined} height={m.height ?? undefined} />}
+                  </a>
                 </>}
                 {m.hidden ? <><span className="badge amber">Hidden from outgoing copies</span></> : null}
                 <figcaption className="hint">{m.ext}{" "}{m.width}×{m.height} · {m.kib} KiB</figcaption>

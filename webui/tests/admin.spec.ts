@@ -119,6 +119,33 @@ test('queue on page 3 and return from a post in the same browser document', asyn
   expect(documents()).toBe(1)
 })
 
+test('the gallery reuses the archive thumbnail from the browser cache', async ({ page }) => {
+  await signIn(page, '/posts?search=Different+heights')
+  const card = page.locator('[data-post-card="2"]')
+  const thumbnail = card.locator('img')
+  await thumbnail.scrollIntoViewIfNeeded()
+  await expect.poll(() => thumbnail.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0)
+  const src = (await thumbnail.getAttribute('src'))!
+
+  await card.getByRole('link', { name: 'Open post #2' }).click()
+  const firstImage = page.locator('.media-grid figure').first()
+  await expect(firstImage.locator('img')).toHaveAttribute('src', src)
+  await expect(firstImage.getByRole('link')).toHaveAttribute('href', new RegExp('^/media/'))
+  await expect.poll(() => page.evaluate(async (path) => {
+    const cached = await fetch(path, { cache: 'only-if-cached', mode: 'same-origin' })
+    return cached.status
+  }, src)).toBe(200)
+})
+
+test('the gallery opens the original when a thumbnail is missing', async ({ page }) => {
+  await page.route('**/thumb/*', (route) => route.fulfill({ status: 404 }))
+  await signIn(page, '/posts/2')
+  const image = page.locator('.media-grid figure img').first()
+  await image.scrollIntoViewIfNeeded()
+  await expect(image).toHaveAttribute('src', new RegExp('^/media/'))
+  await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBeGreaterThan(0)
+})
+
 test('a failed merge keeps selection and its error beside the controls', async ({ page }) => {
   const documents = countDocuments(page)
   await signIn(page, '/posts/2')

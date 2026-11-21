@@ -1,6 +1,7 @@
 import { Fragment } from 'react'
 import { ActionForm, TextField, text, listKey, externalUrl } from '../ui'
 import type { DuplicatesPage, DuplicatePost, DuplicateImage } from '../api'
+import { Thumbnail } from '../components/Thumbnail'
 
 function details(post: DuplicatePost) {
   return <>
@@ -18,7 +19,7 @@ function thumbnail(item: DuplicateImage, post_id: number) {
   return <>
     <figure>
       {item.thumb ? <>
-        <a href={text("/posts/", post_id)}><img src={text("/thumb/", item.hash)} alt={text("Matched image ", item.position)} loading="lazy" /></a>
+        <a href={text("/posts/", post_id)}><Thumbnail hash={item.hash} alt={text("Matched image ", item.position)} /></a>
       </> : <>
         <a href={text("/posts/", post_id)}>Open post #{post_id}</a>
       </>}

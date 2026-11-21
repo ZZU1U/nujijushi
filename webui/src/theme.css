@@ -217,7 +217,7 @@ label.check input { width: auto; }
 .media-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); gap: .75rem; margin-bottom: 1rem; }
 .media-grid figure { margin: 0; scroll-margin-top: 5rem; }
 .media-grid figcaption { margin-top: .3rem; }
-.media-grid img, .media-grid video { width: 100%; border-radius: 8px; display: block; background: #0f1318; }
+.media-grid img, .media-grid video { width: 100%; height: auto; border-radius: 8px; display: block; background: #0f1318; }
 .facts { display: grid; grid-template-columns: 90px 1fr; gap: .2rem .8rem; margin: 0 0 .8rem; }
 .facts dt { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .05em; padding-top: .15rem; }
 .facts dd { margin: 0; overflow-wrap: anywhere; }

@@ -3,6 +3,7 @@ import { Badge } from '../components/Badge'
 import { DataTable, type Column } from '../components/DataTable'
 import { DeliveryActions } from '../components/DeliveryActions'
 import { ActionForm } from '../ui'
+import { Thumbnail } from '../components/Thumbnail'
 
 export function Queue({ data }: { data: QueuePage }) {
   const { channel, activity, items, eta_hint } = data
@@ -51,7 +52,7 @@ function QueueTable({ channel, activity, items }: Pick<QueuePage, 'channel' | 'a
     {
       label: 'artwork', hideLabel: true, className: 'mini',
       cell: (item) => <>
-        {item.thumb && <img loading="lazy" src={'/thumb/' + item.thumb} alt="" />}
+        {item.thumb && <Thumbnail hash={item.thumb} alt="" />}
         {item.nsfw && <Badge tone="red">nsfw</Badge>}
       </>,
     },

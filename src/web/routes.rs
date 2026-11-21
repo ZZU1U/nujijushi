@@ -272,14 +272,54 @@ fn safe_hash(hash: &str) -> bool {
     !hash.is_empty() && hash.len() <= 80 && hash.chars().all(|c| c.is_ascii_alphanumeric())
 }
 
-async fn thumb(State(ws): State<Arc<WebState>>, Path(hash): Path<String>) -> Response {
+const THUMB_CACHE: &str = "private, max-age=86400";
+
+async fn thumb(
+    State(ws): State<Arc<WebState>>,
+    Path(hash): Path<String>,
+    request_headers: HeaderMap,
+) -> Response {
+    let missing = (StatusCode::NOT_FOUND, [(header::CACHE_CONTROL, "no-store")]);
     if !safe_hash(&hash) {
-        return StatusCode::NOT_FOUND.into_response();
+        return missing.into_response();
     }
-    match std::fs::read(ws.app.blobs.thumb_path(&hash)) {
-        Ok(bytes) => ([(header::CONTENT_TYPE, "image/webp")], bytes).into_response(),
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
-    }
+    let Ok(bytes) = tokio::fs::read(ws.app.blobs.thumb_path(&hash)).await else {
+        return missing.into_response();
+    };
+    // The URL identifies the source blob. Validate the actual WebP in case a
+    // thumbnail is regenerated with a different encoder or size.
+    let tag = blake3::hash(&bytes).to_hex();
+    let response = if thumbnail_matches(&request_headers, tag.as_str()) {
+        StatusCode::NOT_MODIFIED.into_response()
+    } else {
+        ([(header::CONTENT_TYPE, "image/webp")], bytes).into_response()
+    };
+    (
+        [
+            (header::CACHE_CONTROL, THUMB_CACHE),
+            (header::VARY, "Cookie"),
+        ],
+        [(header::ETAG, format!("\"{tag}\""))],
+        response,
+    )
+        .into_response()
+}
+
+fn thumbnail_matches(headers: &HeaderMap, tag: &str) -> bool {
+    headers
+        .get_all(header::IF_NONE_MATCH)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .any(|value| {
+            // Compare the opaque part of each entity tag, including weak tags.
+            // A quoted value may itself contain commas.
+            value.trim() == "*"
+                || value
+                    .split_inclusive('"')
+                    .skip(1)
+                    .step_by(2)
+                    .any(|candidate| candidate.strip_suffix('"') == Some(tag))
+        })
 }
 
 async fn media(State(ws): State<Arc<WebState>>, Path(hash): Path<String>) -> Response {

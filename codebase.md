@@ -168,7 +168,9 @@ The React app loads its CSRF token from `GET /api/v1/session` using the HttpOnly
 session cookie. Sign-in uses a short-lived cookie-bound challenge. Protected API
 requests with an expired session return 401. Admin writes are URL-encoded,
 validate CSRF and return an action message, optional location and any new job IDs.
-Media and thumbnails are served from the authenticated blob routes.
+Media and thumbnails are served from the authenticated blob routes. Browsers
+can reuse thumbnails for a day in their private cache, keyed by URL and session
+cookie. On revalidation, the ETag identifies the actual WebP bytes.
 
 ```
 POST /api/v1/publish        → enqueue a publish job              → 202

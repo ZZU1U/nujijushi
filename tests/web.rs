@@ -3459,3 +3459,69 @@ async fn admin_login_uses_a_separate_challenge_and_bootstraps_the_session() {
     assert_eq!(expired.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(expired.headers()[header::CACHE_CONTROL], "no-store");
 }
+
+#[tokio::test]
+async fn thumbnails_are_cached_privately_and_revalidate_the_webp() {
+    let h = harness();
+    let bytes = encode_image(artwork(), image::ImageFormat::Png);
+    let blob = h.state.blobs.ingest_bytes(&bytes, "png").unwrap();
+    let path = format!("/thumb/{}", blob.hash);
+    let request = |condition: Option<&str>, authenticated| {
+        let mut builder = Request::get(&path);
+        if authenticated {
+            builder = builder.header(header::COOKIE, format!("{}={}", auth::COOKIE, h.ws.session));
+        }
+        if let Some(condition) = condition {
+            builder = builder.header(header::IF_NONE_MATCH, condition);
+        }
+        builder.body(Body::empty()).unwrap()
+    };
+
+    let missing = h.send(request(None, true)).await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    assert_eq!(missing.headers()[header::CACHE_CONTROL], "no-store");
+    let file = h
+        .state
+        .blobs
+        .write_thumb(&blob.hash, &bytes, 64)
+        .unwrap()
+        .unwrap();
+    let first = h.send(request(None, true)).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(first.headers()[header::CONTENT_TYPE], "image/webp");
+    assert_eq!(
+        first.headers()[header::CACHE_CONTROL],
+        "private, max-age=86400"
+    );
+    assert_eq!(first.headers()[header::VARY], "Cookie");
+    let tag = first.headers()[header::ETAG].to_str().unwrap().to_owned();
+
+    let denied = h.send(request(Some(&tag), false)).await;
+    assert_eq!(denied.status(), StatusCode::SEE_OTHER);
+    assert_eq!(denied.headers()[header::CACHE_CONTROL], "no-store");
+    assert!(!denied.headers().contains_key(header::ETAG));
+
+    let weak_list = format!("\"other,tag\", W/{tag}");
+    for condition in [&tag, &weak_list, "*"] {
+        let cached = h.send(request(Some(condition), true)).await;
+        assert_eq!(cached.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(
+            cached.headers()[header::CACHE_CONTROL],
+            "private, max-age=86400"
+        );
+        assert_eq!(cached.headers()[header::VARY], "Cookie");
+        assert_eq!(cached.headers()[header::ETAG], tag);
+        assert!(body_text(cached).await.is_empty());
+    }
+
+    // Regenerating a rendition can change its bytes without changing the source hash.
+    std::fs::remove_file(file).unwrap();
+    h.state
+        .blobs
+        .write_thumb(&blob.hash, &bytes, 32)
+        .unwrap()
+        .unwrap();
+    let regenerated = h.send(request(Some(&tag), true)).await;
+    assert_eq!(regenerated.status(), StatusCode::OK);
+    assert_ne!(regenerated.headers()[header::ETAG], tag);
+}

@@ -82,7 +82,11 @@ pub async fn require_session(
     let target = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("next", &req.uri().to_string())
         .finish();
-    Redirect::to(&format!("/login?{target}")).into_response()
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Redirect::to(&format!("/login?{target}")),
+    )
+        .into_response()
 }
 
 pub(super) fn local_page(value: &str) -> Option<Uri> {
