@@ -15,6 +15,7 @@ const QUICK_KINDS: &[&str] = &[
 ];
 const IMPORT_KINDS: &[&str] = &[crate::jobs::KIND_IMPORT, crate::jobs::KIND_WATCH_CHECK];
 const FLUSH_KINDS: &[&str] = &[crate::jobs::KIND_FLUSH_CHANNEL];
+const CLEANUP_KINDS: &[&str] = &[crate::jobs::KIND_STORAGE_CLEANUP];
 const MEDIA_KINDS: &[&str] = &[
     crate::jobs::KIND_MERGE_MEDIA,
     crate::jobs::KIND_COMPRESS_MEDIA,
@@ -74,14 +75,16 @@ impl JobWorker {
         let imports = self.claim(IMPORT_KINDS, self.import_limit()).await?;
         let media = self.claim(MEDIA_KINDS, 1).await?;
         let flushes = self.claim(FLUSH_KINDS, 1).await?;
-        let (quick, imports, media, flushes, suggestions) = tokio::join!(
+        let cleanup = self.claim(CLEANUP_KINDS, 1).await?;
+        let (quick, imports, media, flushes, cleanup, suggestions) = tokio::join!(
             self.run_claimed(quick),
             self.run_claimed(imports),
             self.run_claimed(media),
             self.run_claimed(flushes),
+            self.run_claimed(cleanup),
             self.drain_suggestions(),
         );
-        let count = quick + imports + media + flushes + suggestions?;
+        let count = quick + imports + media + flushes + cleanup + suggestions?;
         self.drain_mirrors(if count == 0 { 5 } else { 10 }).await;
         crate::duplicates::index_batch(&self.state).await?;
         Ok(count)
@@ -171,6 +174,7 @@ impl JobWorker {
             _ = self.poll_jobs(QUICK_KINDS, QUICK_JOBS, false) => {},
             _ = self.poll_jobs(IMPORT_KINDS, self.import_limit(), true) => {},
             _ = self.poll_jobs(FLUSH_KINDS, 1, false) => {},
+            _ = self.poll_jobs(CLEANUP_KINDS, 1, false) => {},
             _ = self.poll_media() => {},
             _ = self.poll_suggestions() => {},
             _ = self.poll_duplicates() => {},

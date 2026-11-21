@@ -62,6 +62,45 @@ pub struct GcReport {
     pub removed_blobs: usize,
     pub removed_thumbs: usize,
     pub freed_bytes: u64,
+    pub failed_files: usize,
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct Garbage {
+    blobs: std::collections::BTreeMap<PathBuf, Option<String>>,
+    thumbs: std::collections::BTreeSet<PathBuf>,
+}
+
+impl Garbage {
+    pub(crate) fn file_count(&self) -> usize {
+        self.blobs.len() + self.thumbs.len()
+    }
+
+    pub(crate) fn estimated_bytes(&self) -> u64 {
+        self.blobs
+            .keys()
+            .chain(&self.thumbs)
+            .filter_map(|path| std::fs::symlink_metadata(path).ok())
+            .filter(|metadata| !metadata.is_dir())
+            .map(|metadata| metadata.len())
+            .sum()
+    }
+}
+
+fn remove_garbage(path: &Path, report: &mut GcReport) -> Option<bool> {
+    let bytes = std::fs::symlink_metadata(path).map_or(0, |meta| meta.len());
+    match std::fs::remove_file(path) {
+        Ok(()) => {
+            report.freed_bytes += bytes;
+            Some(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(false),
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "could not reclaim archive file");
+            report.failed_files += 1;
+            None
+        }
+    }
 }
 
 impl BlobStore {
@@ -179,47 +218,89 @@ impl BlobStore {
         self.thumb_path(hash).exists()
     }
 
-    /// Delete blobs no media row references, plus orphan thumbnails.
-    pub fn gc(&self, conn: &Connection) -> Result<GcReport> {
-        let mut report = GcReport::default();
+    pub(crate) fn garbage(&self, conn: &Connection, compacted: &[i64]) -> Result<Garbage> {
+        use crate::db::media_merges::{known_blob_hashes, projected_orphan_blobs};
+        let catalogued = projected_orphan_blobs(conn, compacted)?;
+        let mut retained = known_blob_hashes(conn)?;
+        for (hash, _) in &catalogued {
+            retained.remove(hash);
+        }
+        let mut blobs = std::collections::BTreeMap::new();
+        let mut thumbs = std::collections::BTreeSet::new();
+        for (hash, ext) in &catalogued {
+            blobs.insert(self.path_for(hash, ext), Some(hash.clone()));
+            thumbs.insert(self.thumb_path(hash));
+        }
+        // A failed transaction can leave a file that never reached the catalogue.
+        // Limit the scan to files with canonical content-addressed paths.
+        for (root, is_thumb) in [(&self.root, false), (&self.thumbs, true)] {
+            for shard in std::fs::read_dir(root)? {
+                let shard = shard?;
+                if !shard.file_type()?.is_dir() {
+                    continue;
+                }
+                for entry in std::fs::read_dir(shard.path())? {
+                    let path = entry?.path();
+                    let (Some(hash), Some(ext)) = (
+                        path.file_stem().and_then(|s| s.to_str()),
+                        path.extension().and_then(|s| s.to_str()),
+                    ) else {
+                        continue;
+                    };
+                    if hash.len() != 64
+                        || !hash
+                            .bytes()
+                            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+                        || retained.contains(hash)
+                    {
+                        continue;
+                    }
+                    if is_thumb {
+                        if path == self.thumb_path(hash) {
+                            thumbs.insert(path);
+                        }
+                    } else if path == self.path_for(hash, ext)
+                        && (is_image_ext(ext) || is_video_ext(ext) || ext == "bin")
+                    {
+                        blobs.entry(path).or_insert(None);
+                    }
+                }
+            }
+        }
+        Ok(Garbage { blobs, thumbs })
+    }
 
-        // Hold the write lock from the reference check through unlinking so a
-        // media commit cannot concurrently attach a blob selected for cleanup.
+    /// Check live references and unlink under the same SQLite write lock.
+    pub fn gc(&self, conn: &Connection) -> Result<GcReport> {
+        self.gc_matching(conn, None)
+    }
+
+    pub(crate) fn gc_matching(
+        &self,
+        conn: &Connection,
+        planned: Option<&Garbage>,
+    ) -> Result<GcReport> {
         let tx =
             rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
-        let orphans = crate::db::media_merges::orphan_blobs(&tx)?;
-        for (hash, ext, bytes) in orphans {
-            let path = self.path_for(&hash, &ext);
-            if path.exists() && std::fs::remove_file(&path).is_ok() {
-                report.removed_blobs += 1;
-                report.freed_bytes += bytes.max(0) as u64;
-            }
-            let thumb = self.thumb_path(&hash);
-            if thumb.exists() && std::fs::remove_file(&thumb).is_ok() {
-                report.removed_thumbs += 1;
-            }
-            tx.execute("DELETE FROM blobs WHERE hash = ?1", [hash])?;
-        }
-
-        // thumbnails whose blob is gone
-        for shard in std::fs::read_dir(&self.thumbs)?.flatten() {
-            let dir = shard.path();
-            if !dir.is_dir() {
+        let garbage = self.garbage(&tx, &[])?;
+        let mut report = GcReport::default();
+        for (path, hash) in garbage.blobs {
+            if planned.is_some_and(|plan| !plan.blobs.contains_key(&path)) {
                 continue;
             }
-            for entry in std::fs::read_dir(&dir)?.flatten() {
-                let path = entry.path();
-                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-                    continue;
-                };
-                let exists: bool = tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM blobs WHERE hash = ?1)",
-                    [stem],
-                    |row| row.get(0),
-                )?;
-                if !exists && std::fs::remove_file(&path).is_ok() {
-                    report.removed_thumbs += 1;
+            if let Some(removed) = remove_garbage(&path, &mut report) {
+                report.removed_blobs += usize::from(removed);
+                if let Some(hash) = hash {
+                    crate::db::media_merges::forget_blob(&tx, &hash)?;
                 }
+            }
+        }
+        for path in garbage.thumbs {
+            if planned.is_some_and(|plan| !plan.thumbs.contains(&path)) {
+                continue;
+            }
+            if remove_garbage(&path, &mut report) == Some(true) {
+                report.removed_thumbs += 1;
             }
         }
         tx.commit()?;
@@ -367,5 +448,34 @@ mod tests {
         assert!(report.removed_thumbs >= 1);
         assert!(!store.path_for(&ingested.hash, "png").exists());
         assert!(report.freed_bytes > 0);
+    }
+
+    #[test]
+    fn gc_retains_failed_blob_deletions_for_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlobStore::new(dir.path().join("b"), dir.path().join("t")).unwrap();
+        let db = crate::db::Db::open_in_memory().unwrap();
+        let data = png_bytes(4, 4);
+        let blob = store.ingest_bytes(&data, "png").unwrap();
+        db.with(|conn| store.record(conn, &blob)).unwrap();
+        let path = store.path_for(&blob.hash, "png");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+
+        let report = db.with(|conn| store.gc(conn)).unwrap();
+        assert_eq!(report.failed_files, 1);
+        assert_eq!(report.removed_blobs, 0);
+        assert_eq!(
+            db.with(|conn| crate::db::media_merges::orphan_blob_totals(conn))
+                .unwrap()
+                .0,
+            1
+        );
+
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::write(&path, &data).unwrap();
+        let report = db.with(|conn| store.gc(conn)).unwrap();
+        assert_eq!(report.removed_blobs, 1);
+        assert_eq!(report.freed_bytes, data.len() as u64);
     }
 }

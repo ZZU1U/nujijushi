@@ -97,6 +97,8 @@ The optional online fallback checks local mappings and the cache, then queries D
 
 ## Documentation
 
+Use `nujijushi gc --sent` to preview reclaimable storage from sent posts. Add `--yes` to apply the cleanup. See the [storage cleanup guide](docs/usage.md#storage-cleanup).
+
 | Guide | Covers |
 |---|---|
 | [Usage reference](docs/usage.md) | CLI commands, channel discovery, scheduling, NSFW policy, captions, and the admin UI |

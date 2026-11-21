@@ -219,10 +219,19 @@ pub enum Command {
         cmd: UsersCmd,
     },
 
-    /// Delete blobs that nothing references
+    /// Reclaim unreferenced files or clean up confirmed sent posts
     Gc {
         #[arg(long)]
         dry_run: bool,
+        /// Preview cleanup of confirmed sent posts
+        #[arg(long)]
+        sent: bool,
+        /// Age of the latest confirmed delivery (default 30 days)
+        #[arg(long, requires = "sent")]
+        older_than_days: Option<u32>,
+        /// Apply sent-post cleanup
+        #[arg(long, requires = "sent", conflicts_with = "dry_run")]
+        yes: bool,
     },
 
     /// Write a backup (database snapshot, JSONL metadata, optionally media)
@@ -620,7 +629,12 @@ pub async fn run() -> Result<()> {
                 monitor_notifications(&state, cmd_bot(&state, false)).await
             }
         }
-        Command::Gc { dry_run } => cmd_gc(cfg, dry_run),
+        Command::Gc {
+            dry_run,
+            sent,
+            older_than_days,
+            yes,
+        } => cmd_gc(cfg, dry_run, sent, older_than_days, yes).await,
         Command::Export {
             out,
             with_media,
@@ -2475,31 +2489,65 @@ async fn cmd_log(state: &AppState, limit: i64) -> Result<()> {
 
 // ---------------------------------------------------------------- maintenance
 
-fn cmd_gc(cfg: Config, dry_run: bool) -> Result<()> {
-    cfg.ensure_layout()?;
-    let db = crate::db::Db::open(cfg.db_path())?;
-    let store = crate::blob::BlobStore::new(cfg.blobs_dir(), cfg.thumbs_dir())?;
+async fn cmd_gc(
+    cfg: Config,
+    dry_run: bool,
+    sent: bool,
+    older_than_days: Option<u32>,
+    yes: bool,
+) -> Result<()> {
+    use crate::storage::cleanup;
+    let state = AppState::open(cfg, None)?;
+    if sent {
+        let days = older_than_days.unwrap_or(cleanup::DEFAULT_AGE_DAYS);
+        if yes {
+            let report = cleanup::run(&state, cleanup::cutoff(days)?, None, None).await?;
+            println!("{}", report.describe());
+            if report.files.failed_files > 0 {
+                return Err(Error::other(
+                    "Some archive files could not be removed. Run gc to retry.",
+                ));
+            }
+        } else {
+            println!("{}", cleanup::preview(&state, days).await?.describe());
+        }
+        return Ok(());
+    }
     if dry_run {
-        let (blobs, bytes) = db.with(|conn| crate::db::media_merges::orphan_blob_totals(conn))?;
+        let (blobs, bytes) = state
+            .db
+            .with(|conn| crate::db::media_merges::orphan_blob_totals(conn))?;
         println!(
             "would delete {blobs} unreferenced blob(s), {:.1} MiB (dry run)",
             bytes as f64 / 1_048_576.0
         );
         return Ok(());
     }
-    let report = db.with(|conn| store.gc(conn))?;
+    let report = cleanup::collect_orphans(&state).await?;
     println!(
         "removed {} blob(s) and {} thumbnail(s), freed {:.1} MiB",
         report.removed_blobs,
         report.removed_thumbs,
         report.freed_bytes as f64 / 1_048_576.0
     );
+    if report.failed_files > 0 {
+        return Err(Error::other(format!(
+            "{} file(s) could not be removed. Run gc to retry.",
+            report.failed_files
+        )));
+    }
     Ok(())
 }
 
 async fn cmd_export(cfg: Config, out: Option<PathBuf>, with_media: bool) -> Result<()> {
-    cfg.ensure_layout()?;
-    let db = crate::db::Db::open(cfg.db_path())?;
+    let state = AppState::open(cfg, None)?;
+    let _storage = if with_media {
+        Some(state.storage_read().await?)
+    } else {
+        None
+    };
+    let db = &state.db;
+    let cfg = &state.cfg;
     let stamp = Utc::now().format("%Y%m%d-%H%M%S").to_string();
     let dir = out.unwrap_or_else(|| cfg.export_dir().join(format!("backup-{stamp}")));
     std::fs::create_dir_all(&dir)?;
@@ -3077,6 +3125,21 @@ mod parse_tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
+    }
+
+    #[test]
+    fn sent_cleanup_accepts_an_explicit_age_and_apply_flag() {
+        assert!(matches!(
+            parse(&["gc", "--sent", "--older-than-days", "0", "--yes"]).cmd,
+            Command::Gc {
+                sent: true,
+                older_than_days: Some(0),
+                yes: true,
+                dry_run: false
+            }
+        ));
+        assert!(Args::try_parse_from(["nujijushi", "gc", "--yes"]).is_err());
+        assert!(Args::try_parse_from(["nujijushi", "gc", "--sent", "--yes", "--dry-run"]).is_err());
     }
 
     #[test]

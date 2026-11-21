@@ -1539,6 +1539,221 @@ async fn batch_compression_preserves_the_gallery_on_encode_failure() {
 }
 
 #[tokio::test]
+async fn sent_cleanup_keeps_batch_edits_hides_and_saved_tags_and_rechecks_the_preview() {
+    use nujijushi::db::{media_merges as gallery, posts, queue, tags};
+    use nujijushi::jobs::worker::JobWorker;
+    let h = harness();
+    let panel = |color| {
+        encode_image(
+            image::RgbImage::from_pixel(24, 16, image::Rgb(color)),
+            image::ImageFormat::Png,
+        )
+    };
+    let shared = panel([70, 0, 0]);
+    let right = panel([0, 70, 0]);
+    let hidden = panel([0, 0, 70]);
+    let input = [
+        (shared.as_slice(), "png"),
+        (&right, "png"),
+        (&hidden, "png"),
+        (b"video", "mp4"),
+    ];
+    let id = archive_test_images(&h.state, "local", "sent", &input);
+    archive_test_images(&h.state, "local", "shared", &[(&shared, "png")]);
+    let original = h.state.db.with(|conn| posts::get(conn, id)).unwrap();
+    let version = |conn: &rusqlite::Connection| gallery::current_revision(conn, id);
+    let old_version = h.state.db.with(|conn| version(conn)).unwrap();
+    let merge = nujijushi::jobs::create_merge_media_job(
+        &h.state,
+        id,
+        original.media[..2].iter().map(|item| item.id).collect(),
+        old_version,
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(merge.is_some());
+    let worker = JobWorker::new(h.state.clone());
+    worker.drain().await.unwrap();
+    h.state
+        .db
+        .with(|conn| {
+            let hidden_id = posts::get(conn, id)?.media[1].id;
+            gallery::set_hidden(conn, id, hidden_id, &version(conn)?, true)
+        })
+        .unwrap();
+    let gallery_version = h.state.db.with(|conn| version(conn)).unwrap();
+    let action = format!("/posts/{id}/media");
+    let form = format!(
+        "csrf={}&action=compress_all&gallery_version={gallery_version}&output=quality&quality=78",
+        h.ws.csrf
+    );
+    assert_eq!(
+        h.send(h.post(&action, &form)).await.status(),
+        StatusCode::ACCEPTED
+    );
+    worker.drain().await.unwrap();
+    let edited = h.state.db.with(|conn| posts::get(conn, id)).unwrap();
+    let outgoing = h
+        .state
+        .db
+        .with(|conn| gallery::outgoing_post(conn, id))
+        .unwrap()
+        .media;
+    assert_eq!(
+        edited
+            .media
+            .iter()
+            .map(|item| item.ext.as_str())
+            .collect::<Vec<_>>(),
+        ["jpg", "jpg", "mp4"]
+    );
+    assert_eq!(
+        outgoing.iter().map(|item| item.ordinal).collect::<Vec<_>>(),
+        [0, 2]
+    );
+    let gallery_version = h.state.db.with(|conn| version(conn)).unwrap();
+    h.state
+        .db
+        .with(|conn| gallery::undo_compression(conn, id, edited.media[1].id, &gallery_version))
+        .unwrap();
+    let gallery_version = h.state.db.with(|conn| version(conn)).unwrap();
+    let form = format!(
+        "csrf={}&action=compress_all&gallery_version={gallery_version}",
+        h.ws.csrf
+    );
+    assert_eq!(
+        h.send(h.post(&action, &form)).await.status(),
+        StatusCode::ACCEPTED
+    );
+    worker.drain().await.unwrap();
+    let edited = h.state.db.with(|conn| posts::get(conn, id)).unwrap();
+    let outgoing = h
+        .state
+        .db
+        .with(|conn| gallery::outgoing_post(conn, id))
+        .unwrap()
+        .media;
+
+    let channel = h.add_channel().await;
+    let sent = chrono::Utc::now() - chrono::Duration::days(31);
+    let queue_id = h.state.db.with(|conn| {
+        conn.execute("UPDATE posts SET imported_at = ?1 WHERE id = ?2", [(sent - chrono::Duration::days(1)).to_rfc3339(), id.to_string()])?;
+        let queue_id = queue::enqueue_new(conn, id, channel.id, 0)?.unwrap();
+        queue::mark_sent(conn, queue_id, "123", sent)?;
+        tags::add_manual(conn, id, &["saved_tag".into()])?;
+        let (job_id, _) = nujijushi::db::tag_suggestions::enqueue(conn, id, "suggest_tags")?;
+        job_db::set_state(conn, job_id, "done", None)?;
+        conn.execute("INSERT INTO post_tag_suggestions (job_id, kind, tag, evidence) VALUES (?1, 'character', 'unsaved', 'test')", [job_id])?;
+        Ok(queue_id)
+    }).unwrap();
+
+    let path = "/storage/cleanup";
+    assert_eq!(
+        h.page("/storage/cleanup?older_than_days=32").await["posts"],
+        0
+    );
+    let preview = h.page(path).await;
+    assert_eq!(preview["posts"], 1);
+    assert_eq!(preview["suggestions"], 1);
+    assert!(preview["estimated_bytes"].as_u64().unwrap() > 0);
+    let form = |preview: &serde_json::Value, csrf: &str| {
+        url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("csrf", csrf)
+            .append_pair(
+                "cutoff",
+                preview["confirmation"]["cutoff"].as_str().unwrap(),
+            )
+            .append_pair(
+                "revision",
+                preview["confirmation"]["revision"].as_str().unwrap(),
+            )
+            .finish()
+    };
+    assert_eq!(
+        h.send(h.post(path, &form(&preview, "invalid")))
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    h.state
+        .db
+        .with(|conn| {
+            conn.execute(
+                "UPDATE queue SET state = 'unknown' WHERE id = ?1",
+                [queue_id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let response = h.send(h.post(path, &form(&preview, &h.ws.csrf))).await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let stale = Harness::json(&response)["job_ids"][0].as_i64().unwrap();
+    worker.drain().await.unwrap();
+    let status = h.page(&format!("/jobs/{stale}/status")).await;
+    assert_eq!(status["state"], "failed");
+    assert!(
+        status["message"]
+            .as_str()
+            .unwrap()
+            .contains("Preview cleanup again")
+    );
+    assert_eq!(h.page(path).await["posts"], 0);
+    h.state
+        .db
+        .with(|conn| queue::mark_sent(conn, queue_id, "123", sent))
+        .unwrap();
+
+    let preview = h.page(path).await;
+    let response = h.send(h.post(path, &form(&preview, &h.ws.csrf))).await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let job = Harness::json(&response)["job_ids"][0].as_i64().unwrap();
+    worker.drain().await.unwrap();
+    assert_eq!(h.job_state(job).await, "done");
+    h.state
+        .db
+        .with(|conn| {
+            assert_eq!(posts::get(conn, id)?.media, edited.media);
+            assert_eq!(gallery::outgoing_post(conn, id)?.media, outgoing);
+            assert_eq!(posts::get(conn, id)?.tags, ["saved_tag"]);
+            assert_eq!(queue::get(conn, queue_id)?.state, QueueState::Sent);
+            assert!(gallery::undo_ids(conn, id)?.is_empty());
+            assert!(gallery::compressed_positions(conn, id)?.is_empty());
+            assert!(nujijushi::db::tag_suggestions::latest_job(conn, id)?.is_none());
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        h.state
+            .blobs
+            .path_for(&original.media[0].blob_hash, "png")
+            .is_file()
+    );
+    assert!(
+        !h.state
+            .blobs
+            .path_for(&original.media[1].blob_hash, "png")
+            .exists()
+    );
+    assert_eq!(h.page(path).await["posts"], 0);
+    assert_eq!(archive_test_images(&h.state, "local", "sent", &input), id);
+    let restored = h.state.db.with(|conn| posts::get(conn, id)).unwrap();
+    assert_eq!(
+        restored
+            .media
+            .iter()
+            .map(|item| &item.blob_hash)
+            .collect::<Vec<_>>(),
+        original
+            .media
+            .iter()
+            .map(|item| &item.blob_hash)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
 async fn duplicate_inbox_indexes_and_dismisses_cross_source_media_pairs() {
     use nujijushi::db::{duplicates, posts, queue};
     let h = harness();

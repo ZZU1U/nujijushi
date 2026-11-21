@@ -514,3 +514,44 @@ test('the archive grid caches thumbnails and the post gallery loads full-resolut
     return cached.status
   }, thumbnailPath)).toBe(200)
 })
+
+test('compress all updates the post and Settings cleans a confirmed sent gallery', async ({ page }) => {
+  const artwork = await gallery('Cleanup example', [14, 14])
+  cli('import', artwork)
+  const db = new DatabaseSync(join(directory, 'archive', 'nujijushi.sqlite3'))
+  db.exec('PRAGMA busy_timeout = 5000')
+  const item = db.prepare("SELECT id FROM posts WHERE title = 'Cleanup example'").get()!
+  const id = String(item.id)
+  try {
+    await signIn(page, '/posts/' + id)
+    await page.getByText('Media tools', { exact: true }).click()
+    await page.getByText('Compress all images', { exact: true }).click()
+    await page.getByRole('button', { name: 'Compress all', exact: true }).click()
+    await expect(page.getByText('2 compressed · 0 skipped', { exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Undo compression' })).toHaveCount(2)
+
+    cli('queue', 'add', id, '--channel', 'art')
+    db.prepare('UPDATE posts SET imported_at = ? WHERE id = ?')
+      .run(new Date(Date.now() - 32 * 86400000).toISOString(), item.id)
+    db.prepare("UPDATE queue SET state = 'sent', sent_at = ?, tg_message_ids = '123' WHERE post_id = ?")
+      .run(new Date(Date.now() - 31 * 86400000).toISOString(), item.id)
+    await page.getByRole('link', { name: 'settings', exact: true }).click()
+    const cleanup = page.getByRole('heading', { name: 'Storage cleanup' }).locator('..')
+    await expect(cleanup.getByRole('spinbutton')).toHaveValue('30')
+    await cleanup.getByRole('button', { name: 'Preview cleanup' }).click()
+    await expect(cleanup.getByText(/1 eligible post/)).toBeVisible()
+    page.once('dialog', (dialog) => void dialog.dismiss())
+    await cleanup.getByRole('button', { name: 'Apply cleanup' }).click()
+    await expect(cleanup.getByRole('button', { name: 'Apply cleanup' })).toBeVisible()
+    page.once('dialog', (dialog) => void dialog.accept())
+    await cleanup.getByRole('button', { name: 'Apply cleanup' }).click()
+    await expect(cleanup.getByText(/1 post\(s\) cleaned.*0 file\(s\) to retry/)).toBeVisible()
+
+    await page.goto(base + '/posts/' + id)
+    await page.getByText('Media tools', { exact: true }).click()
+    await expect(page.getByRole('button', { name: 'Undo compression' })).toHaveCount(0)
+    await expect(page.locator('.media-grid figcaption').first()).toContainText('jpg')
+  } finally {
+    db.close()
+  }
+})

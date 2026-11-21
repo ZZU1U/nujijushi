@@ -33,6 +33,7 @@
 | `nujijushi log [--limit N]` | send audit log |
 | `nujijushi storage ls\|test\|sync` | list, check, or backfill [storage mirrors](operations.md#external-storage-mirrors) |
 | `nujijushi gc [--dry-run]` | delete unreferenced blobs and thumbnails |
+| `nujijushi gc --sent [--older-than-days N] [--yes]` | preview or apply storage cleanup for confirmed sent posts |
 | `nujijushi export [--out DIR] [--with-media]` | backup: DB snapshot + JSONL + channels.json (+ blobs) |
 | `nujijushi export --share --out DIR` | export outgoing artwork and its `post.json` sidecars |
 
@@ -181,6 +182,14 @@ Open a channel’s **queue**, choose **Flush queue**, and confirm the Telegram d
 The flush takes the items already queued when it starts and publishes them one after another. Pinned items go first, then higher priority, then oldest first. The flush bypasses the interval, active hours, daily cap, and the channel’s paused or disabled schedule. Channel content policy still applies. Held previews and unconfirmed deliveries require their usual review.
 
 The flush stops on a send failure after the usual Telegram retries. The queue retains the remaining posts. A partial delivery stays unconfirmed. Successful sends advance the next scheduled slot as usual, and posts queued after the flush starts wait for a regular slot or another manual action. If a publish is already in progress when the flush tries to start, let it finish and try again.
+
+### Storage cleanup
+
+In **Settings**, use **Preview cleanup** to see the number of eligible posts, unsaved tag suggestions, and estimated disk space. The default is 30 days since the latest confirmed send. Cleanup skips posts with outstanding deliveries, mirrors, gallery edits, or tag suggestion jobs.
+
+**Apply cleanup** keeps the gallery you see, including hidden images, and removes the original files and intermediate versions kept only for undo. Saved tags, send history, and files shared with other posts are retained. Re-import from the source to download the originals and replace the compacted gallery. Plain `gc` can retry failed file removals.
+
+The CLI equivalents are `nujijushi gc --sent --older-than-days 30` to preview and `nujijushi gc --sent --older-than-days 30 --yes` to apply. Set the age to `0` to include recently confirmed sends.
 
 ### Watched sources and duplicate artwork
 

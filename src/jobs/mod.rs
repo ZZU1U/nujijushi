@@ -260,6 +260,7 @@ async fn store_post(
     submitted_by: Option<i64>,
     insert_only: bool,
 ) -> Result<StoredImport> {
+    let _storage = state.storage_read().await?;
     let mut media: Vec<NewMedia> = Vec::new();
     for file in &post.files {
         let (ingested, thumb) = ingest(state, &file.path).await?;
@@ -351,6 +352,7 @@ pub const KIND_PUBLISH_CHANNEL: &str = "publish_channel";
 pub const KIND_PUBLISH_ITEM: &str = "publish_item";
 pub const KIND_FLUSH_CHANNEL: &str = "flush_channel";
 pub const KIND_STORAGE_DRAIN: &str = "storage_drain";
+pub const KIND_STORAGE_CLEANUP: &str = "storage_cleanup";
 pub const KIND_WATCH_CHECK: &str = "watch_check";
 pub const KIND_TAG_SUGGESTIONS: &str = "suggest_tags";
 pub const KIND_MERGE_MEDIA: &str = "merge_media";
@@ -407,6 +409,17 @@ async fn flush_job_lock(state: &AppState, channel_id: i64) -> Result<Option<std:
 /// Queue a storage drain (uploads whatever mirrors are waiting).
 pub async fn create_drain_job(state: &AppState, limit: usize) -> Result<Option<i64>> {
     enqueue_unique(state, KIND_STORAGE_DRAIN, limit.to_string()).await
+}
+
+pub async fn create_cleanup_job(
+    state: &AppState,
+    confirmation: crate::storage::cleanup::Confirmation,
+) -> Result<Option<i64>> {
+    let payload = serde_json::to_string(&confirmation)?;
+    state
+        .db
+        .call(move |conn| job_db::enqueue_cleanup(conn, &payload))
+        .await
 }
 
 pub async fn create_watch_check_job(state: &AppState, watch_id: i64) -> Result<(i64, bool)> {
@@ -567,15 +580,16 @@ pub async fn run_job(state: &AppState, job: &job_db::Job) -> Result<JobReport> {
         KIND_PUBLISH_CHANNEL | KIND_PUBLISH_ITEM => "publishing",
         KIND_FLUSH_CHANNEL => "Flushing queue",
         KIND_STORAGE_DRAIN => "uploading mirrors",
+        KIND_STORAGE_CLEANUP => "checking cleanup preview",
         other => return Err(Error::invalid(format!("unknown job kind: {other}"))),
     };
     state
         .db
         .call({
             let id = job.id;
-            let gallery_edit = is_gallery_edit(&job.kind);
+            let guarded = is_gallery_edit(&job.kind) || job.kind == KIND_STORAGE_CLEANUP;
             move |conn| {
-                if gallery_edit {
+                if guarded {
                     job_db::label_running(conn, id, label)
                 } else {
                     job_db::set_state(conn, id, "running", Some(label))
@@ -644,6 +658,21 @@ async fn run_kind(state: &AppState, job: &job_db::Job) -> Result<JobReport> {
         KIND_TAG_SUGGESTIONS => tag_suggestions::run(state, payload_i64(job)?, job.id).await,
         KIND_MERGE_MEDIA => media_merge::run(state, job).await,
         KIND_COMPRESS_MEDIA => media_merge::compress(state, job).await,
+        KIND_STORAGE_CLEANUP => {
+            let confirmation: crate::storage::cleanup::Confirmation =
+                serde_json::from_str(job.payload.as_deref().unwrap_or_default())?;
+            let report = crate::storage::cleanup::run(
+                state,
+                confirmation.cutoff,
+                Some(confirmation.revision),
+                Some(job.id),
+            )
+            .await?;
+            Ok(JobReport::Done {
+                message: report.describe(),
+                post_id: None,
+            })
+        }
         KIND_PUBLISH_CHANNEL => {
             let channel_id = payload_i64(job)?;
             let channel = state

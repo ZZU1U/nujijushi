@@ -797,6 +797,36 @@ fn register(conn: &Connection, store: &BlobStore, rendition: Rendition<'_>) -> R
     Ok(output)
 }
 
+/// The active media already contains the final gallery. Rebase hidden keys
+/// onto it before dropping the retained edit history.
+pub(super) fn compact(conn: &Connection, post_id: i64) -> Result<()> {
+    let media = posts::media(conn, post_id)?;
+    let hidden = hidden_positions(conn, post_id, &media)?;
+    let items: Vec<_> = media.iter().map(NewMedia::from).collect();
+    let keys = source_keys(&items);
+    conn.execute(
+        "DELETE FROM media_hidden_sources WHERE post_id = ?1",
+        [post_id],
+    )?;
+    for position in hidden {
+        let (hash, occurrence) = keys[position];
+        conn.execute(
+            "INSERT INTO media_hidden_sources (post_id, blob_hash, occurrence) VALUES (?1, ?2, ?3)",
+            params![post_id, hash, occurrence],
+        )?;
+    }
+    conn.execute(
+        "DELETE FROM media_compressions WHERE post_id = ?1",
+        [post_id],
+    )?;
+    conn.execute("DELETE FROM media_merges WHERE post_id = ?1", [post_id])?;
+    conn.execute(
+        "DELETE FROM media_merge_sources WHERE post_id = ?1",
+        [post_id],
+    )?;
+    Ok(())
+}
+
 fn verify_running(conn: &Connection, job_id: i64) -> Result<()> {
     if jobs::get(conn, job_id)?.is_none_or(|job| job.state != "running") {
         return Err(Error::invalid(
@@ -1033,22 +1063,44 @@ fn save_compression(
 const ORPHAN_BLOBS: &str = "FROM blobs b
          WHERE NOT EXISTS (SELECT 1 FROM media m WHERE m.blob_hash = b.hash)
            AND NOT EXISTS (SELECT 1 FROM media m WHERE m.poster_hash = b.hash)
-           AND NOT EXISTS (SELECT 1 FROM media_merge_sources s WHERE s.blob_hash = b.hash)
-           AND NOT EXISTS (SELECT 1 FROM media_merge_sources s WHERE s.poster_hash = b.hash)
-           AND NOT EXISTS (SELECT 1 FROM media_merges m WHERE m.blob_hash = b.hash)
-           AND NOT EXISTS (SELECT 1 FROM media_compressions c WHERE c.blob_hash = b.hash)";
+           AND NOT EXISTS (SELECT 1 FROM media_merge_sources s WHERE s.blob_hash = b.hash
+               AND s.post_id NOT IN (SELECT value FROM json_each(?1)))
+           AND NOT EXISTS (SELECT 1 FROM media_merge_sources s WHERE s.poster_hash = b.hash
+               AND s.post_id NOT IN (SELECT value FROM json_each(?1)))
+           AND NOT EXISTS (SELECT 1 FROM media_merges m WHERE m.blob_hash = b.hash
+               AND m.post_id NOT IN (SELECT value FROM json_each(?1)))
+           AND NOT EXISTS (SELECT 1 FROM media_compressions c WHERE c.blob_hash = b.hash
+               AND c.post_id NOT IN (SELECT value FROM json_each(?1)))";
 
-pub fn orphan_blobs(conn: &Connection) -> Result<Vec<(String, String, i64)>> {
-    let mut statement = conn.prepare(&format!("SELECT b.hash, b.ext, b.bytes {ORPHAN_BLOBS}"))?;
+pub(crate) fn projected_orphan_blobs(
+    conn: &Connection,
+    compacted: &[i64],
+) -> Result<Vec<(String, String)>> {
+    let mut statement = conn.prepare(&format!(
+        "SELECT b.hash, b.ext {ORPHAN_BLOBS} ORDER BY b.hash"
+    ))?;
+    let ids = serde_json::to_string(compacted)?;
     Ok(statement
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .query_map([ids], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?)
 }
 
 pub fn orphan_blob_totals(conn: &Connection) -> Result<(i64, i64)> {
     Ok(conn.query_row(
         &format!("SELECT COUNT(*), COALESCE(SUM(b.bytes), 0) {ORPHAN_BLOBS}"),
-        [],
+        ["[]"],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?)
+}
+
+pub(crate) fn known_blob_hashes(conn: &Connection) -> Result<HashSet<String>> {
+    let mut stmt = conn.prepare("SELECT hash FROM blobs")?;
+    Ok(stmt
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+pub(crate) fn forget_blob(conn: &Connection, hash: &str) -> Result<()> {
+    conn.execute("DELETE FROM blobs WHERE hash = ?1", [hash])?;
+    Ok(())
 }

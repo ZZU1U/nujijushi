@@ -88,6 +88,7 @@ pub(super) struct PostDeletePage {
 pub(super) struct SettingsPage {
     pub channels: Vec<ChannelChoice>,
     pub default_channel: Option<i64>,
+    pub cleanup_job: Option<JobView>,
 }
 
 #[derive(Serialize)]

@@ -209,6 +209,7 @@ actual WebP bytes. The post gallery loads full-resolution still images from
 POST /api/v1/publish                     → publish a channel or queue item
 POST /api/v1/channels/{id}/flush         → publish the channel's queued posts in succession
 POST /api/v1/storage/drain               → upload pending mirrors
+POST /api/v1/storage/cleanup             → apply a confirmed cleanup preview
 POST /api/v1/import                      → import one job per target
 POST /api/v1/jobs/retry                  → retry a failed import in a new job
 POST /api/v1/watches/{id}/check          → check a watched source
@@ -248,6 +249,10 @@ ID cursor. The card badge identifies Telegram submissions from guests.
   hidden items and active derivatives for publishing, mirrors, and share exports.
   The archive retains source blobs for undo and full backups. Re-imports preserve
   matching edits and report gallery resets when source files change.
+* Batch compression uses the existing gallery-edit job kind and stages each JPEG
+  before committing the gallery in one transaction. Storage cleanup keeps the
+  active gallery, drops undo and unsaved tag-suggestion records for eligible sent
+  posts, and rechecks blob references before unlinking files.
 
 The webhook endpoint is separate from the UI: `POST /tg/webhook` checks
 `X-Telegram-Bot-Api-Secret-Token` in constant time, builds a `bot::Bot` and hands the body to

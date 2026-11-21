@@ -5,6 +5,7 @@
 //! relative path plus a `post.json` sidecar, so the export stays portable
 //! whichever sink you pick.
 
+pub mod cleanup;
 pub mod local;
 pub mod telegram;
 pub mod webdav;
@@ -107,6 +108,7 @@ pub fn plan(state: &AppState, post: &Post) -> Result<MirrorPost> {
 
 /// Copy the outgoing gallery into a newly created directory using the mirror layout.
 pub async fn share(state: &AppState, dir: &std::path::Path) -> Result<(usize, usize)> {
+    let _storage = state.storage_read().await?;
     std::fs::create_dir(dir)?;
     let ids = state.db.call(|conn| crate::db::posts::ids(conn)).await?;
     let mut written = 0;
@@ -207,6 +209,7 @@ pub async fn drain(state: &AppState, limit: i64) -> Result<usize> {
     if sinks.is_empty() {
         return Ok(0);
     }
+    let _storage = state.storage_read().await?;
     let batch = state
         .db
         .call(move |conn| mirror_db::pending(conn, None, limit))

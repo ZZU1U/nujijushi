@@ -595,6 +595,7 @@ async fn execute_plan(
     if dry_run {
         return Ok(PublishOutcome::DryRun(Box::new(plan)));
     }
+    let _storage = state.storage_read().await?;
     let channel = &plan.channel;
     let queue_id = plan.queue_id;
     let post_id = plan.post.id;

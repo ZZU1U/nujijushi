@@ -95,6 +95,7 @@ pub fn router(ws: Arc<WebState>) -> Router {
         .route("/queue/action", post(queue_action))
         .route("/publish", post(publish_action))
         .route("/storage/drain", post(storage_drain))
+        .route("/storage/cleanup", get(cleanup_preview).post(cleanup_apply))
         .route("/jobs", get(jobs_page))
         .route("/jobs/retry", post(jobs_retry))
         .route("/import", get(import_page).post(import_submit))
@@ -745,10 +746,64 @@ async fn posts_more(
 
 async fn settings_page(State(ws): State<Arc<WebState>>) -> WebResult<Json<SettingsPage>> {
     let (channels, default_channel) = queue_channels(&ws.app).await?;
+    let cleanup_job = ws
+        .app
+        .db
+        .call(|conn| job_db::latest_kind(conn, crate::jobs::KIND_STORAGE_CLEANUP))
+        .await?;
     Ok(Json(SettingsPage {
         channels: channels.iter().map(ChannelChoice::from).collect(),
         default_channel,
+        cleanup_job: cleanup_job
+            .as_ref()
+            .map(|job| job_view(job, chrono::Utc::now())),
     }))
+}
+
+#[derive(serde::Deserialize)]
+struct CleanupQuery {
+    older_than_days: Option<u32>,
+}
+
+async fn cleanup_preview(
+    State(ws): State<Arc<WebState>>,
+    Query(query): Query<CleanupQuery>,
+) -> WebResult<Json<crate::storage::cleanup::Preview>> {
+    let days = query
+        .older_than_days
+        .unwrap_or(crate::storage::cleanup::DEFAULT_AGE_DAYS);
+    Ok(Json(crate::storage::cleanup::preview(&ws.app, days).await?))
+}
+
+#[derive(serde::Deserialize)]
+struct CleanupForm {
+    csrf: String,
+    #[serde(flatten)]
+    confirmation: crate::storage::cleanup::Confirmation,
+}
+
+async fn cleanup_apply(
+    State(ws): State<Arc<WebState>>,
+    Form(form): Form<CleanupForm>,
+) -> WebResult<Response> {
+    check_csrf(&ws, &form.csrf)?;
+    if form.confirmation.cutoff > chrono::Utc::now()
+        || form.confirmation.revision.len() != 64
+        || !form
+            .confirmation
+            .revision
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(Error::invalid("Preview cleanup before applying it").into());
+    }
+    let job = crate::jobs::create_cleanup_job(&ws.app, form.confirmation).await?;
+    let message = if job.is_some() {
+        "Storage cleanup queued"
+    } else {
+        "Storage cleanup is already queued or running"
+    };
+    Ok(accepted("/settings", message, job.into_iter().collect()))
 }
 
 async fn settings_save(
@@ -2040,6 +2095,7 @@ fn kind_label(kind: &str) -> &str {
         crate::jobs::KIND_PUBLISH_ITEM => "publish item",
         crate::jobs::KIND_FLUSH_CHANNEL => "flush queue",
         crate::jobs::KIND_STORAGE_DRAIN => "storage upload",
+        crate::jobs::KIND_STORAGE_CLEANUP => "storage cleanup",
         crate::jobs::KIND_WATCH_CHECK => "watch check",
         crate::jobs::KIND_TAG_SUGGESTIONS => "suggest tags",
         crate::jobs::KIND_MERGE_MEDIA => "merge images",

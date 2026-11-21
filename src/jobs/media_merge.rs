@@ -11,6 +11,7 @@ use crate::state::AppState;
 use super::JobReport;
 
 pub(super) async fn run(state: &AppState, job: &Job) -> Result<JobReport> {
+    let _storage = state.storage_read().await?;
     let post_id = job
         .post_id
         .ok_or_else(|| Error::invalid("Missing merge post ID"))?;
@@ -95,6 +96,7 @@ pub(super) async fn compress(state: &AppState, job: &Job) -> Result<JobReport> {
     if selection == "all" {
         return compress_all(state, job.id, post_id, version, settings).await;
     }
+    let _storage = state.storage_read().await?;
     let media_id = selection.parse().map_err(|_| invalid())?;
     let input = state
         .db
@@ -154,6 +156,7 @@ async fn compress_all(
     version: String,
     settings: Compression,
 ) -> Result<JobReport> {
+    let storage = state.storage_read().await?;
     let input_version = version.clone();
     let inputs = state
         .db
@@ -167,6 +170,7 @@ async fn compress_all(
         .staging_dir()
         .join(format!("compress-{}", uuid::Uuid::new_v4()));
     let message = tokio::task::spawn_blocking(move || {
+        let _storage = storage;
         std::fs::create_dir(&dir)?;
         let staged = StagedRenditions(dir);
         let total = inputs.len() as i64;
