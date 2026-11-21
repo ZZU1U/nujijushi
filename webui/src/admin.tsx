@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   action, api, expired, friendly, type DashboardPage, type DuplicatesPage, type ImportPage, type Job,
@@ -6,6 +6,7 @@ import {
   type PreviewPage, type QueuePage, type QueueStatus, type Session, type SettingsPage, type UsersPage, type WatchesPage
 } from './api'
 import { Actions, ActionForm, useActions } from './ui'
+import { Resource } from './resource'
 import { Channels } from './screens/channels'
 import { ChannelEdit } from './screens/channel_edit'
 import { Dashboard } from './screens/dashboard'
@@ -69,57 +70,6 @@ function Login({ onLogin }: { onLogin: (session: Session, path: string) => void 
       {error && <p className="action-error" role="alert">{error}</p>}
     </form>
   </main>
-}
-
-interface ResourceProps<T> {
-  path: string
-  children: (data: T) => ReactNode
-  initialJobs?: (data: T) => (Job | null)[]
-}
-
-function Resource<T>({ path, children, initialJobs }: ResourceProps<T>) {
-  const parent = useActions()
-  const [loaded, setLoaded] = useState<{ path: string; data: T }>()
-  const [error, setError] = useState('')
-  const [pending, setPending] = useState(true)
-  const [revision, change] = useState(0)
-  const refresh = useCallback(() => change((revision) => revision + 1), [])
-  const expireRef = useRef(parent.expire)
-  expireRef.current = parent.expire
-
-  useEffect(() => {
-    const controller = new AbortController()
-    setPending(true)
-    setError('')
-    api<T>(path, { signal: controller.signal }).then((data) => {
-      if (!controller.signal.aborted) setLoaded({ path, data })
-    }).catch((error) => {
-      if (controller.signal.aborted) return
-      if (expired(error)) expireRef.current()
-      else setError(friendly(error))
-    }).finally(() => { if (!controller.signal.aborted) setPending(false) })
-    return () => controller.abort()
-  }, [path, revision])
-
-  useEffect(() => {
-    if (loaded?.path !== path) return
-    for (const job of initialJobs?.(loaded.data) ?? []) {
-      if (job?.active) void parent.follow(job.id).then((result) => { if (result) refresh() })
-    }
-    // Job completion causes a fresh snapshot. The workspace deduplicates polling and notices.
-  }, [loaded, path])
-
-  return <Actions.Provider value={{ ...parent, refresh }}>
-    {pending && <div className="navigation-progress" role="status" aria-label="Loading page" />}
-    {error && <div className="admin-notice action-error" role="alert">{error} <button className="small ghost" onClick={refresh}>Retry</button></div>}
-    {loaded ? <>{children(loaded.data)}<RestoreScroll ready={loaded.path === path} /></> : pending ? <p className="hint">Loading…</p> : null}
-  </Actions.Provider>
-}
-
-function RestoreScroll({ ready }: { ready: boolean }) {
-  const { onReady, path } = useActions()
-  useLayoutEffect(() => { if (ready) onReady?.() }, [ready, path, onReady])
-  return null
 }
 
 function LiveQueue({ data }: { data: QueuePage }) {
