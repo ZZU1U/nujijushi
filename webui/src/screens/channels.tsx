@@ -1,40 +1,43 @@
 import { Fragment } from 'react'
 import { ActionForm, TextField, SelectField, Timezones, text, capitalize, listKey } from '../ui'
-import type { ChannelsPage } from '../api'
+import type { ChannelsPage, ChannelSummaryRow } from '../api'
+import { Badge } from '../components/Badge'
+import { ChannelLinks } from '../components/ChannelLinks'
+import { DataTable, type Column } from '../components/DataTable'
+
+const columns: Column<ChannelSummaryRow>[] = [
+  {
+    label: 'alias',
+    cell: (channel) => <><code>{channel.alias}</code>{channel.discovered && <> <Badge>discovered</Badge></>}</>,
+  },
+  {
+    label: 'channel',
+    cell: (channel) => <>
+      <a href={text('/channels/', channel.id, '/edit')}>{channel.title}</a>
+      <div className="hint">{channel.tg_id}</div>
+      {channel.paused && <Badge tone="red">paused</Badge>}
+      {!channel.enabled && <Badge>disabled</Badge>}
+    </>,
+  },
+  { label: 'queue', cell: (channel) => channel.queued },
+  { label: 'every', cell: (channel) => channel.interval + 'm' },
+  { label: 'window', className: 'hint', cell: (channel) => channel.active },
+  { label: 'nsfw', cell: (channel) => <Badge>{channel.nsfw_policy}</Badge> },
+  { label: 'tags', className: 'hint', cell: (channel) => text(channel.tag_style, ' · ', channel.attribution) },
+  { label: 'next', className: 'hint', cell: (channel) => channel.next },
+  {
+    label: 'actions', hideLabel: true, className: 'actions',
+    cell: (channel) => <ChannelLinks channelId={channel.id} />,
+  },
+]
 
 export function Channels({ data }: { data: ChannelsPage }) {
   const { channels, timezones, templates } = data
   return <>
     <section className="panel">
       <h2>channels</h2>
-      {channels.length > 0 ? <>
-        <div className="responsive-table" tabIndex={0}><table>
-          <thead><tr><th>alias</th><th>channel</th><th>queue</th><th>every</th><th>window</th><th>nsfw</th><th>tags</th><th>next</th><th></th></tr></thead>
-          <tbody>
-            {channels.map((c, index) => <Fragment key={listKey(c, index)}>
-              <tr>
-                <td><code>{c.alias}</code>{c.discovered ? <>{" "}<span className="badge">discovered</span></> : null}</td>
-                <td>
-                  <a href={text("/channels/", c.id, "/edit")}>{c.title}</a>
-                  <div className="hint">{c.tg_id}</div>
-                  {c.paused ? <><span className="badge red">paused</span></> : null}
-                  {!(c.enabled) ? <><span className="badge">disabled</span></> : null}
-                </td>
-                <td>{c.queued}</td>
-                <td>{c.interval}m</td>
-                <td className="hint">{c.active}</td>
-                <td><span className="badge">{c.nsfw_policy}</span></td>
-                <td className="hint">{c.tag_style} · {c.attribution}</td>
-                <td className="hint">{c.next}</td>
-                <td className="actions">
-                  <a className="button small" href={text("/channels/", c.id, "/queue")}>queue</a>
-                  <a className="button small ghost" href={text("/channels/", c.id, "/preview")}>preview</a>
-                </td>
-              </tr>
-            </Fragment>)}
-          </tbody>
-        </table></div>
-      </> : <><p className="hint">None yet — add one below.</p></>}
+      <DataTable label="Channels" rows={channels} columns={columns} rowKey={(channel) => channel.id}
+        empty={<p className="hint">None yet — add one below.</p>} />
     </section>
 
     <section className="panel" id="add-channel">
@@ -52,8 +55,8 @@ export function Channels({ data }: { data: ChannelsPage }) {
         <label>active to<TextField name="active_to" defaultValue="23:00" /></label>
         <label>timezone<TextField name="tz" list="tz-zones" defaultValue="Europe/Berlin" placeholder="Europe/Berlin" autoComplete="off" spellCheck="false" /></label>
         <label>nsfw policy
-          <SelectField name="nsfw_policy">
-            <option value="spoil" selected>spoil (blur + #nsfw)</option>
+          <SelectField name="nsfw_policy" defaultValue="spoil">
+            <option value="spoil">spoil (blur + #nsfw)</option>
             <option value="allow">allow</option>
             <option value="reject">reject</option>
           </SelectField>

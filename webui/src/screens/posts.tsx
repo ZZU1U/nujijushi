@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { api, expired, friendly, type Card, type CardsPage, type PostsPage } from '../api'
 import { Actions, ActionForm, useActions } from '../ui'
+import { Badge } from '../components/Badge'
+import { ChannelSelect } from '../components/ChannelSelect'
 
 export interface GridSnapshot {
   page: PostsPage
@@ -30,16 +32,16 @@ function PostCard({ card, setup, selected, select }: {
     <div className="thumb">
       {card.thumb ? <img loading="lazy" src={'/thumb/' + card.thumb} alt="" /> : <span className="noimg">no media</span>}
       {card.media_count > 1 && <span className="count">{card.media_count}</span>}
-      {card.nsfw && <span className="badge red corner">nsfw</span>}
+      {card.nsfw && <Badge tone="red" className="corner">nsfw</Badge>}
     </div>
     <div className="meta">
       <div className="row">
         <a className="post-link" href={'/posts/' + card.id} aria-label={'Open post #' + card.id}>#{card.id}</a>
-        <span className={'badge state-' + card.state}>{card.state}</span>
-        {card.queue_badges.map((badge) => <span key={badge.channel + badge.class} className={'badge ' + (badge.class === 'sent' ? 'green' : badge.class === 'unknown' ? 'amber' : '')}>
+        <Badge className={'state-' + card.state}>{card.state}</Badge>
+        {card.queue_badges.map((badge) => <Badge key={badge.channel + badge.class} tone={badge.class === 'sent' ? 'green' : badge.class === 'unknown' ? 'amber' : undefined}>
           {badge.label} · {badge.channel}
-        </span>)}
-        <span className="badge">{card.rating}</span>
+        </Badge>)}
+        <Badge>{card.rating}</Badge>
         {card.submitter_guest && <span className="badge amber" title={'submitted through Telegram by ' + card.submitter + ', who is not an admin'}>via {card.submitter}</span>}
       </div>
       <div className="hint">{card.artist}</div>
@@ -274,10 +276,8 @@ export function Posts({ path, snapshots }: { path: string; snapshots: Map<string
           <button name="action" value="nsfw_no" className="small ghost">mark sfw</button>
           <button name="action" value="nsfw_auto" className="small ghost">nsfw auto</button>
         </>}
-        <select aria-label="Destination channel" value={grid.channel} onChange={(event) => updateGrid({ ...grid, channel: event.target.value })}>
-          <option value="">choose channel…</option>
-          {data.channels.map((channel) => <option key={channel.id} value={channel.id}>{channel.title}</option>)}
-        </select>
+        <ChannelSelect channels={data.channels} aria-label="Destination channel" emptyLabel="choose channel…"
+          value={grid.channel} onChange={(event) => updateGrid({ ...grid, channel: event.target.value })} />
         <button name="action" value="queue" className="small">{setup ? 'Hold for preview' : 'queue'}</button>
         {!setup && <button name="action" value="delete" className="small danger" data-confirm="Delete the selected posts and their media links?">delete</button>}
       </div>

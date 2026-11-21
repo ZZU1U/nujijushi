@@ -1,5 +1,6 @@
 import { createContext, createElement, memo, useContext, useLayoutEffect, useRef, useState, type ComponentProps, type FormEvent, type FormHTMLAttributes, type ReactNode } from 'react'
 import { action, expired, friendly, type ActionFields, type ActionResult, type Job } from './api'
+import { Badge } from './components/Badge'
 
 export interface PageActions {
   csrf: string
@@ -91,8 +92,8 @@ export function useJob(initial: Job): Job {
 }
 
 export function JobState({ state }: Pick<Job, 'state'>) {
-  const color = state === 'failed' ? 'red' : state === 'done' ? 'green' : ''
-  return <span className={'badge ' + color} data-role="state">{state}</span>
+  const tone = state === 'failed' ? 'red' : state === 'done' ? 'green' : undefined
+  return <Badge tone={tone} data-role="state">{state}</Badge>
 }
 
 export function JobBar({ job }: { job: Job }) {

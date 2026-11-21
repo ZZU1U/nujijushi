@@ -1,11 +1,11 @@
-import { Fragment, useState } from 'react'
-import { ActionForm, TextField, TextArea, JobBar, JobState, useActions, text, listKey } from '../ui'
+import { useState } from 'react'
+import { ActionForm, TextArea } from '../ui'
+import { JobTable, useLiveJobs } from '../components/JobTable'
 import type { ImportPage } from '../api'
 
 export function Import({ data }: { data: ImportPage }) {
-  const { jobs: initialJobs, parallel, waiting, cookies } = data
-  const { jobs: updates } = useActions()
-  const jobs = initialJobs.map((job) => updates.get(job.id) ?? job)
+  const { parallel, waiting, cookies } = data
+  const jobs = useLiveJobs(data.jobs)
   const [targets, setTargets] = useState('')
   return <>
     <section className="panel">
@@ -35,35 +35,8 @@ export function Import({ data }: { data: ImportPage }) {
 
     <section className="panel">
       <h2>jobs <a className="hint" href="/jobs">all jobs →</a></h2>
-      {jobs.length > 0 ? <>
-        <div className="responsive-table" tabIndex={0}><table className="compact">
-          <thead><tr><th>#</th><th>state</th><th>target</th><th>progress</th><th>result</th><th>started</th></tr></thead>
-          <tbody>
-            {jobs.map((j, index) => <Fragment key={listKey(j, index)}>
-              <tr data-job={j.id} data-state={j.state}>
-                <td>{j.id}</td>
-                <td><JobState state={j.state} /></td>
-                <td className="hint">{j.payload}</td>
-                <td className="progress-cell">
-                  <JobBar job={j} />
-                </td>
-                <td className="hint"><span data-role="message">{j.message}</span>
-                  {j.post_id ? <><a href={text("/posts/", j.post_id)}>Open post</a></> : null}
-                  {j.retryable ? <><ActionForm action="/jobs/retry">
-                    <TextField type="hidden" name="id" value={j.id} />
-                    <TextField type="hidden" name="back" value="/import" />
-                    <button type="submit" className="small">Retry import</button>
-                  </ActionForm></> : null}
-                </td>
-                <td className="hint">{j.created}</td>
-              </tr>
-            </Fragment>)}
-          </tbody>
-        </table></div>
-        <p className="hint" data-live-hint="">this list updates itself while something is running</p>
-      </> : <>
-        <p className="hint">No jobs yet.</p>
-      </>}
+      <JobTable jobs={jobs} layout="imports" empty={<p className="hint">No jobs yet.</p>} />
+      {jobs.length > 0 && <p className="hint" data-live-hint="">this list updates itself while something is running</p>}
     </section>
   </>
 }

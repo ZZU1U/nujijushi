@@ -82,7 +82,6 @@ th { text-align: left; color: var(--muted); font-weight: 500; font-size: .78rem;
 td { padding: .5rem; border-bottom: 1px solid #1c2229; vertical-align: top; }
 tr:last-child td { border-bottom: 0; }
 table.compact td { padding: .3rem .5rem; font-size: .9rem; }
-.job-table-scroll { overflow-x: auto; }
 .job-table { min-width: 40rem; }
 .job-table .badge, .dashboard-jobs .badge { white-space: nowrap; }
 .job-table .job-target, .job-table .job-result { overflow-wrap: anywhere; width: 32%; }
@@ -254,7 +253,6 @@ pre.caption {
    A page served with JS off keeps exactly the look it had before this block. */
 
 :root {
-  --top-h: 3.5rem;                   /* sticky app bar, shared with .bulkbar */
   --ease-out: cubic-bezier(.2, .8, .3, 1);
   --ease-spring: cubic-bezier(.34, 1.32, .64, 1);
 }
@@ -285,16 +283,6 @@ button, .button, .top nav a {
     transform 90ms var(--ease-out);
 }
 button:active, .button:active { transform: translateY(1px); }
-
-/* long tables keep their column labels in view while scrolling */
-table thead th {
-  position: sticky;
-  top: var(--top-h);
-  z-index: 1;
-  background: var(--panel);
-  box-shadow: inset 0 -1px 0 var(--line);
-}
-.panel.inset table thead th { background: var(--panel-2); }
 
 /* a POST form is in flight: thin progress bar on top, buttons read as locked */
 form[aria-busy="true"] { position: relative; }

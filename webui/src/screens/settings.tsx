@@ -1,5 +1,5 @@
-import { Fragment } from 'react'
-import { ActionForm, SelectField, listKey } from '../ui'
+import { ActionForm } from '../ui'
+import { ChannelSelect } from '../components/ChannelSelect'
 import type { SettingsPage } from '../api'
 
 export function Settings({ data }: { data: SettingsPage }) {
@@ -9,12 +9,7 @@ export function Settings({ data }: { data: SettingsPage }) {
       <h2>Settings</h2>
       <ActionForm action="/settings">
         <label>Default queue channel
-          <SelectField defaultValue={default_channel ?? undefined} name="channel">
-            <option value="">No default</option>
-            {channels.map((channel, index) => <Fragment key={listKey(channel, index)}>
-              <option value={channel.id}>{channel.title}</option>
-            </Fragment>)}
-          </SelectField>
+          <ChannelSelect channels={channels} defaultValue={default_channel ?? ''} name="channel" emptyLabel="No default" />
         </label>
         <button type="submit">Save settings</button>
       </ActionForm>

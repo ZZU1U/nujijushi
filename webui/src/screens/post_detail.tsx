@@ -1,5 +1,7 @@
 import { Fragment, useState } from 'react'
 import { ActionForm, TextField, SelectField, TextArea, JobProgress, CaptionPreview, CompressionOptions, text, listKey, externalUrl } from '../ui'
+import { Badge } from '../components/Badge'
+import { ChannelSelect } from '../components/ChannelSelect'
 import type { Post, PostDetailPage, TagSuggestions } from '../api'
 
 export function PostDetail({ data }: { data: PostDetailPage }) {
@@ -10,7 +12,7 @@ export function PostDetail({ data }: { data: PostDetailPage }) {
         <a href="/posts" className="hint" data-return-to-posts="">← Posts</a>
         <h1>{(post.title || text("Post #", post.id))}</h1>
         <div className="hint">#{post.id} · {post.source} / {post.source_id}
-          <span className={text("badge state-", post.state)}>{post.state}</span>
+          <Badge className={'state-' + post.state}>{post.state}</Badge>
         </div>
       </div>
       <a className="button small ghost post-delete-link" href={text("/posts/", post.id, "/delete")}>Delete post…</a>
@@ -24,10 +26,9 @@ export function PostDetail({ data }: { data: PostDetailPage }) {
           <section className="panel">
             <h2>Add to queue</h2>
             <ActionForm action={text("/posts/", post.id, "/queue")} className="post-buttons">
-              <label>Destination <SelectField defaultValue={default_channel ?? undefined} name="channel" aria-label="Destination" required>
-                <option value="">Choose a channel</option>
-                {channels.map((c, index) => <Fragment key={listKey(c, index)}><option value={c.id}>{c.title}</option></Fragment>)}
-              </SelectField></label>
+              <label>Destination
+                <ChannelSelect channels={channels} defaultValue={default_channel ?? ''} name="channel" aria-label="Destination" required />
+              </label>
               <button type="submit" className="small" {...(!(outgoing_count) ? { "disabled": true } : {})}>Add to queue</button>
             </ActionForm>
           </section>
@@ -194,7 +195,7 @@ function Gallery({ data }: { data: PostDetailPage }) {
             <dt>artist</dt><dd>{post.artist_url ? <><a href={externalUrl(post.artist_url)} target="_blank">{post.artist}</a></> : <>{post.artist}</>}</dd>
           </> : null}
           {post.url ? <><dt>source</dt><dd><a href={externalUrl(post.url)} target="_blank">Open original post</a></dd></> : null}
-          <dt>rating</dt><dd>{post.rating}{" "}{post.nsfw ? <><span className="badge red">nsfw</span></> : <><span className="badge green">sfw</span></>}{" "}<span className="hint">override: {post.nsfw_override}</span></dd>
+          <dt>rating</dt><dd>{post.rating}{" "}{post.nsfw ? <><Badge tone="red">nsfw</Badge></> : <><Badge tone="green">sfw</Badge></>}{" "}<span className="hint">override: {post.nsfw_override}</span></dd>
           <dt>imported</dt><dd className="hint">{post.imported}{submitter ? <> · via telegram {submitter.label}{!(submitter.admin) ? <>{" "}<span className="badge amber">not an admin</span></> : null}</> : null}</dd>
           {post.description ? <><dt>description</dt><dd className="prose">{post.description}</dd></> : null}
         </dl>

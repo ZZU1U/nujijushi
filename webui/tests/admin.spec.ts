@@ -260,17 +260,12 @@ test('queue reflects publishes from both tabs and scheduler delivery without rel
   await other.goto(base + '/channels/1/queue')
   const elsewhere = queueRow(other, 21)
   const otherId = await elsewhere.getAttribute('data-queue')
-  const publish = elsewhere.locator('form[action="/api/v1/publish"]')
+  other.once('dialog', (dialog) => void dialog.accept())
+  const queuedElsewhere = other.waitForResponse((response) =>
+    response.url().endsWith('/api/v1/publish') && response.request().method() === 'POST')
+  await elsewhere.getByRole('button', { name: 'publish', exact: true }).click()
+  expect((await queuedElsewhere).status()).toBe(202)
   await page.bringToFront()
-  const accepted = await publish.evaluate(async (form: HTMLFormElement) => {
-    const body = new URLSearchParams()
-    new FormData(form).forEach((value, name) => body.set(name, String(value)))
-    const session = await fetch('/api/v1/session').then((response) => response.json())
-    body.set('csrf', session.csrf)
-    const response = await fetch('/api/v1/publish', { method: 'POST', body })
-    return response.status
-  })
-  expect(accepted).toBe(202)
   await expect(publishJob(otherId)).toContainText('Failed', { timeout: 12_000 })
   await other.close()
 
@@ -394,4 +389,50 @@ test('Posts applies card tags and archive queue defaults with overrides', async 
   await page.getByRole('button', { name: 'Delete post', exact: true }).click()
   await expect(page).toHaveURL(/search=Different\+heights.*source=local/)
   await expect(page.locator('[data-post-card]')).toHaveCount(0)
+})
+
+test('table headers align with their rows and stick to the table scrollport', async ({ page }) => {
+  const jobs = Array.from({ length: 40 }, (_, index) => ({
+    id: index + 1, kind: 'import', kind_label: 'import', state: 'done', payload: '/archive/artwork',
+    message: 'Imported', progress: 1, total: 1, percent: 100, age: '1m', created: '2026-01-01',
+    post_id: null, active: false, retryable: false, track: false,
+  }))
+  const jobPage = { jobs, parallel: 2, waiting: 0 }
+  await page.route('**/api/v1/jobs', (route) => route.fulfill({ json: jobPage }))
+  await page.route('**/api/v1/import', (route) => route.fulfill({ json: { ...jobPage, cookies: '/archive/cookies' } }))
+  await page.setViewportSize({ width: 390, height: 740 })
+  await signIn(page, '/jobs')
+
+  const table = page.getByRole('table', { name: 'Job history' })
+  const scrollport = page.getByRole('region', { name: 'Job history' })
+  const header = table.getByRole('columnheader', { name: '#', exact: true })
+  await expect(header).toBeVisible()
+  await expect.poll(() => header.evaluate((cell) => {
+    const row = cell.closest('tr')!
+    return Math.abs(cell.getBoundingClientRect().top - row.getBoundingClientRect().top)
+  })).toBeLessThan(1)
+
+  await scrollport.evaluate((element) => element.scrollTo(80, 240))
+  await expect.poll(() => scrollport.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+  await expect.poll(() => scrollport.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0)
+  const alignment = await header.evaluate((cell) => {
+    const table = cell.closest('table')!
+    const viewport = table.parentElement!.getBoundingClientRect()
+    const firstDataCell = table.tBodies[0].rows[0].cells[0].getBoundingClientRect()
+    const label = cell.getBoundingClientRect()
+    return { top: Math.abs(label.top - viewport.top), left: Math.abs(label.left - firstDataCell.left) }
+  })
+  expect(alignment.top).toBeLessThan(1)
+  expect(alignment.left).toBeLessThan(1)
+
+  await page.setViewportSize({ width: 1440, height: 740 })
+  await page.getByRole('link', { name: 'import', exact: true }).click()
+  const imports = page.getByRole('region', { name: 'Import jobs' })
+  const importHeader = imports.getByRole('columnheader', { name: 'state', exact: true })
+  await expect(importHeader).toBeVisible()
+  await imports.evaluate((element) => element.scrollTo(0, 240))
+  await expect.poll(() => imports.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+  await expect.poll(() => importHeader.evaluate((cell) =>
+    Math.abs(cell.getBoundingClientRect().top - cell.closest('[role=region]')!.getBoundingClientRect().top),
+  )).toBeLessThan(1)
 })
