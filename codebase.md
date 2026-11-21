@@ -199,9 +199,11 @@ The React app loads its CSRF token from `GET /api/v1/session` using the HttpOnly
 session cookie. Sign-in uses a short-lived cookie-bound challenge. Protected API
 requests with an expired session return 401. Admin writes are URL-encoded,
 validate CSRF and return an action message, optional location and any new job IDs.
-Media and thumbnails are served from the authenticated blob routes. Browsers
-can reuse thumbnails for a day in their private cache, keyed by URL and session
-cookie. On revalidation, the ETag identifies the actual WebP bytes.
+Media and thumbnails are served from the authenticated blob routes. The post grid
+uses `/thumb/{hash}`. Browsers can reuse thumbnails for a day in their private
+cache, keyed by URL and session cookie. On revalidation, the ETag identifies the
+actual WebP bytes. The post gallery loads full-resolution still images from
+`/media/{hash}` and uses thumbnails for video posters.
 
 ```
 POST /api/v1/publish                     → publish a channel or queue item
@@ -331,4 +333,4 @@ decides from the Bot API message, `is_retryable` drives the retry policy.
 | `tests/webhook.rs` | Telegram webhook authentication and update delivery |
 | `tests/storage.rs` | sinks vs. a real WebDAV server, proxy routing, backfill, failures |
 | `tests/captions.rs` + `tests/snapshots/` | the exact caption text per channel configuration |
-| `webui/tests/admin.spec.ts` | React workflows, queue updates, gallery edits and thumbnail reuse, and responsive layout |
+| `webui/tests/admin.spec.ts` | React workflows, queue updates, gallery edits, full-resolution images and cached grid thumbnails, and responsive layout |

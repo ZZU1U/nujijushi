@@ -14,14 +14,14 @@ let server: ChildProcess
 let base: string
 let cli: (...args: string[]) => Buffer
 
-function png(height: number, color: number) {
-  const width = 16
+function png(height: number, color: number, width = 16) {
   const header = Buffer.alloc(13)
   header.writeUInt32BE(width, 0)
   header.writeUInt32BE(height, 4)
   header.set([8, 2], 8)
-  const rows = Buffer.alloc(height * (1 + width * 3))
-  for (let y = 0; y < height; y++) rows.fill(color, y * 49 + 1, (y + 1) * 49)
+  const stride = 1 + width * 3
+  const rows = Buffer.alloc(height * stride)
+  for (let y = 0; y < height; y++) rows.fill(color, y * stride + 1, (y + 1) * stride)
   function chunk(name: string, data: Buffer) {
     const value = Buffer.concat([Buffer.alloc(4), Buffer.from(name), data, Buffer.alloc(4)])
     value.writeUInt32BE(data.length)
@@ -117,33 +117,6 @@ test('queue on page 3 and return from a post in the same browser document', asyn
   await expect(page.locator('#bulk')).toHaveAttribute('data-grid-page', '3')
   await expect.poll(() => page.evaluate(() => scrollY)).toBe(savedScroll)
   expect(documents()).toBe(1)
-})
-
-test('the gallery reuses the archive thumbnail from the browser cache', async ({ page }) => {
-  await signIn(page, '/posts?search=Different+heights')
-  const card = page.locator('[data-post-card="2"]')
-  const thumbnail = card.locator('img')
-  await thumbnail.scrollIntoViewIfNeeded()
-  await expect.poll(() => thumbnail.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0)
-  const src = (await thumbnail.getAttribute('src'))!
-
-  await card.getByRole('link', { name: 'Open post #2' }).click()
-  const firstImage = page.locator('.media-grid figure').first()
-  await expect(firstImage.locator('img')).toHaveAttribute('src', src)
-  await expect(firstImage.getByRole('link')).toHaveAttribute('href', new RegExp('^/media/'))
-  await expect.poll(() => page.evaluate(async (path) => {
-    const cached = await fetch(path, { cache: 'only-if-cached', mode: 'same-origin' })
-    return cached.status
-  }, src)).toBe(200)
-})
-
-test('the gallery opens the original when a thumbnail is missing', async ({ page }) => {
-  await page.route('**/thumb/*', (route) => route.fulfill({ status: 404 }))
-  await signIn(page, '/posts/2')
-  const image = page.locator('.media-grid figure img').first()
-  await image.scrollIntoViewIfNeeded()
-  await expect(image).toHaveAttribute('src', new RegExp('^/media/'))
-  await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBeGreaterThan(0)
 })
 
 test('a failed merge keeps selection and its error beside the controls', async ({ page }) => {
@@ -512,4 +485,32 @@ test('flushing a channel queue asks for confirmation and shows the job result', 
   await expect(job).toContainText('Failed', { timeout: 12_000 })
   await expect(job).toContainText('0 published · 0 skipped')
   await expect(button).toBeEnabled()
+})
+
+test('the archive grid caches thumbnails and the post gallery loads full-resolution images', async ({ page }) => {
+  const artwork = join(directory, 'Full resolution')
+  await mkdir(artwork)
+  await writeFile(join(artwork, 'post.json'), JSON.stringify({ id: 'full-resolution', title: 'Full resolution' }))
+  await writeFile(join(artwork, 'artwork.png'), png(640, 200, 1024))
+  cli('import', artwork)
+
+  await signIn(page, '/posts?search=Full+resolution')
+  const card = page.locator('[data-post-card]')
+  const thumbnail = card.locator('img')
+  await expect(thumbnail).toHaveAttribute('src', /^\/thumb\//)
+  await expect.poll(() => thumbnail.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBe(512)
+  const thumbnailPath = (await thumbnail.getAttribute('src'))!
+
+  await card.getByRole('link', { name: /Open post/ }).click()
+  const fullSizeLink = page.getByRole('link', { name: 'Open image 1 at full size' })
+  const image = fullSizeLink.locator('img')
+  const mediaPath = thumbnailPath.replace('/thumb/', '/media/')
+  await expect(fullSizeLink).toHaveAttribute('href', mediaPath)
+  await expect(fullSizeLink).toHaveAttribute('target', '_blank')
+  await expect(image).toHaveAttribute('src', mediaPath)
+  await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(1024)
+  await expect.poll(() => page.evaluate(async (path) => {
+    const cached = await fetch(path, { cache: 'only-if-cached', mode: 'same-origin' })
+    return cached.status
+  }, thumbnailPath)).toBe(200)
 })

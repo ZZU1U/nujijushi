@@ -145,6 +145,8 @@ On **Posts**, filters apply as you change them and more cards load as you scroll
 
 Click a post card to select it, or click its post number to open it. **Select all loaded posts** selects the cards currently on screen and in the loaded feed.
 
+The post gallery loads full-resolution images as you scroll. Click an image to open the file on its own in a new tab.
+
 On the post page, open **Edit post details** to change the title or description. A blank field clears its text. Edits survive re-imports, and future captions use the saved text wherever the channel template includes it.
 
 The post detail page shows whether a tag came from the source, a manual edit, or both. Removing a source tag keeps it hidden on that post after re-import. Undo restores it if the most recent import still supplied it. Edit manual tags in the separate **Save tags** form.

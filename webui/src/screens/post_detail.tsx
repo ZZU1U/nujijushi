@@ -3,7 +3,7 @@ import { ActionForm, TextField, SelectField, TextArea, JobProgress, CaptionPrevi
 import { Badge } from '../components/Badge'
 import { ChannelSelect } from '../components/ChannelSelect'
 import type { Post, PostDetailPage, TagSuggestions } from '../api'
-import { Thumbnail, thumbnailUrl } from '../components/Thumbnail'
+import { thumbnailUrl } from '../components/Thumbnail'
 
 export function PostDetail({ data }: { data: PostDetailPage }) {
   const { post, open_section, guest_review, outgoing_count, tag_review, can_suggest_tags, captions, default_channel, ratings, states, channels } = data
@@ -180,12 +180,9 @@ function Gallery({ data }: { data: PostDetailPage }) {
                 {m.is_video ? <>
                   <video controls preload="none" poster={thumbnailUrl(m.thumb)} src={text("/media/", m.hash)}></video>
                 </> : <>
-                  <a href={'/media/' + m.hash} target="_blank">
-                    {m.ext === 'gif'
-                      ? <img loading="lazy" decoding="async" src={'/media/' + m.hash} alt=""
-                        width={m.width ?? undefined} height={m.height ?? undefined} />
-                      : <Thumbnail hash={m.thumb} fallback={'/media/' + m.hash} alt=""
-                        width={m.width ?? undefined} height={m.height ?? undefined} />}
+                  <a href={'/media/' + m.hash} target="_blank" aria-label={`Open image ${index + 1} at full size`}>
+                    <img loading="lazy" decoding="async" src={'/media/' + m.hash} alt=""
+                      width={m.width ?? undefined} height={m.height ?? undefined} />
                   </a>
                 </>}
                 {m.hidden ? <><span className="badge amber">Hidden from outgoing copies</span></> : null}
