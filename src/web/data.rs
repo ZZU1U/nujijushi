@@ -159,6 +159,8 @@ pub(super) struct DuplicatesPage {
     pub previous: Option<i64>,
     pub next: Option<i64>,
     pub indexing: bool,
+    pub pending: i64,
+    pub failed: i64,
 }
 
 #[derive(Serialize)]

@@ -204,11 +204,11 @@ running checks can finish. Artist and search access
 uses the same gallery-dl configuration and credentials as regular imports. Review new
 posts and queue the ones you want to publish.
 
-Open **Review duplicates** from **Posts** to compare still images from different sources. The inbox shows exact
-files and likely resize or recompression matches, with the matched image positions.
-**Dismiss pair** hides a suggestion even after a re-import. The background worker
-indexes existing and new artwork in small batches, and the inbox shows when indexing
-is in progress.
+Open **Review duplicates** from **Posts** to see exact files shared by distinct posts, including posts from the same source.
+Exact matches appear as soon as the files are archived. The worker also checks still JPEG, PNG, and WebP images for
+likely resize or recompression matches across sources. It processes the oldest pending images first.
+The inbox shows pending and failed visual checks. Failed checks retry automatically, and **Retry failed checks**
+makes them eligible immediately. **Dismiss pair** hides a suggestion even after a re-import.
 
 ## Telegram media limits
 

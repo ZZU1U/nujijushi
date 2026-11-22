@@ -2126,6 +2126,165 @@ async fn sent_cleanup_keeps_batch_edits_hides_and_saved_tags_and_rechecks_the_pr
 }
 
 #[tokio::test]
+async fn duplicate_review_finds_exact_same_source_copies_before_indexing() {
+    use nujijushi::db::duplicates;
+
+    let h = harness();
+    let png = encode_image(artwork(), image::ImageFormat::Png);
+    let mut gif = Vec::new();
+    image::codecs::gif::GifEncoder::new(&mut gif)
+        .encode_frames([
+            image::Frame::new(image::RgbaImage::new(10, 10)),
+            image::Frame::new(image::RgbaImage::from_pixel(
+                10,
+                10,
+                image::Rgba([0, 0, 0, 255]),
+            )),
+        ])
+        .unwrap();
+    let left = archive_test_images(
+        &h.state,
+        "local",
+        "duplicate-one",
+        &[(&png, "png"), (&png, "png"), (&gif, "gif")],
+    );
+    let right = archive_test_images(
+        &h.state,
+        "local",
+        "duplicate-two",
+        &[(&png, "png"), (&gif, "gif")],
+    );
+
+    let page = h.page("/duplicates").await;
+    assert_eq!(page["pending"], 3);
+    assert_eq!(page["failed"], 0);
+    assert_eq!(page["pairs"].as_array().unwrap().len(), 1);
+    assert_eq!(page["pairs"][0]["left"]["id"], left);
+    assert_eq!(page["pairs"][0]["right"]["id"], right);
+    let evidence = page["pairs"][0]["matches"].as_array().unwrap();
+    assert_eq!(evidence.len(), 3);
+    assert!(evidence.iter().all(|item| item["exact"] == true));
+    assert_eq!(evidence[2]["left"]["position"], 3);
+    assert_eq!(evidence[2]["right"]["position"], 2);
+    h.state
+        .db
+        .with(|conn| {
+            assert!(duplicates::evidence(conn, left, left)?.is_empty());
+            assert!(duplicates::dismiss(conn, left, right)?);
+            assert!(duplicates::pairs(conn, 0)?.is_empty());
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[tokio::test]
+async fn duplicate_index_retries_missing_blobs_and_reports_progress_across_restarts() {
+    use nujijushi::db::{duplicates, posts};
+
+    let h = harness();
+    let original = artwork();
+    let bytes = encode_image(original.clone(), image::ImageFormat::Png);
+    let resized =
+        image::imageops::resize(&original, 270, 216, image::imageops::FilterType::Triangle);
+    let jpeg = encode_image(resized, image::ImageFormat::Jpeg);
+    let left = archive_test_images(&h.state, "pixiv", "unreadable", &[(&bytes, "png")]);
+    let exact = archive_test_images(&h.state, "pixiv", "unreadable-copy", &[(&bytes, "png")]);
+    let near = archive_test_images(&h.state, "twitter", "similar", &[(&jpeg, "jpg")]);
+    let hash = h
+        .state
+        .db
+        .with(|conn| Ok(posts::get(conn, left)?.media[0].blob_hash.clone()))
+        .unwrap();
+    let blob = h.state.blobs.path_for(&hash, "png");
+    let backup = h._dir.path().join("missing.png");
+    std::fs::rename(&blob, &backup).unwrap();
+
+    nujijushi::duplicates::index_batch(&h.state).await.unwrap();
+    let failed = h.page("/duplicates").await;
+    assert_eq!(failed["pending"], 0);
+    assert_eq!(failed["failed"], 2);
+    assert_eq!(failed["pairs"].as_array().unwrap().len(), 1);
+    assert_eq!(failed["pairs"][0]["right"]["id"], exact);
+    let reopened = AppState::open((*h.state.cfg).clone(), None).unwrap();
+    let attempts = || {
+        reopened
+            .db
+            .with(|conn| {
+                Ok(conn.query_row(
+                    "SELECT attempts FROM duplicate_fingerprint_failures",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?)
+            })
+            .unwrap()
+    };
+    assert_eq!(attempts(), 1);
+    nujijushi::duplicates::index_batch(&reopened).await.unwrap();
+    assert_eq!(attempts(), 1);
+    reopened
+        .db
+        .with(|conn| {
+            conn.execute(
+                "UPDATE duplicate_fingerprint_failures SET retry_at = unixepoch()",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    nujijushi::duplicates::index_batch(&reopened).await.unwrap();
+    assert_eq!(attempts(), 2);
+
+    let retry_path = "/duplicates/retry";
+    let wrong = h.send(h.post(retry_path, "csrf=bad")).await;
+    assert_eq!(wrong.status(), StatusCode::BAD_REQUEST);
+    let retry = format!("csrf={}", h.ws.csrf);
+    assert_eq!(
+        h.send(h.post(retry_path, &retry)).await.status(),
+        StatusCode::OK
+    );
+    assert_eq!(h.page("/duplicates").await["pending"], 2);
+    std::fs::rename(&backup, &blob).unwrap();
+    nujijushi::duplicates::index_batch(&reopened).await.unwrap();
+    let recovered = h.page("/duplicates").await;
+    assert_eq!(recovered["pending"], 0);
+    assert_eq!(recovered["failed"], 0);
+    reopened
+        .db
+        .with(|conn| {
+            for (first, second) in [(left, exact), (left, near), (exact, near)] {
+                let evidence = duplicates::evidence(conn, first, second)?;
+                assert_eq!(evidence.len(), 1);
+                assert_eq!(evidence[0].exact, second == exact);
+            }
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[tokio::test]
+async fn duplicate_index_works_through_older_images_first() {
+    use nujijushi::db::{duplicates, posts};
+
+    let h = harness();
+    let bytes = encode_image(artwork(), image::ImageFormat::Png);
+    let oldest = archive_test_images(&h.state, "local", "oldest", &[(&bytes, "png")]);
+    let repeated = [(&bytes[..], "png"); 16];
+    let newest = archive_test_images(&h.state, "local", "newest", &repeated);
+    nujijushi::duplicates::index_batch(&h.state).await.unwrap();
+    h.state
+        .db
+        .with(|conn| {
+            let waiting = duplicates::pending(conn, 20)?;
+            let newest = posts::get(conn, newest)?;
+            assert_eq!(waiting.len(), 1);
+            assert_ne!(waiting[0].post_id, oldest);
+            assert_eq!(waiting[0].id, newest.media[15].id);
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[tokio::test]
 async fn duplicate_inbox_indexes_and_dismisses_cross_source_media_pairs() {
     use nujijushi::db::{duplicates, posts, queue};
     let h = harness();

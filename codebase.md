@@ -38,7 +38,7 @@ pub struct AppState {
 See [.env.example](.env.example) for environment overrides. `AppState::open` creates
 the home layout, opens and migrates the DB, and builds the blob store and renderer.
 
-## Data model (SQLite, schema v20 via `PRAGMA user_version`)
+## Data model (SQLite, schema v21 via `PRAGMA user_version`)
 
 | migration | tables and views | purpose |
 |---|---|---|
@@ -56,6 +56,7 @@ the home layout, opens and migrates the DB, and builds the blob store and render
 | `0015_media_merges.sql`, `0016_media_compressions.sql`, `0019_gallery_visibility.sql` | `media_merges`, `media_merge_sources`, `media_merge_members`, `media_compressions`, `media_hidden_sources` | original panels, explicit merge membership, JPEG derivatives, and outgoing visibility |
 | `0018_post_text_edits.sql` | `posts` | flags that preserve title and description edits across re-imports |
 | `0020_gallery_order.sql` | `media_gallery_order` | preferred artwork order keyed by source blob hash and occurrence |
+| `0021_duplicate_index_recovery.sql` | `duplicate_fingerprint_failures` | backoff for unreadable artwork and an index for exact duplicate lookup |
 
 Blob bytes live at `blobs/<aa>/<blake3>.<ext>` and thumbnails at
 `thumbs/<aa>/<blake3>.webp`. Identical files across posts are stored once. SQLite

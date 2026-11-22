@@ -181,7 +181,7 @@ pub async fn duplicates_page(
     let page = query.page.unwrap_or(1).max(1);
     let offset = (page - 1).saturating_mul(duplicates::PAGE_SIZE);
     let blobs = ws.app.blobs.clone();
-    let (pairs, has_next, indexing) = ws
+    let (pairs, has_next, progress) = ws
         .app
         .db
         .call(move |conn| {
@@ -213,15 +213,43 @@ pub async fn duplicates_page(
                     matches: evidence,
                 });
             }
-            Ok((pairs, has_next, duplicates::has_pending(&snapshot)?))
+            Ok((pairs, has_next, duplicates::progress(&snapshot)?))
         })
         .await?;
     Ok(Json(DuplicatesPage {
         pairs,
         previous: (page > 1).then_some(page - 1),
         next: has_next.then(|| page.saturating_add(1)),
-        indexing,
+        indexing: progress.pending > 0,
+        pending: progress.pending,
+        failed: progress.failed,
     }))
+}
+
+#[derive(Deserialize)]
+pub struct RetryDuplicatesForm {
+    #[serde(default)]
+    csrf: String,
+}
+
+pub async fn retry_duplicates(
+    State(ws): State<Arc<WebState>>,
+    Form(form): Form<RetryDuplicatesForm>,
+) -> WebResult<Response> {
+    check_csrf(&ws, &form.csrf)?;
+    let scheduled = ws
+        .app
+        .db
+        .call(|conn| duplicates::retry_failed(conn))
+        .await?;
+    Ok(action_result(
+        "/duplicates",
+        if scheduled > 0 {
+            "Failed visual checks queued for retry"
+        } else {
+            "No visual checks waiting to retry"
+        },
+    ))
 }
 
 fn post_side(

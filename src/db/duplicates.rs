@@ -6,6 +6,10 @@ use crate::error::Result;
 
 const PENDING: &str = "m.duplicate_indexed = 0 AND m.is_video = 0
     AND b.ext IN ('jpg', 'jpeg', 'png', 'webp')";
+const WAITING_FROM: &str = "
+    FROM media m JOIN blobs b ON b.hash = m.blob_hash
+    LEFT JOIN duplicate_fingerprint_failures failure ON failure.blob_hash = m.blob_hash";
+const READY: &str = "(failure.retry_at IS NULL OR failure.retry_at <= unixepoch())";
 
 #[derive(Debug, Clone, Copy)]
 pub struct Fingerprint {
@@ -26,9 +30,9 @@ pub struct PendingMedia {
 pub fn pending(conn: &Connection, limit: i64) -> Result<Vec<PendingMedia>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT m.id, m.post_id, b.hash, b.ext, f.blob_hash IS NOT NULL, f.hash, f.aspect
-         FROM media m JOIN blobs b ON b.hash = m.blob_hash
+         {WAITING_FROM}
          LEFT JOIN image_fingerprints f ON f.blob_hash = b.hash
-         WHERE {PENDING} ORDER BY m.id DESC LIMIT ?1"
+         WHERE {PENDING} AND {READY} ORDER BY m.id LIMIT ?1"
     ))?;
     Ok(stmt
         .query_map([limit], |row| {
@@ -49,9 +53,63 @@ pub fn pending(conn: &Connection, limit: i64) -> Result<Vec<PendingMedia>> {
 }
 
 pub fn has_pending(conn: &Connection) -> Result<bool> {
-    Ok(conn.query_row(&format!(
-        "SELECT EXISTS(SELECT 1 FROM media m JOIN blobs b ON b.hash = m.blob_hash WHERE {PENDING})"
-    ), [], |row| row.get(0))?)
+    Ok(conn.query_row(
+        &format!("SELECT EXISTS(SELECT 1 {WAITING_FROM} WHERE {PENDING} AND {READY})"),
+        [],
+        |row| row.get(0),
+    )?)
+}
+
+pub(crate) struct Progress {
+    pub pending: i64,
+    pub failed: i64,
+}
+
+pub(crate) fn progress(conn: &Connection) -> Result<Progress> {
+    Ok(conn.query_row(
+        &format!(
+            "SELECT COUNT(*) FILTER (WHERE {READY}),
+                    COUNT(*) FILTER (WHERE failure.retry_at > unixepoch())
+             {WAITING_FROM} WHERE {PENDING}"
+        ),
+        [],
+        |row| {
+            Ok(Progress {
+                pending: row.get(0)?,
+                failed: row.get(1)?,
+            })
+        },
+    )?)
+}
+
+pub(crate) fn retry_failed(conn: &Connection) -> Result<usize> {
+    Ok(conn.execute(
+        &format!(
+            "UPDATE duplicate_fingerprint_failures SET retry_at = 0
+             WHERE retry_at > unixepoch() AND blob_hash IN (
+                 SELECT m.blob_hash FROM media m JOIN blobs b ON b.hash = m.blob_hash
+                 WHERE {PENDING}
+             )"
+        ),
+        [],
+    )?)
+}
+
+pub(crate) fn record_failure(conn: &Connection, item: &PendingMedia) -> Result<bool> {
+    // Back off per blob, so more copies of one unreadable image do not cause more retries.
+    Ok(conn.execute(
+        "INSERT INTO duplicate_fingerprint_failures (blob_hash, attempts, retry_at)
+         SELECT ?3, 1, unixepoch() + 15
+         WHERE EXISTS (
+             SELECT 1 FROM media WHERE id = ?1 AND post_id = ?2 AND blob_hash = ?3
+             AND duplicate_indexed = 0 AND is_video = 0
+         ) AND NOT EXISTS (SELECT 1 FROM image_fingerprints WHERE blob_hash = ?3)
+         ON CONFLICT (blob_hash) DO UPDATE SET
+             attempts = attempts + 1,
+             retry_at = unixepoch() + MIN(3600, 15 * (1 << MIN(attempts, 8)))
+         WHERE retry_at <= unixepoch()",
+        params![item.id, item.post_id, item.blob_hash],
+    )? > 0)
 }
 
 /// Commit progress and matches together, discarding results for media that were replaced.
@@ -78,8 +136,11 @@ pub fn finish(
                 fingerprint.map(|fp| fp.aspect)
             ],
         )?;
+        conn.execute(
+            "DELETE FROM duplicate_fingerprint_failures WHERE blob_hash = ?1",
+            [&item.blob_hash],
+        )?;
         if let Some(fingerprint) = fingerprint {
-            insert_matches(conn, item, &item.blob_hash, 0)?;
             for (hash, distance) in near_candidates(conn, item, fingerprint)? {
                 insert_matches(conn, item, &hash, i64::from(distance) + 1)?;
             }
@@ -158,43 +219,40 @@ fn insert_matches(
 
 pub const PAGE_SIZE: i64 = 20;
 
-// Hidden panels are no longer in the visual index. Equal blob hashes still
-// provide exact evidence, including when both posts have merged the same panel.
-const RETAINED_EXACT_MATCHES: &str = "
-    WITH hidden AS NOT MATERIALIZED (
+// Match archived hashes independently of fingerprints, including originals
+// displaced by a merge or compression. Use explicit merge membership for gapped merges.
+const EXACT_MATCHES: &str = "
+    WITH originals AS NOT MATERIALIZED (
         SELECT s.post_id, s.ordinal, s.blob_hash FROM media_merge_sources s
         WHERE EXISTS (
-            SELECT 1 FROM media_merges m WHERE m.post_id = s.post_id
-            AND s.ordinal BETWEEN m.first_ordinal AND m.last_ordinal
+            SELECT 1 FROM media_merges m JOIN media_merge_members mm ON mm.merge_id = m.id
+            WHERE m.post_id = s.post_id AND mm.source_ordinal = s.ordinal
         ) OR EXISTS (
             SELECT 1 FROM media_compressions c WHERE c.post_id = s.post_id
             AND c.first_ordinal = s.ordinal
         )
-    ), source_matches AS (
-        SELECT s.post_id AS first_id, m.post_id AS second_id,
-               s.ordinal AS first_position, m.ordinal AS second_position, s.blob_hash
-        FROM hidden s JOIN media m USING (blob_hash) WHERE s.post_id <> m.post_id
+    ), exact (left_post_id, right_post_id, left_ordinal, right_ordinal, blob_hash) AS NOT MATERIALIZED (
+        SELECT a.post_id, b.post_id, a.ordinal, b.ordinal, a.blob_hash
+        FROM media a JOIN media b USING (blob_hash) WHERE a.post_id < b.post_id
+        UNION ALL
+        SELECT s.post_id, m.post_id, s.ordinal, m.ordinal, s.blob_hash
+        FROM originals s JOIN media m USING (blob_hash) WHERE s.post_id < m.post_id
+        UNION ALL
+        SELECT m.post_id, s.post_id, m.ordinal, s.ordinal, s.blob_hash
+        FROM media m JOIN originals s USING (blob_hash) WHERE m.post_id < s.post_id
         UNION ALL
         SELECT s.post_id, t.post_id, s.ordinal, t.ordinal, s.blob_hash
-        FROM hidden s JOIN hidden t USING (blob_hash) WHERE s.post_id < t.post_id
-    ), retained AS (
-        SELECT MIN(first_id, second_id) AS left_post_id, MAX(first_id, second_id) AS right_post_id,
-               CASE WHEN first_id < second_id THEN first_position ELSE second_position END AS left_ordinal,
-               CASE WHEN first_id < second_id THEN second_position ELSE first_position END AS right_ordinal,
-               blob_hash
-        FROM source_matches s
-        JOIN posts a ON a.id = s.first_id JOIN posts b ON b.id = s.second_id
-        WHERE a.source <> b.source
+        FROM originals s JOIN originals t USING (blob_hash) WHERE s.post_id < t.post_id
     )
 ";
 
 pub fn pairs(conn: &Connection, offset: i64) -> Result<Vec<(i64, i64)>> {
     let mut stmt = conn.prepare(&format!(
-        "{RETAINED_EXACT_MATCHES}
+        "{EXACT_MATCHES}
          SELECT m.left_post_id, m.right_post_id FROM (
              SELECT left_post_id, right_post_id, distance FROM duplicate_matches
              UNION ALL
-             SELECT left_post_id, right_post_id, 0 FROM retained
+             SELECT left_post_id, right_post_id, 0 FROM exact
          ) m
          WHERE NOT EXISTS (SELECT 1 FROM duplicate_dismissals d
                WHERE d.left_post_id = m.left_post_id AND d.right_post_id = m.right_post_id)
@@ -220,7 +278,7 @@ pub struct Evidence {
 
 pub fn evidence(conn: &Connection, left: i64, right: i64) -> Result<Vec<Evidence>> {
     let mut stmt = conn.prepare(&format!(
-        "{RETAINED_EXACT_MATCHES}
+        "{EXACT_MATCHES}
          SELECT a.blob_hash, b.blob_hash, a.ordinal AS left_ordinal,
                 b.ordinal AS right_ordinal, m.distance AS distance
          FROM duplicate_matches m JOIN media a ON a.id = m.left_media_id
@@ -228,7 +286,7 @@ pub fn evidence(conn: &Connection, left: i64, right: i64) -> Result<Vec<Evidence
          WHERE m.left_post_id = ?1 AND m.right_post_id = ?2
          UNION
          SELECT blob_hash, blob_hash, left_ordinal, right_ordinal, 0
-         FROM retained WHERE left_post_id = ?1 AND right_post_id = ?2
+         FROM exact WHERE left_post_id = ?1 AND right_post_id = ?2
          ORDER BY distance, left_ordinal, right_ordinal",
     ))?;
     Ok(stmt
@@ -249,12 +307,12 @@ pub fn dismiss(conn: &Connection, first: i64, second: i64) -> Result<bool> {
     Ok(conn
         .query_row(
             &format!(
-                "{RETAINED_EXACT_MATCHES}
+                "{EXACT_MATCHES}
             INSERT INTO duplicate_dismissals (left_post_id, right_post_id)
          SELECT ?1, ?2 WHERE EXISTS (
              SELECT 1 FROM duplicate_matches WHERE left_post_id = ?1 AND right_post_id = ?2
              UNION ALL
-             SELECT 1 FROM retained WHERE left_post_id = ?1 AND right_post_id = ?2
+             SELECT 1 FROM exact WHERE left_post_id = ?1 AND right_post_id = ?2
          )
          ON CONFLICT (left_post_id, right_post_id) DO NOTHING RETURNING 1"
             ),

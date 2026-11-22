@@ -1,5 +1,5 @@
 import { Fragment } from 'react'
-import { ActionForm, TextField, text, listKey, externalUrl } from '../ui'
+import { ActionForm, TextField, text, listKey, externalUrl, useActions } from '../ui'
 import type { DuplicatesPage, DuplicatePost, DuplicateImage } from '../api'
 import { Thumbnail } from '../components/Thumbnail'
 
@@ -29,11 +29,18 @@ function thumbnail(item: DuplicateImage, post_id: number) {
 }
 
 export function Duplicates({ data }: { data: DuplicatesPage }) {
-  const { pairs, previous, next, indexing } = data
+  const { pairs, previous, next, pending, failed } = data
+  const { refresh } = useActions()
   return <>
     <section className="panel">
       <h1>Duplicate artwork</h1>
-      {indexing ? <><p className="hint" data-duplicates-indexing="">Indexing artwork. More matches will appear as indexing finishes.</p></> : null}
+      <div className="post-buttons">
+        <p className="hint" role="status">Visual checks · {pending} pending · {failed} failed</p>
+        <button type="button" className="small ghost" onClick={refresh}>Refresh matches</button>
+        {failed > 0 && <ActionForm action="/duplicates/retry">
+          <button type="submit" className="small ghost">Retry failed checks</button>
+        </ActionForm>}
+      </div>
       {pairs.length === 0 ? <><p className="hint">No duplicate pairs on this page.</p></> : null}
       {pairs.map((pair, index, all) => <Fragment key={pair.left.id + ":" + pair.right.id}>
         <article className="panel inset">

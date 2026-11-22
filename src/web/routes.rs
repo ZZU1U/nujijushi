@@ -80,6 +80,7 @@ pub fn router(ws: Arc<WebState>) -> Router {
         .route("/watches/{id}/remove", post(super::curation::remove_watch))
         .route("/duplicates", get(super::curation::duplicates_page))
         .route("/duplicates/dismiss", post(super::curation::dismiss))
+        .route("/duplicates/retry", post(super::curation::retry_duplicates))
         .route("/channels", get(channels_page).post(channel_create))
         .route(
             "/channels/{id}/edit",

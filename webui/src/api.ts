@@ -152,7 +152,7 @@ export interface DuplicatePost {
 export interface DuplicateImage { hash: string; position: number; thumb: boolean }
 export interface DuplicatesPage {
   pairs: { left: DuplicatePost; right: DuplicatePost; matches: { left: DuplicateImage; right: DuplicateImage; exact: boolean }[] }[]
-  previous: number | null; next: number | null; indexing: boolean
+  previous: number | null; next: number | null; indexing: boolean; pending: number; failed: number
 }
 export interface UsersPage {
   users: { tg_id: number; label: string; role: string; db_role: string; archived: number; pushed: number; sent: number; config_admin: boolean; last_seen: string }[]

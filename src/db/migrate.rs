@@ -25,6 +25,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0018_post_text_edits.sql"),
     include_str!("../../migrations/0019_gallery_visibility.sql"),
     include_str!("../../migrations/0020_gallery_order.sql"),
+    include_str!("../../migrations/0021_duplicate_index_recovery.sql"),
 ];
 
 pub fn schema_version(conn: &Connection) -> Result<i64> {
@@ -91,6 +92,7 @@ mod tests {
             "blobs",
             "channels",
             "duplicate_dismissals",
+            "duplicate_fingerprint_failures",
             "duplicate_matches",
             "image_fingerprints",
             "jobs",
@@ -152,6 +154,50 @@ mod tests {
             )
             .unwrap();
         assert_eq!(edit_columns, 2);
+    }
+
+    #[test]
+    fn duplicate_recovery_requeues_legacy_null_fingerprints() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..20] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 20).unwrap();
+        conn.execute_batch(
+            "INSERT INTO posts (id, source, source_id, imported_at, updated_at)
+                 VALUES (1, 'local', 'first', '', ''), (2, 'local', 'second', '', '');
+             INSERT INTO blobs (hash, ext, bytes, created_at)
+                 VALUES ('unreadable', 'png', 10, ''), ('readable', 'png', 10, '');
+             INSERT INTO media (id, post_id, ordinal, blob_hash, duplicate_indexed)
+                 VALUES (1, 1, 0, 'unreadable', 1), (2, 1, 1, 'readable', 1),
+                        (3, 2, 0, 'readable', 1);
+             INSERT INTO image_fingerprints (blob_hash, hash, aspect)
+                 VALUES ('unreadable', NULL, NULL), ('readable', 42, 1.0);
+             INSERT INTO duplicate_matches VALUES (2, 3, 1, 2, 0);
+             INSERT INTO duplicate_dismissals VALUES (1, 2);",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let pending = crate::db::duplicates::pending(&conn, 10).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].blob_hash, "unreadable");
+        assert!(!pending[0].fingerprinted);
+        assert_eq!(
+            conn.query_row("SELECT hash FROM image_fingerprints", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            42
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM duplicate_matches", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert!(crate::db::duplicates::evidence(&conn, 1, 2).unwrap()[0].exact);
+        assert!(crate::db::duplicates::pairs(&conn, 0).unwrap().is_empty());
     }
 
     #[test]

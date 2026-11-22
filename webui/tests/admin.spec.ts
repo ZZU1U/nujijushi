@@ -827,3 +827,38 @@ test('tag autocomplete filters posts and adds a known tag from the editor', asyn
   await expect(page.getByText('All changes saved', { exact: true })).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390)
 })
+
+test('duplicate review shows same-source exact matches and retries failed visual checks', async ({ page }) => {
+  const first = await browserPost('Duplicate review first', [29])
+  const second = await browserPost('Duplicate review second', [29])
+  const db = new DatabaseSync(join(directory, 'archive', 'nujijushi.sqlite3'))
+  try {
+    db.exec('PRAGMA busy_timeout=5000')
+    const indexed = db.prepare('SELECT COUNT(*) AS count FROM media WHERE post_id IN (?, ?) AND duplicate_indexed = 1')
+    await expect.poll(() => Number(indexed.get(first, second)!.count)).toBe(2)
+    db.exec('BEGIN IMMEDIATE')
+    const blob = db.prepare('SELECT blob_hash FROM media WHERE post_id = ?').get(first)!.blob_hash
+    db.prepare('DELETE FROM image_fingerprints WHERE blob_hash = ?').run(blob)
+    db.prepare('UPDATE media SET duplicate_indexed = 0 WHERE blob_hash = ?').run(blob)
+    db.prepare('INSERT INTO duplicate_fingerprint_failures VALUES (?, 1, unixepoch() + 3600)').run(blob)
+    db.exec('COMMIT')
+  } finally {
+    db.close()
+  }
+
+  await signIn(page, '/duplicates')
+  const status = page.getByRole('status').filter({ hasText: /^Visual checks/ })
+  await expect(status).toContainText('2 failed')
+  const pair = page.locator('article').filter({ has: page.getByRole('link', { name: '#' + first + ' · Duplicate review first' }) })
+    .filter({ has: page.getByRole('link', { name: '#' + second + ' · Duplicate review second' }) })
+  await expect(pair.getByText('Exact file', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Retry failed checks' }).click()
+  await expect(page.getByText('Failed visual checks queued for retry')).toBeVisible()
+  await expect(status).toContainText('0 failed')
+  await expect.poll(async () => {
+    const response = await page.request.get(base + '/api/v1/duplicates')
+    return (await response.json()).pending
+  }).toBe(0)
+  await page.getByRole('button', { name: 'Refresh matches' }).click()
+  await expect(status).toContainText('0 pending')
+})
