@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::source::pair::{self, Group};
-use crate::source::{NormalizedPost, PostFile, Source, normalize};
+use crate::source::{NormalizedPost, PostFile, Source, fanbox, normalize};
 
 pub struct GalleryDlSource {
     cfg: Config,
@@ -206,10 +206,18 @@ impl GalleryDlSource {
             self.cookie_file(target).as_deref(),
             self.cfg.proxy_url.as_deref(),
         );
+        let watched_fanbox = require_complete
+            && url::Url::parse(target)
+                .ok()
+                .and_then(|url| url.host_str().and_then(cookie_site))
+                == Some("fanbox");
         if require_complete {
             args.insert(0, "--no-input".into());
             // A user-configured gallery-dl archive must not mark files as handled before the app imports them.
             args.splice(0..0, ["-o".into(), "extractor.archive=null".into()]);
+            if watched_fanbox {
+                args.splice(0..0, ["-o".into(), fanbox::DISABLE_EMBEDS.into()]);
+            }
         }
 
         tracing::info!(program = %self.cfg.gallery_dl, "running import");
@@ -228,8 +236,18 @@ impl GalleryDlSource {
             }
         }
 
-        let files = pair::collect(&staging)?;
-        let posts = groups_to_posts(pair::group(files), target);
+        let groups = pair::group(pair::collect(&staging)?);
+        if watched_fanbox
+            && groups
+                .iter()
+                .any(|group| group.meta.as_ref().is_some_and(fanbox::restricted))
+        {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(Error::other(
+                "The configured FANBOX session cannot access this post",
+            ));
+        }
+        let posts = groups_to_posts(groups, target);
 
         match output {
             Ok(out) => {

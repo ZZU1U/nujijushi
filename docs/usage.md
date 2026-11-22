@@ -195,7 +195,7 @@ The CLI equivalents are `nujijushi gc --sent --older-than-days 30` to preview an
 
 ### Watched sources and duplicate artwork
 
-Use **Watched sources** to save a Pixiv artist page, an X or Bluesky artist media feed,
+Use **Watched sources** to save a Pixiv artist page, a FANBOX creator page, an X or Bluesky artist media feed,
 or a newest-first Danbooru or Gelbooru tag search. Use **Check now** to start each
 background check. The first check uses the configured post limit for that watch. Later checks
 look for newly published artwork and retry pending downloads. Use **Pause** to block
@@ -203,6 +203,10 @@ new checks and **Resume** to keep checking from the same point. Already queued o
 running checks can finish. Artist and search access
 uses the same gallery-dl configuration and credentials as regular imports. Review new
 posts and queue the ones you want to publish.
+
+Use `https://creator.fanbox.cc/` or `https://www.fanbox.cc/@creator` for a FANBOX watch. The watch
+uses `cookies/fanbox.txt` for posts your signed-in account can access, including supporter posts. Set up the
+session before the first check so it can discover those posts.
 
 Open **Review duplicates** from **Posts** to see exact files shared by distinct posts, including posts from the same source.
 Exact matches appear as soon as the files are archived. The worker also checks still JPEG, PNG, and WebP images for

@@ -13,7 +13,7 @@ export function Watches({ data }: { data: WatchesPage }) {
         <label>First check limit <TextField name="initial_batch" type="number" min="1" max="100" defaultValue="10" /></label>
         <button type="submit">Add watch</button>
       </ActionForm>
-      <p className="hint">Pixiv artist pages, X and Bluesky artist media feeds, and Danbooru and Gelbooru tag searches.</p>
+      <p className="hint">Pixiv and FANBOX creator pages, X and Bluesky artist media feeds, and Danbooru and Gelbooru tag searches.</p>
     </section>
     <section className="panel">
       {watches.length === 0 ? <><p className="hint">No watched sources yet.</p></> : null}

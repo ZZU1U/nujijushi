@@ -114,6 +114,25 @@ async function browserPost(name: string, heights: number[]) {
   }
 }
 
+test('FANBOX creator links can be saved as one watched source', async ({ page }) => {
+  await signIn(page, '/watches')
+  const watchName = 'Paper Bird FANBOX'
+  const name = page.getByRole('textbox', { name: 'Name', exact: true })
+  const url = page.getByRole('textbox', { name: 'Feed URL' })
+  const add = page.getByRole('button', { name: 'Add watch' })
+  await name.fill(watchName)
+  await url.fill('https://www.fanbox.cc/@paper-bird/')
+  await add.click()
+  const watch = page.locator('article').filter({ has: page.getByRole('heading', { name: watchName }) })
+  await expect(watch.getByRole('link')).toHaveAttribute('href', 'https://paper-bird.fanbox.cc/posts')
+  await expect(watch.getByRole('button', { name: 'Check now' })).toBeEnabled()
+  await name.fill('Same FANBOX feed')
+  await url.fill('https://paper-bird.fanbox.cc/posts')
+  await add.click()
+  await expect(page.getByText('This feed is already watched')).toBeVisible()
+  await expect(watch).toHaveCount(1)
+})
+
 test('queue on page 3 and return from a post in the same browser document', async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 520 })
   const documents = countDocuments(page)

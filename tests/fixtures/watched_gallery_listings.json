@@ -1,4 +1,12 @@
 {
+  "fanbox": [
+    [2, {"category":"fanbox","subcategory":"creator","id":"504","creatorId":"paper-bird","isRestricted":true,"publishedDatetime":"2025-09-02T16:13:03+09:00"}],
+    [3, "https://pixiv.pximg.net/fanbox/public/images/post/504/cover/preview.jpg", {"category":"fanbox","creatorId":"paper-bird","id":"504","isRestricted":true,"isCoverImage":true,"extension":"jpg","publishedDatetime":"2025-09-02T16:13:03+09:00"}],
+    [3, "https://downloads.fanbox.cc/files/post/503/brushes.zip", {"category":"fanbox","creatorId":"paper-bird","id":"503","extension":"zip","publishedDatetime":"2025-09-02T15:13:03+09:00"}],
+    [2, {"category":"fanbox","subcategory":"creator","id":"502","creatorId":"paper-bird","type":"text","publishedDatetime":"2025-09-02T14:13:03+09:00"}],
+    [3, "https://downloads.fanbox.cc/images/post/501/one.jpg", {"category":"fanbox","creatorId":"paper-bird","id":"501","isRestricted":false,"extension":"jpg","publishedDatetime":"2025-09-02T14:11:03+09:00","num":0}],
+    [3, "https://downloads.fanbox.cc/images/post/501/two.png?download=1", {"category":"fanbox","creatorId":"paper-bird","id":"501","isRestricted":false,"publishedDatetime":"2025-09-02T14:11:03+09:00","num":1}]
+  ],
   "pixiv": [
     [2, {"category":"pixiv","subcategory":"artworks","id":123,"date":"2025-09-02 05:11:03"}],
     [3, "https://i.pximg.net/a_p0.jpg", {"category":"pixiv","id":123,"date":"2025-09-02 05:11:03","num":0}],

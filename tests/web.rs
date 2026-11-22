@@ -1299,6 +1299,160 @@ async fn the_queue_and_post_pages_show_when_a_post_goes_out() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn fanbox_watch_imports_creator_media_with_session_and_retries_restricted_downloads() {
+    use nujijushi::db::{posts, watches};
+    use nujijushi::jobs::worker::JobWorker;
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut h = harness();
+    let base = h._dir.path();
+    let script = base.join("fake-fanbox-gallery-dl");
+    std::fs::write(
+        &script,
+        r#"#!/bin/sh
+set -eu
+fixture_dir=$(dirname "$0")
+scan=false
+staging=
+for arg in "$@"; do
+    if [ "$staging" = 'next' ]; then staging="$arg"; fi
+    if [ "$arg" = '-d' ]; then staging='next'; fi
+    if [ "$arg" = '--dump-json' ]; then scan=true; fi
+    target="$arg"
+done
+if "$scan"; then
+    printf '%s\n' "$@" > "$fixture_dir/fanbox-scan-args"
+    cat "$fixture_dir/fanbox-list.json"
+else
+    printf '%s\n' "$@" > "$fixture_dir/fanbox-download-args"
+    case "$target" in https://paper-bird.fanbox.cc/posts/*) ;; *) exit 1 ;; esac
+    id=$(basename "$target")
+    printf '%s\n' "$id" >> "$fixture_dir/fanbox-downloads"
+    restricted=false
+    if [ -f "$fixture_dir/restrict-$id" ]; then restricted=true; fi
+    cp "$fixture_dir/source.png" "$staging/image.png"
+    printf '{"category":"fanbox","creatorId":"paper-bird","id":"%s","publishedDatetime":"2025-09-02T14:11:03+09:00","isRestricted":%s,"isCoverImage":%s,"hasAdultContent":true,"user":{"name":"Paper Bird","userId":"720"},"tags":["source-tag"]}' "$id" "$restricted" "$restricted" > "$staging/image.png.json"
+fi
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    image::RgbImage::from_pixel(16, 16, image::Rgb([80, 30, 10]))
+        .save(base.join("source.png"))
+        .unwrap();
+    let cookie = h.state.cfg.cookies_dir().join("fanbox.txt");
+    std::fs::write(&cookie, "# mock FANBOX session\n").unwrap();
+    let cfg = Arc::make_mut(&mut h.state.cfg);
+    cfg.gallery_dl = script.to_str().unwrap().into();
+    cfg.proxy_url = Some("http://127.0.0.1:9443".into());
+    h.ws = WebState::new(h.state.clone()).unwrap();
+
+    let save = |url: &str| {
+        url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("csrf", &h.ws.csrf)
+            .append_pair("name", "Paper Bird")
+            .append_pair("url", url)
+            .append_pair("initial_batch", "5")
+            .finish()
+    };
+    let response = h
+        .send(h.post("/watches", &save("https://www.fanbox.cc/@paper-bird")))
+        .await;
+    assert_eq!(Harness::message(&response), "Watch added");
+    let alias = h
+        .send(h.post("/watches", &save("https://paper-bird.fanbox.cc/")))
+        .await;
+    assert_eq!(Harness::message(&alias), "This feed is already watched");
+    let page = h.page("/watches").await;
+    assert_eq!(
+        page["watches"][0]["url"],
+        "https://paper-bird.fanbox.cc/posts"
+    );
+    let watch_id = page["watches"][0]["id"].as_i64().unwrap();
+    let check_path = format!("/watches/{watch_id}/check");
+    let csrf = format!("csrf={}", h.ws.csrf);
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/watched_gallery_listings.json")).unwrap();
+    let list_path = base.join("fanbox-list.json");
+    std::fs::write(&list_path, serde_json::to_vec(&fixture["fanbox"]).unwrap()).unwrap();
+    let restricted = base.join("restrict-501");
+    std::fs::write(&restricted, "").unwrap();
+
+    let worker = JobWorker::new(h.state.clone());
+    let first = h.send(h.post(&check_path, &csrf)).await;
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+    assert_eq!(worker.drain().await.unwrap(), 1);
+    let scan_args = std::fs::read_to_string(base.join("fanbox-scan-args")).unwrap();
+    let download_args = std::fs::read_to_string(base.join("fanbox-download-args")).unwrap();
+    for args in [&scan_args, &download_args] {
+        assert!(args.contains(&format!("--cookies\n{}\n", cookie.display())));
+        assert!(args.contains("--proxy\nhttp://127.0.0.1:9443\n"));
+        assert!(args.contains("extractor.fanbox.embeds=false\n"));
+    }
+    assert!(scan_args.contains("--post-range\n1-5\n"));
+    assert_eq!(page["watches"].as_array().unwrap().len(), 1);
+    let failed = h.page("/watches").await;
+    assert_eq!(failed["watches"][0]["job"]["state"], "failed");
+    assert!(
+        failed["watches"][0]["job"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("cannot access this post")
+    );
+    h.state
+        .db
+        .with(|conn| {
+            assert_eq!(watches::pending_count(conn, watch_id)?, 1);
+            assert!(posts::find_by_source_id(conn, "fanbox", "501")?.is_none());
+            assert!(posts::find_by_source_id(conn, "fanbox", "504")?.is_none());
+            Ok(())
+        })
+        .unwrap();
+
+    std::fs::remove_file(restricted).unwrap();
+    std::fs::write(&list_path, "[]").unwrap();
+    assert_eq!(
+        h.send(h.post(&check_path, &csrf)).await.status(),
+        StatusCode::ACCEPTED
+    );
+    assert_eq!(worker.drain().await.unwrap(), 1);
+    let scan_args = std::fs::read_to_string(base.join("fanbox-scan-args")).unwrap();
+    assert!(
+        scan_args.contains("--date-after\n1756789862\n"),
+        "{scan_args}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(base.join("fanbox-downloads")).unwrap(),
+        "501\n501\n"
+    );
+    h.state
+        .db
+        .with(|conn| {
+            let id = posts::find_by_source_id(conn, "fanbox", "501")?.unwrap();
+            let post = posts::get(conn, id)?;
+            assert_eq!(post.state, PostState::New);
+            assert_eq!(
+                post.url.as_deref(),
+                Some("https://paper-bird.fanbox.cc/posts/501")
+            );
+            assert_eq!(post.rating, Rating::Explicit);
+            assert!(post.media[0].sensitive);
+            assert_eq!(
+                post.posted_at.unwrap().to_rfc3339(),
+                "2025-09-02T05:11:03+00:00"
+            );
+            let author = post.author.unwrap();
+            assert_eq!(author.handle.as_deref(), Some("paper-bird"));
+            assert_eq!(author.name.as_deref(), Some("Paper Bird"));
+            assert_eq!(author.url.as_deref(), Some("https://paper-bird.fanbox.cc"));
+            assert_eq!(watches::pending_count(conn, watch_id)?, 0);
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn watched_source_checks_persist_discovery_retries_and_curation() {
     use nujijushi::db::{posts, watches};
     use nujijushi::jobs::worker::JobWorker;

@@ -7,6 +7,8 @@ use crate::db::tags;
 use crate::model::Rating;
 use crate::source::{NormalizedPost, PostAuthor};
 
+use super::fanbox;
+
 /// Rating words that appear in booru/pixiv metadata.
 fn rating_from_words(raw: &str) -> Option<Rating> {
     match raw.trim().to_ascii_lowercase().as_str() {
@@ -164,6 +166,11 @@ fn same_handle(name: &str, handle: Option<&str>) -> bool {
 /// `pair` calls this per staged file, so a flag on one image of a tweet is kept
 /// per item instead of being flattened into the post.
 pub fn sensitive(value: &Value) -> bool {
+    // On FANBOX the post and the creator can each have a separate adult flag.
+    value.get("hasAdultContent").is_some_and(truthy) || has_sensitive_flag(value)
+}
+
+fn has_sensitive_flag(value: &Value) -> bool {
     const KEYS: &[&str] = &[
         "possibly_sensitive",
         "sensitive",
@@ -174,9 +181,10 @@ pub fn sensitive(value: &Value) -> bool {
     ];
     match value {
         Value::Object(map) => map.iter().any(|(key, val)| {
-            (KEYS.contains(&key.to_ascii_lowercase().as_str()) && truthy(val)) || sensitive(val)
+            (KEYS.contains(&key.to_ascii_lowercase().as_str()) && truthy(val))
+                || has_sensitive_flag(val)
         }),
-        Value::Array(items) => items.iter().any(sensitive),
+        Value::Array(items) => items.iter().any(has_sensitive_flag),
         _ => false,
     }
 }
@@ -339,6 +347,7 @@ pub fn from_gallery_metadata(
 ) -> Option<NormalizedPost> {
     let category = first_string(meta, &["category"]).unwrap_or_else(|| fallback_source.to_string());
     let source = normalize_source_name(&category);
+    let is_fanbox = source == "fanbox";
 
     let source_id = first_string(
         meta,
@@ -437,18 +446,26 @@ pub fn from_gallery_metadata(
     }
     post.rating = rating.unwrap_or_else(|| rating_from_tags(&post.tags));
 
-    post.posted_at = first_timestamp(
-        meta,
-        &[
-            "date",
-            "posted_at",
-            "created_at",
-            "upload_date",
-            "timestamp",
-            "published_at",
-            "create_date",
-        ],
-    );
+    // FANBOX retains the original ISO timestamp, including its timezone.
+    let fanbox_date = if is_fanbox {
+        first_timestamp(meta, &["publishedDatetime"])
+    } else {
+        None
+    };
+    post.posted_at = fanbox_date.or_else(|| {
+        first_timestamp(
+            meta,
+            &[
+                "date",
+                "posted_at",
+                "created_at",
+                "upload_date",
+                "timestamp",
+                "published_at",
+                "create_date",
+            ],
+        )
+    });
 
     // gallery-dl's author fields are source-specific, and two of them disagree:
     //   twitter (extractor/twitter.py): `user.name` is the *screen name* and
@@ -495,6 +512,11 @@ pub fn from_gallery_metadata(
     let author_handle = if twitter {
         first_string_path_matching(meta, handle_keys, looks_like_screen_name)
             .or_else(|| post.url.as_deref().and_then(handle_from_url))
+    } else if is_fanbox {
+        meta.get("creatorId")
+            .and_then(Value::as_str)
+            .and_then(fanbox::creator_id)
+            .map(str::to_ascii_lowercase)
     } else {
         first_string_path(meta, handle_keys)
     };
@@ -532,7 +554,7 @@ pub fn from_gallery_metadata(
     let author_name = first_string_path_matching(meta, name_keys, |name| {
         !same_handle(name, author_handle.as_deref())
     });
-    let author_id = first_string_path(
+    let mut author_id = first_string_path(
         meta,
         &[
             "user_id",
@@ -548,15 +570,24 @@ pub fn from_gallery_metadata(
         ],
     )
     .or_else(|| author_handle.clone());
+    let mut author_url = first_string(
+        meta,
+        &["user_url", "artist_url", "creator_url", "author_url"],
+    );
+    if is_fanbox {
+        if let Some(creator) = author_handle.as_deref() {
+            author_id = Some(creator.to_owned());
+            author_url = Some(fanbox::creator_url(creator));
+        } else {
+            author_id = author_id.or_else(|| first_string_path(meta, &["user.userId"]));
+        }
+    }
     if author_id.is_some() || author_name.is_some() || author_handle.is_some() {
         post.author = Some(PostAuthor {
             source_id: author_id.unwrap_or_else(|| "unknown".to_string()),
             name: author_name,
             handle: author_handle,
-            url: first_string(
-                meta,
-                &["user_url", "artist_url", "creator_url", "author_url"],
-            ),
+            url: author_url,
         });
     }
 
@@ -569,7 +600,9 @@ pub fn normalize_source_name(category: &str) -> String {
     let raw = category.trim().to_ascii_lowercase();
     let name = raw.trim_start_matches("www.").trim_end_matches('.');
     // accept both extractor names ("pixiv") and bare hosts ("www.pixiv.net")
-    let mapped = if name == "x" || name.ends_with("x.com") || name.ends_with("twitter.com") {
+    let mapped = if matches!(name, "fanbox" | "fanbox.cc") || name.ends_with(".fanbox.cc") {
+        "fanbox"
+    } else if name == "x" || name.ends_with("x.com") || name.ends_with("twitter.com") {
         "twitter"
     } else if name.ends_with("pixiv.net") || name.contains("pixiv") {
         "pixiv"

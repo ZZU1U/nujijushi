@@ -1,5 +1,6 @@
 //! Source abstraction: turn a URL (or a folder) into normalized posts + staged files.
 
+mod fanbox;
 pub mod gallerydl;
 pub mod localdir;
 pub mod normalize;

@@ -6,12 +6,13 @@ use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
 use url::Url;
 
-use super::{gallerydl, normalize};
+use super::{fanbox, gallerydl, normalize};
 use crate::config::Config;
 use crate::error::{Error, Result};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 enum Site {
+    Fanbox(String),
     Pixiv,
     Twitter,
     Bluesky,
@@ -20,8 +21,9 @@ enum Site {
 }
 
 impl Site {
-    fn source(self) -> &'static str {
+    fn source(&self) -> &'static str {
         match self {
+            Self::Fanbox(_) => "fanbox",
             Self::Pixiv => "pixiv",
             Self::Twitter => "twitter",
             Self::Bluesky => "bluesky",
@@ -30,7 +32,7 @@ impl Site {
         }
     }
 
-    fn permalink(self, id: &str, meta: &Value) -> Option<String> {
+    fn permalink(&self, id: &str, meta: &Value) -> Option<String> {
         if matches!(self, Self::Bluesky) {
             let did = meta.get("author")?.get("did")?.as_str()?;
             let uri = meta.get("uri")?.as_str()?;
@@ -47,6 +49,13 @@ impl Site {
             return None;
         }
         Some(match self {
+            Self::Fanbox(creator) => {
+                let listed = meta.get("creatorId")?.as_str()?;
+                if !creator.eq_ignore_ascii_case(listed) {
+                    return None;
+                }
+                format!("{}/posts/{id}", fanbox::creator_url(creator))
+            }
             Self::Pixiv => format!("https://www.pixiv.net/artworks/{id}"),
             Self::Twitter => format!("https://x.com/i/web/status/{id}"),
             Self::Danbooru => format!("https://danbooru.donmai.us/posts/{id}"),
@@ -110,7 +119,7 @@ impl Feed {
     pub fn parse(raw: &str) -> Result<Self> {
         let invalid = || {
             Error::invalid(
-                "Use a Pixiv artist page, X or Bluesky artist media feed, or newest-first Danbooru or Gelbooru tag search",
+                "Use a Pixiv or FANBOX creator page, X or Bluesky artist media feed, or newest-first Danbooru or Gelbooru tag search",
             )
         };
         let url = Url::parse(raw.trim()).map_err(|_| invalid())?;
@@ -120,6 +129,13 @@ impl Feed {
             || url.password().is_some()
         {
             return Err(invalid());
+        }
+        if let Some(creator) = fanbox::creator_from_feed(&url) {
+            let creator = creator.to_ascii_lowercase();
+            return Ok(Self {
+                url: format!("{}/posts", fanbox::creator_url(&creator)),
+                site: Site::Fanbox(creator),
+            });
         }
         let path: Vec<_> = url.path().trim_matches('/').split('/').collect();
         let (site, canonical) = match (url.host_str(), path.as_slice()) {
@@ -204,6 +220,7 @@ impl Feed {
             "output.jsonl=false".into(),
         ];
         let site_options: &[&str] = match self.site {
+            Site::Fanbox(_) => &[fanbox::DISABLE_EMBEDS],
             Site::Twitter => &[
                 "extractor.twitter.pinned=false",
                 "extractor.twitter.retweets=false",
@@ -276,7 +293,12 @@ impl Feed {
                         "gallery-dl feed scan failed ({category})"
                     )));
                 }
-                [kind, _, meta] if kind.as_i64() == Some(3) => {
+                [kind, media, meta] if kind.as_i64() == Some(3) => {
+                    if matches!(self.site, Site::Fanbox(_))
+                        && (fanbox::restricted(meta) || !fanbox::supported_media(meta, media))
+                    {
+                        continue;
+                    }
                     let post = normalize::from_gallery_metadata(meta, vec![], self.source(), None)
                         .filter(|post| post.source == self.source())
                         .ok_or_else(|| {
@@ -325,6 +347,11 @@ mod tests {
         .unwrap();
         for (url, source, expected) in [
             (
+                "https://www.fanbox.cc/@paper-bird/",
+                "fanbox",
+                "https://paper-bird.fanbox.cc/posts/501",
+            ),
+            (
                 "https://www.pixiv.net/en/users/12345",
                 "pixiv",
                 "https://www.pixiv.net/artworks/123",
@@ -356,12 +383,24 @@ mod tests {
             let candidates = feed.parse_listing(&bytes).unwrap();
             assert_eq!(candidates.len(), 1, "{source}");
             assert_eq!(candidates[0].url, expected);
+            if source == "fanbox" {
+                assert_eq!(
+                    candidates[0].published_at.to_rfc3339(),
+                    "2025-09-02T05:11:03+00:00"
+                );
+            }
         }
     }
 
     #[test]
     fn rejects_direct_posts_and_out_of_order_searches() {
         for url in [
+            "https://www.fanbox.cc/",
+            "https://www.fanbox.cc/@www",
+            "https://www.fanbox.cc/@paper-bird/posts/501",
+            "https://paper-bird.fanbox.cc/posts/501",
+            "https://paper-bird.fanbox.cc.example.test/",
+            "https://two.labels.fanbox.cc/",
             "https://www.pixiv.net/artworks/3",
             "https://x.com/artist/status/40",
             "https://danbooru.donmai.us/posts?tags=artist+order%3Ascore",
@@ -369,6 +408,25 @@ mod tests {
             "https://www.pixiv.net@unrelated.test/users/1",
         ] {
             assert!(Feed::parse(url).is_err(), "{url}");
+        }
+    }
+
+    #[test]
+    fn fanbox_normalizes_creator_feeds_and_rejects_mismatched_post_metadata() {
+        for url in [
+            "https://PAPER-BIRD.fanbox.cc/",
+            "https://www.fanbox.cc/@paper-bird/posts/?page=2#old",
+            "https://fanbox.cc/@paper-bird",
+        ] {
+            let feed = Feed::parse(url).unwrap();
+            assert_eq!(feed.url, "https://paper-bird.fanbox.cc/posts");
+            let mismatched = serde_json::json!([[3, "https://downloads.fanbox.cc/media.jpg", {
+                "category": "fanbox", "id": "501", "creatorId": "different-creator", "date": "2025-09-02 05:11:03"
+            }]]);
+            let err = feed
+                .parse_listing(&serde_json::to_vec(&mismatched).unwrap())
+                .unwrap_err();
+            assert!(err.to_string().contains("no valid post link"));
         }
     }
 
