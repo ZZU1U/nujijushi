@@ -64,6 +64,7 @@ pub fn router(ws: Arc<WebState>) -> Router {
             get(post_delete_page).post(post_delete),
         )
         .route("/posts/{id}/tags", post(post_tag_action))
+        .route("/tags/autocomplete", get(tag_autocomplete))
         .route("/posts/{id}/queue", post(post_queue))
         .route("/posts/{id}/media", post(super::media_merges::action))
         .route(
@@ -500,6 +501,37 @@ async fn dashboard(State(ws): State<Arc<WebState>>) -> WebResult<Json<DashboardP
 }
 
 // ---------------------------------------------------------------- posts
+
+#[derive(serde::Deserialize)]
+struct TagAutocompleteQuery {
+    q: Option<String>,
+    post_id: Option<i64>,
+}
+
+#[derive(serde::Serialize)]
+struct TagMatch {
+    name: String,
+    count: i64,
+}
+
+async fn tag_autocomplete(
+    State(ws): State<Arc<WebState>>,
+    Query(query): Query<TagAutocompleteQuery>,
+) -> WebResult<Json<Vec<TagMatch>>> {
+    let Some(q) = query.q.filter(|q| !q.trim().is_empty()) else {
+        return Ok(Json(Vec::new()));
+    };
+    let tags = ws
+        .app
+        .db
+        .call(move |conn| tag_db::autocomplete(conn, &q, query.post_id))
+        .await?;
+    Ok(Json(
+        tags.into_iter()
+            .map(|(name, count)| TagMatch { name, count })
+            .collect(),
+    ))
+}
 
 async fn posts_page(
     State(ws): State<Arc<WebState>>,

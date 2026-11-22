@@ -389,6 +389,33 @@ pub fn most_used(conn: &Connection, limit: i64) -> Result<Vec<(String, i64)>> {
     Ok(out)
 }
 
+pub(crate) fn autocomplete(
+    conn: &Connection,
+    raw: &str,
+    exclude_post: Option<i64>,
+) -> Result<Vec<(String, i64)>> {
+    let Some(prefix) = normalize(raw) else {
+        return Ok(Vec::new());
+    };
+    // Use the name index and match punctuation literally, including underscores.
+    let upper_bound = format!("{prefix}\u{10ffff}");
+    let mut stmt = conn.prepare(
+        "SELECT t.name, COUNT(DISTINCT pt.post_id) AS uses
+         FROM tags t JOIN visible_post_tag_links pt ON pt.tag_id = t.id
+         WHERE t.name >= ?1 AND t.name < ?2
+         GROUP BY t.id
+         HAVING COUNT(CASE WHEN pt.post_id = ?3 THEN 1 END) = 0
+         ORDER BY uses DESC, t.name
+         LIMIT 8",
+    )?;
+    Ok(stmt
+        .query_map(
+            rusqlite::params![prefix, upper_bound, exclude_post],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

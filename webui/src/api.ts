@@ -42,6 +42,7 @@ export interface PostsPage extends CardsPage {
   clear_tag_url: string; channels: ChannelChoice[]; states: string[]; setup: boolean
 }
 export interface Tag { id: number; name: string }
+export interface TagMatch { name: string; count: number }
 export interface Post {
   id: number; source: string; source_id: string; url: string | null; title: string | null
   description: string | null; artist: string | null; artist_url: string | null

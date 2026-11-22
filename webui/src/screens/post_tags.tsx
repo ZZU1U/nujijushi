@@ -1,5 +1,6 @@
 import { useState, type ClipboardEvent } from 'react'
 import { ActionForm, JobProgress, TextField } from '../ui'
+import { TagAutocomplete } from '../components/TagAutocomplete'
 import type { PostDetailPage, TagSuggestions } from '../api'
 import type { PostAutosave } from './post_autosave'
 
@@ -10,6 +11,7 @@ export function PostTags({ data, editor }: { data: PostDetailPage; editor: PostA
   const pending = editor.tagEdits
   const additions = [...new Set(pending.flatMap((edit) => edit.action === 'add'
     ? edit.tags.split(/[,\n]/).map((tag) => tag.trim().replace(/^#+/, '')).filter(Boolean) : []))]
+  const added = new Set([...post.tags.map(({ name }) => name), ...additions])
   const changing = (id: number) => pending.some((edit) => edit.action !== 'add' && edit.tag_id === id)
 
   function add(tags: string) {
@@ -45,8 +47,8 @@ export function PostTags({ data, editor }: { data: PostDetailPage; editor: PostA
         <li className="post-chip" data-pending="" key={name}>#{name}</li>)}
     </ul>}
     <form className="add-tag" onSubmit={(event) => { event.preventDefault(); add(draft); setDraft('') }}>
-      <input aria-label="Add a tag" placeholder="Add a tag…" value={draft} onPaste={paste} enterKeyHint="done" onChange={(event) => {
-        const value = event.target.value
+      <TagAutocomplete aria-label="Add a tag" placeholder="Add a tag…" value={draft} postId={post.id} exclude={added}
+        onPick={(tag) => { add(tag); setDraft('') }} onPaste={paste} enterKeyHint="done" onChange={(value) => {
         const lastComma = value.lastIndexOf(',')
         if (lastComma !== -1) add(value.slice(0, lastComma))
         setDraft(value.slice(lastComma + 1))

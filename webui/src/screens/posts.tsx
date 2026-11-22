@@ -3,6 +3,7 @@ import { api, expired, friendly, type Card, type CardsPage, type PostsPage } fro
 import { Actions, ActionForm, useActions } from '../ui'
 import { Badge } from '../components/Badge'
 import { ChannelSelect } from '../components/ChannelSelect'
+import { TagAutocomplete } from '../components/TagAutocomplete'
 import { Thumbnail } from '../components/Thumbnail'
 
 export interface GridSnapshot {
@@ -249,7 +250,8 @@ export function Posts({ path, snapshots }: { path: string; snapshots: Map<string
         <option value="">hide sent</option><option value="not_queued">Not queued</option>
         <option value="all">with sent</option><option value="yes">sent only</option>
       </select>
-      <input name="tag" aria-label="Tag filter" placeholder="tag" value={filter.tag} onChange={(event) => edit('tag', event.target.value)} />
+      <TagAutocomplete name="tag" aria-label="Tag filter" placeholder="Search tags" value={filter.tag}
+        onChange={(value) => edit('tag', value)} onPick={(tag) => edit('tag', tag, true)} />
       {data && <span className="hint">{data.total} post(s)</span>}
       <a className="hint post-duplicates-link" href="/duplicates">review duplicates</a>
     </form>

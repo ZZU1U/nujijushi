@@ -3974,6 +3974,57 @@ async fn queue_status_tracks_worker_and_scheduled_deliveries_for_its_channel() {
 }
 
 #[tokio::test]
+async fn tag_autocomplete_ranks_visible_prefix_matches_and_skips_existing_tags() {
+    use nujijushi::db::{posts, tags};
+
+    let h = harness();
+    let first = h.post_only("autocomplete-first").await;
+    let second = h.post_only("autocomplete-second").await;
+    h.state
+        .db
+        .with(|conn| {
+            let mut post = NormalizedPost::new("pixiv", "autocomplete-first");
+            post.tags = vec!["night_sky".into(), "night_snow".into()];
+            posts::upsert(conn, &post, &[])?;
+            tags::add_manual(
+                conn,
+                first,
+                &["night_sky".into(), "nightxs".into(), "night_sea".into()],
+            )?;
+            tags::add_manual(conn, second, &["night_sky".into(), "night_stars".into()])?;
+            let snow = tags::provenance(conn, first)?
+                .into_iter()
+                .find(|tag| tag.name == "night_snow")
+                .unwrap();
+            tags::suppress_source(conn, first, snow.id)?;
+            Ok(())
+        })
+        .unwrap();
+
+    let endpoint = "/api/v1/tags/autocomplete";
+    let unauthenticated = Request::get(endpoint).body(Body::empty()).unwrap();
+    assert_eq!(
+        h.send(unauthenticated).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(h.page(endpoint).await, serde_json::json!([]));
+
+    let query = format!("{endpoint}?q=%23NiGhT+S");
+    assert_eq!(
+        h.page(&query).await,
+        serde_json::json!([
+            {"name": "night_sky", "count": 2},
+            {"name": "night_sea", "count": 1},
+            {"name": "night_stars", "count": 1}
+        ])
+    );
+    assert_eq!(
+        h.page(&format!("{query}&post_id={first}")).await,
+        serde_json::json!([{"name": "night_stars", "count": 1}])
+    );
+}
+
+#[tokio::test]
 async fn posts_cursor_filter_and_web_default_follow_archive_state() {
     use nujijushi::db::{channels, posts, queue, tags};
     let h = harness();

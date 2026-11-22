@@ -734,7 +734,7 @@ test('tags use one chip per canonical tag with source undo and inline suggestion
   })
   await signIn(page, path)
   const tags = page.locator('#post-tags')
-  const input = tags.getByRole('textbox', { name: 'Add a tag' })
+  const input = tags.getByRole('combobox', { name: 'Add a tag' })
   await tags.getByRole('button', { name: 'Remove tag browser_source' }).click()
   await expect(tags.getByRole('link', { name: '#browser_source' })).toHaveCount(0)
   await tags.getByText(/Removed source tags/).click()
@@ -789,4 +789,41 @@ test('guest reputation requires an explicit verdict and uses the entered points'
   } finally {
     db.close()
   }
+})
+
+test('tag autocomplete filters posts and adds a known tag from the editor', async ({ page }) => {
+  const first = await browserPost('Autocomplete first', [12])
+  const second = await browserPost('Autocomplete second', [14])
+  const third = await browserPost('Autocomplete third', [16])
+  await page.setViewportSize({ width: 390, height: 844 })
+  await signIn(page, '/posts?search=Autocomplete&source=local')
+  const { csrf } = await (await page.request.get(base + '/api/v1/session')).json()
+  for (const [id, tags] of [[first, 'shared_landscape'], [second, 'shared_landscape'], [third, 'shared_portrait']]) {
+    const response = await page.request.post(base + '/api/v1/posts/' + id + '/tags', {
+      form: { csrf, action: 'add', tags },
+    })
+    expect(response.ok()).toBeTruthy()
+  }
+
+  const filter = page.getByRole('combobox', { name: 'Tag filter' })
+  await filter.fill('#Shared')
+  const options = page.getByRole('listbox', { name: 'Matching tags' })
+  await expect(options.getByRole('option')).toHaveText(['shared_landscape2 posts', 'shared_portrait1 post'])
+  await filter.press('Escape')
+  await expect(filter).toHaveAttribute('aria-expanded', 'false')
+  await filter.press('ArrowDown')
+  await expect(options.getByRole('option', { selected: true })).toContainText('shared_landscape')
+  await filter.press('Enter')
+  await expect(page).toHaveURL(/search=Autocomplete.*source=local.*tag=shared_landscape/)
+  await expect(page.locator('[data-post-card]')).toHaveCount(2)
+
+  await page.goto(base + '/posts/' + third)
+  const input = page.getByRole('combobox', { name: 'Add a tag' })
+  await input.fill('shared')
+  await expect(options.getByRole('option')).toHaveCount(1)
+  await options.getByRole('option', { name: /shared_landscape/ }).click()
+  await expect(input).toHaveValue('')
+  await expect(page.getByRole('link', { name: '#shared_landscape' })).toBeVisible()
+  await expect(page.getByText('All changes saved', { exact: true })).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390)
 })

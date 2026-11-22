@@ -142,7 +142,7 @@ next-slots preview · import box with job progress · **jobs** (every action, li
 
 When you add a channel or change its Telegram destination in the UI, it verifies that the destination is a broadcast channel and the bot has permission to post there. The dashboard's first-run setup can hold the first queued post for caption preview before you start scheduling.
 
-On **Posts**, filters apply as you change them and more cards load as you scroll. **Not queued** shows new and approved artwork that has no queue assignment or recorded delivery. Open **Tags** to browse popular tags and see the active filter. Use **Settings → Default queue channel** to preselect a destination for web queue actions.
+On **Posts**, filters apply as you change them and more cards load as you scroll. **Not queued** shows new and approved artwork that has no queue assignment or recorded delivery. Type in **Search tags** to find matching archive tags, with the most-used matches first. Open **Tags** to browse popular tags and see the active filter. Use **Settings → Default queue channel** to preselect a destination for web queue actions.
 
 Click a post card to select it, or click its post number to open it. **Select all loaded posts** selects the cards currently on screen and in the loaded feed.
 
@@ -150,7 +150,7 @@ The post gallery loads full-resolution images as you scroll. Click an image to o
 
 The **Post details** panel autosaves edits. Clear the title or description to remove its text. Edits survive re-imports, and future captions use the saved text wherever the channel template includes it.
 
-Add tags with **Add a tag** or remove them with the × on each chip. Hover over a chip to see whether it came from the source, a manual edit, or both. Removing a source tag keeps it hidden after re-import. Restore it under **Removed source tags** if the most recent import still supplied it.
+Use **Add a tag** to pick a matching archive tag or enter a new one. Remove tags with the × on each chip. Hover over a chip to see whether it came from the source, a manual edit, or both. Removing a source tag keeps it hidden after re-import. Restore it under **Removed source tags** if the most recent import still supplied it.
 
 Drag artwork tiles to reorder them, or choose **Move earlier** and **Move later** from a tile's corner menu. The saved order applies to future Telegram sends, mirrors, and share exports. Use the same menu to hide or restore an item in outgoing copies.
 
