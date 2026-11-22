@@ -1,4 +1,4 @@
-//! Execute manual watched-source checks through the archive import flow.
+//! Execute watched-source checks through the archive import flow.
 
 use std::fs::File;
 
@@ -18,12 +18,12 @@ pub async fn lock(state: &AppState, watch_id: i64) -> Result<Option<File>> {
 }
 
 pub async fn check(state: &AppState, watch_id: i64, job_id: i64) -> Result<JobReport> {
+    let started = Utc::now();
     let watch = state
         .db
-        .call(move |conn| watches::get(conn, watch_id))
+        .call(move |conn| watches::start_check(conn, watch_id, started))
         .await?;
     let feed = Feed::parse(&watch.url)?;
-    let started = Utc::now();
     let limit = if watch.checkpoint.is_none() {
         i64::from(watch.initial_batch)
     } else {

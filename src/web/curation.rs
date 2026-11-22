@@ -45,6 +45,7 @@ pub async fn watches_page(State(ws): State<Arc<WebState>>) -> WebResult<Json<Wat
                         url: watch.url,
                         initial_batch: watch.initial_batch,
                         enabled: watch.enabled,
+                        last_run_at: watch.last_run_at,
                         job: job.as_ref().map(|job| job_view(job, now)),
                     })
                 })

@@ -53,9 +53,11 @@ async function localPort() {
 
 test.beforeAll(async () => {
   directory = await mkdtemp(join(tmpdir(), 'nujijushi-browser-'))
+  const galleryDl = join(directory, 'gallery-dl')
+  await writeFile(galleryDl, "#!/bin/sh\nprintf '[]\\n'\n", { mode: 0o700 })
   const env = { ...process.env, NUJIJUSHI_HOME: join(directory, 'archive'),
     NUJIJUSHI_UI_TOKEN: token, TG_BOT_TOKEN: '', NUJIJUSHI_BOT_MODE: 'polling',
-    NUJIJUSHI_BOT: '0', NUJIJUSHI_ADMINS: '', NUJIJUSHI_PROXY: '' }
+    NUJIJUSHI_BOT: '0', NUJIJUSHI_ADMINS: '', NUJIJUSHI_PROXY: '', NUJIJUSHI_GALLERY_DL: galleryDl }
   cli = (...args: string[]) => execFileSync(binary, args, { env, stdio: ['ignore', 'pipe', 'pipe'] })
   cli('init')
   const config = join(env.NUJIJUSHI_HOME, 'config.toml')
@@ -114,7 +116,7 @@ async function browserPost(name: string, heights: number[]) {
   }
 }
 
-test('FANBOX creator links can be saved as one watched source', async ({ page }) => {
+test('FANBOX creator links share a watch that checks automatically and shows its last run', async ({ page }) => {
   await signIn(page, '/watches')
   const watchName = 'Paper Bird FANBOX'
   const name = page.getByRole('textbox', { name: 'Name', exact: true })
@@ -125,6 +127,8 @@ test('FANBOX creator links can be saved as one watched source', async ({ page })
   await add.click()
   const watch = page.locator('article').filter({ has: page.getByRole('heading', { name: watchName }) })
   await expect(watch.getByRole('link')).toHaveAttribute('href', 'https://paper-bird.fanbox.cc/posts')
+  await expect(watch.locator('time')).toHaveAttribute('datetime', /^\d{4}-\d{2}-\d{2}T/, { timeout: 20000 })
+  await expect(watch.getByText('0 added · 0 skipped (already archived) · 0 failed · 0 pending')).toBeVisible()
   await expect(watch.getByRole('button', { name: 'Check now' })).toBeEnabled()
   await name.fill('Same FANBOX feed')
   await url.fill('https://paper-bird.fanbox.cc/posts')

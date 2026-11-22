@@ -1,6 +1,6 @@
 //! Watched feeds and the durable queue of discovered artwork.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 
 use crate::error::{Error, Result};
@@ -17,6 +17,7 @@ pub struct Watch {
     pub enabled: bool,
     pub checkpoint: Option<DateTime<Utc>>,
     pub last_job_id: Option<i64>,
+    pub last_run_at: Option<DateTime<Utc>>,
 }
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<Watch> {
@@ -28,6 +29,7 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<Watch> {
         enabled: row.get("enabled")?,
         checkpoint: get_ts(row, "checkpoint")?,
         last_job_id: row.get("last_job_id")?,
+        last_run_at: get_ts(row, "last_run_at")?,
     })
 }
 
@@ -86,13 +88,51 @@ pub fn enqueue(conn: &mut Connection, watch_id: i64, kind: &str) -> Result<(i64,
     if let Some(id) = jobs::find_active(&tx, kind, &payload)? {
         return Ok((id, false));
     }
-    let id = jobs::create(&tx, kind, &payload, 0)?;
-    tx.execute(
+    let id = queue_check(&tx, watch_id, kind, &payload)?;
+    tx.commit()?;
+    Ok((id, true))
+}
+
+pub(crate) fn enqueue_due(conn: &mut Connection, now: DateTime<Utc>, kind: &str) -> Result<()> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let cutoff = fmt_ts(now - TimeDelta::days(1));
+    let due = {
+        let mut stmt = tx.prepare(
+            "SELECT w.id FROM watched_sources w
+             WHERE w.enabled = 1 AND (w.last_run_at IS NULL OR julianday(w.last_run_at) <= julianday(?1))
+               AND NOT EXISTS (
+                 SELECT 1 FROM jobs WHERE kind = ?2 AND payload = CAST(w.id AS TEXT)
+                   AND state IN ('pending', 'running')
+               )
+             ORDER BY julianday(w.last_run_at), w.id",
+        )?;
+        stmt.query_map(params![cutoff, kind], |row| row.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for watch_id in due {
+        queue_check(&tx, watch_id, kind, &watch_id.to_string())?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn queue_check(conn: &Connection, watch_id: i64, kind: &str, payload: &str) -> Result<i64> {
+    let id = jobs::create(conn, kind, payload, 0)?;
+    conn.execute(
         "UPDATE watched_sources SET last_job_id = ?1 WHERE id = ?2",
         params![id, watch_id],
     )?;
-    tx.commit()?;
-    Ok((id, true))
+    Ok(id)
+}
+
+pub(crate) fn start_check(conn: &Connection, id: i64, at: DateTime<Utc>) -> Result<Watch> {
+    conn.query_row(
+        "UPDATE watched_sources SET last_run_at = ?2 WHERE id = ?1 RETURNING *",
+        params![id, fmt_ts(at)],
+        from_row,
+    )
+    .optional()?
+    .ok_or_else(|| Error::NotFound(format!("watch {id}")))
 }
 
 pub fn record_scan(
@@ -168,6 +208,53 @@ pub fn pending_count(conn: &Connection, watch_id: i64) -> Result<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn daily_checks_use_the_actual_start_and_skip_paused_or_active_watches() {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        db.with(|conn| {
+            let kind = crate::jobs::KIND_WATCH_CHECK;
+            let now = DateTime::from_timestamp(1_750_000_000, 0).unwrap();
+            let day = TimeDelta::days(1);
+            create(conn, "Artist", "https://x.com/artist/media", 10)?;
+            create(conn, "Paused", "https://x.com/paused/media", 10)?;
+            set_enabled(conn, 2, false)?;
+
+            enqueue_due(conn, now, kind)?;
+            let first = get(conn, 1)?.last_job_id.unwrap();
+            assert_eq!(get(conn, 1)?.last_run_at, None);
+            assert_eq!(get(conn, 2)?.last_job_id, None);
+            enqueue_due(conn, now + day, kind)?;
+            assert_eq!(enqueue(conn, 1, kind)?, (first, false));
+
+            jobs::set_state(conn, first, "running", None)?;
+            let started = now + day;
+            start_check(conn, 1, started)?;
+            enqueue_due(conn, started + day, kind)?;
+            assert_eq!(get(conn, 1)?.last_job_id, Some(first));
+            jobs::set_state(conn, first, "failed", None)?;
+
+            enqueue_due(conn, started + day - TimeDelta::seconds(1), kind)?;
+            assert_eq!(get(conn, 1)?.last_job_id, Some(first));
+            let (manual, queued) = enqueue(conn, 1, kind)?;
+            assert!(queued);
+            assert_eq!(get(conn, 1)?.last_run_at, Some(started));
+            let manual_started = started + TimeDelta::hours(2);
+            start_check(conn, 1, manual_started)?;
+            jobs::set_state(conn, manual, "done", None)?;
+            enqueue_due(conn, started + day, kind)?;
+            assert_eq!(get(conn, 1)?.last_job_id, Some(manual));
+
+            set_enabled(conn, 2, true)?;
+            enqueue_due(conn, manual_started + day, kind)?;
+            assert_ne!(get(conn, 1)?.last_job_id, Some(manual));
+            assert_eq!(get(conn, 1)?.last_run_at, Some(manual_started));
+            assert!(get(conn, 2)?.last_job_id.is_some());
+            assert_eq!(jobs::count_pending(conn, kind)?, 2);
+            Ok(())
+        })
+        .unwrap();
+    }
 
     #[test]
     fn one_scan_can_discover_more_than_one_download_batch() {

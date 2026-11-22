@@ -1670,6 +1670,7 @@ fi
     let watches = h.page("/watches").await;
     assert_eq!(watches["watches"][0]["name"], "Pixiv Art");
     assert_eq!(watches["watches"][0]["job"]["active"], true);
+    assert!(watches["watches"][0]["last_run_at"].is_null());
     let status = body_text(h.send(h.get("/api/status")).await).await;
     assert!(status.contains("\"watch_jobs\"") && status.contains("\"watch_check\""));
 
@@ -1695,8 +1696,14 @@ fi
             Ok(id)
         })
         .unwrap();
-    let html = body_text(h.send(h.get("/watches")).await).await;
-    assert!(html.contains("1 added · 0 skipped (already archived) · 1 failed · 1 pending"));
+    let first_check = &h.page("/watches").await["watches"][0];
+    assert!(
+        first_check["job"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("1 added · 0 skipped (already archived) · 1 failed · 1 pending")
+    );
+    assert!(first_check["last_run_at"].as_str().is_some());
 
     let toggle_url = format!("/watches/{watch_id}/toggle");
     assert_eq!(
@@ -1740,7 +1747,15 @@ fi
     assert_eq!(Harness::message(&resume), "Watch resumed");
     let worker = JobWorker::new(reopened);
     assert_eq!(h.send(check(&h)).await.status(), StatusCode::ACCEPTED);
+    assert_eq!(
+        h.page("/watches").await["watches"][0]["last_run_at"],
+        first_check["last_run_at"]
+    );
     assert_eq!(worker.drain().await.unwrap(), 1);
+    assert_ne!(
+        h.page("/watches").await["watches"][0]["last_run_at"],
+        first_check["last_run_at"]
+    );
     let downloads = std::fs::read_to_string(base.join("downloads")).unwrap();
     assert_eq!(downloads, "2\n3\n4\n5\n2\n");
     let html = body_text(h.send(h.get("/watches")).await).await;
@@ -2688,7 +2703,7 @@ async fn duplicate_inbox_indexes_and_dismisses_cross_source_media_pairs() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn watched_scan_does_not_delay_a_later_publish_job() {
+async fn automatic_watched_scan_does_not_delay_a_later_publish_job() {
     use std::os::unix::fs::PermissionsExt;
     let mut h = harness();
     let base = h._dir.path();
@@ -2716,10 +2731,6 @@ printf '[]\n'
             )
         })
         .unwrap();
-    let (watch_id, _) = nujijushi::jobs::create_watch_check_job(&h.state, 1)
-        .await
-        .unwrap();
-
     let channel = h.add_channel().await;
     let (_, queue_id) = h.queue_a_post("95", &channel).await;
     let worker = nujijushi::jobs::worker::JobWorker::new(h.state.clone());
@@ -2746,11 +2757,15 @@ printf '[]\n'
     })
     .await
     .unwrap();
-    assert_eq!(h.job_state(watch_id).await, "running");
+    let page = h.page("/watches").await;
+    let watch = &page["watches"][0];
+    assert_eq!(watch["job"]["state"], "running");
+    assert!(watch["last_run_at"].as_str().is_some());
+    let job_id = watch["job"]["id"].as_i64().unwrap();
     assert_eq!(h.mock.send_count(), 1);
     std::fs::write(base.join("watch-release"), "").unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(4), async {
-        while h.job_state(watch_id).await != "done" {
+        while h.job_state(job_id).await != "done" {
             tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         }
     })

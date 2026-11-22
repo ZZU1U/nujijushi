@@ -38,7 +38,7 @@ pub struct AppState {
 See [.env.example](.env.example) for environment overrides. `AppState::open` creates
 the home layout, opens and migrates the DB, and builds the blob store and renderer.
 
-## Data model (SQLite, schema v22 via `PRAGMA user_version`)
+## Data model (SQLite, schema v23 via `PRAGMA user_version`)
 
 | migration | tables and views | purpose |
 |---|---|---|
@@ -58,6 +58,7 @@ the home layout, opens and migrates the DB, and builds the blob store and render
 | `0020_gallery_order.sql` | `media_gallery_order` | preferred artwork order keyed by source blob hash and occurrence |
 | `0021_duplicate_index_recovery.sql` | `duplicate_fingerprint_failures` | backoff for unreadable artwork and an index for exact duplicate lookup |
 | `0022_delivery_links.sql` | `sends` | snapshot Telegram destinations for links to confirmed deliveries |
+| `0023_daily_watches.sql` | `watched_sources` | record the start of the last check and backfill older watch activity |
 
 Blob bytes live at `blobs/<aa>/<blake3>.<ext>` and thumbnails at
 `thumbs/<aa>/<blake3>.webp`. Identical files across posts are stored once. SQLite
@@ -241,9 +242,10 @@ ID cursor. The card badge identifies Telegram submissions from guests.
 * `web/setup.rs` places the first post in `held` for preview. Confirming the preview
   releases it and enables scheduling. `web/routes.rs` verifies the bot's
   posting rights when creating a channel or changing its Telegram destination.
-* `jobs/watch.rs` handles operator-triggered feed checks. It records discoveries and
-  the checkpoint before attempting downloads so a later check can retry pending
-  items. `duplicates.rs` indexes still images in batches for the duplicate inbox.
+* `jobs/watch.rs` handles manual and automatic feed checks. The worker queues enabled
+  watches on startup and as they become due, 24 hours after the last attempt started.
+  Checks record discoveries and the checkpoint before downloading so later checks can
+  retry pending items. `duplicates.rs` indexes still images in batches for the duplicate inbox.
 * `jobs/tag_suggestions/` sends still images to FoidFinder on loopback. The optional
   Danbooru fallback resolves character names and franchise metadata. Reviews,
   supporting image positions, and catalog mappings are stored in SQLite.

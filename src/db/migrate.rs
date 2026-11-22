@@ -27,6 +27,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0020_gallery_order.sql"),
     include_str!("../../migrations/0021_duplicate_index_recovery.sql"),
     include_str!("../../migrations/0022_delivery_links.sql"),
+    include_str!("../../migrations/0023_daily_watches.sql"),
 ];
 
 pub fn schema_version(conn: &Connection) -> Result<i64> {
@@ -351,6 +352,39 @@ mod tests {
         assert_eq!(tags[1].name, "imported");
         assert!(tags[1].source && !tags[1].manual);
         assert!(crate::db::tags::removals(&conn, 1).unwrap().is_empty());
+    }
+
+    #[test]
+    fn daily_watch_migration_uses_the_last_settled_check() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..22] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 22).unwrap();
+        conn.execute_batch(
+            "INSERT INTO watched_sources (name, url, initial_batch)
+                 VALUES ('Artist', 'https://x.com/artist/media', 3),
+                        ('Never checked', 'https://x.com/other/media', 3);
+             INSERT INTO jobs (id, kind, payload, state, created_at, updated_at)
+                 VALUES (1, 'watch_check', '1', 'done', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z'),
+                        (2, 'watch_check', '1', 'failed', '2026-01-02T00:00:00Z', '2026-01-02T00:01:00Z'),
+                        (3, 'watch_check', '1', 'pending', '2026-01-03T00:00:00Z', '2026-01-03T00:00:00Z');
+             UPDATE watched_sources SET last_job_id = 3 WHERE id = 1;",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let watch = super::super::watches::get(&conn, 1).unwrap();
+        assert_eq!(watch.last_job_id, Some(3));
+        assert_eq!(
+            watch.last_run_at,
+            super::super::parse_ts("2026-01-02T00:01:00Z")
+        );
+        assert_eq!(
+            super::super::watches::get(&conn, 2).unwrap().last_run_at,
+            None
+        );
     }
 
     #[test]

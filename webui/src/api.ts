@@ -145,7 +145,9 @@ export interface PreviewPage {
 }
 export interface JobsPage { jobs: Job[]; parallel: number; waiting: number }
 export interface ImportPage extends JobsPage { cookies: string }
-export interface WatchesPage { watches: { id: number; name: string; url: string; initial_batch: number; enabled: boolean; job: Job | null }[] }
+export interface WatchesPage {
+  watches: { id: number; name: string; url: string; initial_batch: number; enabled: boolean; last_run_at: string | null; job: Job | null }[]
+}
 export interface DuplicatePost {
   id: number; title: string | null; artist: string; source: string; url: string | null; state: string
   queues: { alias: string | null; state: string; channel_id: number }[]

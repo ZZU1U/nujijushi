@@ -187,6 +187,7 @@ pub(super) struct WatchView {
     pub url: String,
     pub initial_batch: u16,
     pub enabled: bool,
+    pub last_run_at: Option<chrono::DateTime<chrono::Utc>>,
     pub job: Option<JobView>,
 }
 

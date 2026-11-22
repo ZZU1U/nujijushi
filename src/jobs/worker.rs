@@ -23,6 +23,7 @@ const MEDIA_KINDS: &[&str] = &[
 const TAG_SUGGESTIONS_LOCK: &str = "suggest-tags.lock";
 const QUICK_JOBS: i64 = 4;
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
+const WATCH_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
 pub struct JobWorker {
     state: AppState,
@@ -163,6 +164,26 @@ impl JobWorker {
         }
     }
 
+    async fn poll_watches(&self) {
+        loop {
+            if let Err(err) = self
+                .state
+                .db
+                .call(|conn| {
+                    crate::db::watches::enqueue_due(
+                        conn,
+                        chrono::Utc::now(),
+                        crate::jobs::KIND_WATCH_CHECK,
+                    )
+                })
+                .await
+            {
+                tracing::warn!("watch scheduling failed: {err}");
+            }
+            tokio::time::sleep(WATCH_POLL_INTERVAL).await;
+        }
+    }
+
     /// Poll each lane independently so slow source checks and CPU indexing
     /// cannot delay claiming a quick publish job.
     pub async fn run<F>(&self, shutdown: F) -> Result<()>
@@ -178,6 +199,7 @@ impl JobWorker {
             _ = self.poll_media() => {},
             _ = self.poll_suggestions() => {},
             _ = self.poll_duplicates() => {},
+            _ = self.poll_watches() => {},
         }
         Ok(())
     }

@@ -196,8 +196,11 @@ The CLI equivalents are `nujijushi gc --sent --older-than-days 30` to preview an
 ### Watched sources and duplicate artwork
 
 Use **Watched sources** to save a Pixiv artist page, a FANBOX creator page, an X or Bluesky artist media feed,
-or a newest-first Danbooru or Gelbooru tag search. Use **Check now** to start each
-background check. The first check uses the configured post limit for that watch. Later checks
+or a newest-first Danbooru or Gelbooru tag search. Enabled watches run automatically
+while `nujijushi run` or `nujijushi serve` is running. A new watch is due immediately, and
+an existing watch is due 24 hours after its last check started. **Check now** queues a check
+early and restarts the interval when it begins. Each watch shows its **Last run** time
+and the latest job result. The first check uses the configured post limit. Later checks
 look for newly published artwork and retry pending downloads. Use **Pause** to block
 new checks and **Resume** to keep checking from the same point. Already queued or
 running checks can finish. Artist and search access

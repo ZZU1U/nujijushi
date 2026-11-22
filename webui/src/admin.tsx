@@ -125,7 +125,7 @@ function Screen({ path, grids }: { path: string; grids: Map<string, GridSnapshot
   if (/^\/channels\/\d+\/preview$/.test(route)) return <Resource<PreviewPage> path={endpoint}>{(data) => <Preview data={data} />}</Resource>
   if (route === '/jobs') return <Resource<JobsPage> path={endpoint} initialJobs={(data) => data.jobs}>{(data) => <Jobs data={data} />}</Resource>
   if (route === '/import') return <Resource<ImportPage> path={endpoint} initialJobs={(data) => data.jobs}>{(data) => <Import data={data} />}</Resource>
-  if (route === '/watches') return <Resource<WatchesPage> path={endpoint} initialJobs={(data) => data.watches.map((watch) => watch.job)}>{(data) => <Watches data={data} />}</Resource>
+  if (route === '/watches') return <Resource<WatchesPage> path={endpoint} initialJobs={(data) => data.watches.map((watch) => watch.job)}>{(data, reload) => <Watches data={data} reload={reload} />}</Resource>
   if (route === '/duplicates') return <Resource<DuplicatesPage> path={endpoint}>{(data) => <Duplicates data={data} />}</Resource>
   if (route === '/users') return <Resource<UsersPage> path={endpoint}>{(data) => <Users data={data} />}</Resource>
   if (route === '/settings') return <Resource<SettingsPage> path={endpoint}>{(data) => <Settings data={data} />}</Resource>
