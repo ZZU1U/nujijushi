@@ -69,6 +69,7 @@ export interface PostDetailPage {
   submitter: { tg_id: number; label: string; admin: boolean } | null
   media_total: string; media: Media[]; can_merge: boolean; has_media_tools: boolean
   merge_job: Job | null; gallery_version: string; outgoing_count: number
+  deliveries: { channel_id: number; channel: string; url: string }[]
   tag_review: TagSuggestions | null; can_suggest_tags: boolean; captions: PostCaption[]
   default_channel: number | null; ratings: string[]; states: string[]; channels: ChannelChoice[]
 }

@@ -322,11 +322,31 @@ pub fn mark_sent(
     message_ids: &str,
     sent_at: DateTime<Utc>,
 ) -> Result<()> {
+    mark_sent_to(conn, id, message_ids, sent_at, None)
+}
+
+pub(crate) fn mark_sent_to(
+    conn: &Connection,
+    id: i64,
+    message_ids: &str,
+    sent_at: DateTime<Utc>,
+    destination: Option<DeliveryDestination<'_>>,
+) -> Result<()> {
     conn.execute(
         "UPDATE queue SET state = 'sent', sent_at = ?1, tg_message_ids = ?2, lease_token = NULL,
-            lease_at = NULL, last_error = NULL
+            lease_at = NULL, last_error = NULL,
+            delivery_target = COALESCE(?4, delivery_target),
+            delivery_chat_id = COALESCE(?5, delivery_chat_id),
+            delivery_username = COALESCE(?6, delivery_username)
          WHERE id = ?3",
-        params![fmt_ts(sent_at), message_ids, id],
+        params![
+            fmt_ts(sent_at),
+            message_ids,
+            id,
+            destination.map(|address| address.target),
+            destination.and_then(|address| address.chat_id),
+            destination.and_then(|address| address.username),
+        ],
     )?;
     Ok(())
 }
@@ -529,12 +549,21 @@ pub struct SendRecord<'a> {
     pub message_ids: Option<&'a str>,
     pub caption: Option<&'a str>,
     pub error: Option<&'a str>,
+    pub destination: Option<DeliveryDestination<'a>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DeliveryDestination<'a> {
+    pub target: &'a str,
+    pub chat_id: Option<i64>,
+    pub username: Option<&'a str>,
 }
 
 pub fn log_send(conn: &Connection, record: SendRecord<'_>) -> Result<()> {
     conn.execute(
-        "INSERT INTO sends (channel_id, queue_id, post_id, sent_at, ok, tg_message_ids, caption, error)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO sends (channel_id, queue_id, post_id, sent_at, ok, tg_message_ids, caption, error,
+                            delivery_target, delivery_chat_id, delivery_username)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             record.channel_id,
             record.queue_id,
@@ -543,10 +572,65 @@ pub fn log_send(conn: &Connection, record: SendRecord<'_>) -> Result<()> {
             record.ok as i64,
             record.message_ids,
             record.caption,
-            record.error
+            record.error,
+            record.destination.map(|address| address.target),
+            record.destination.and_then(|address| address.chat_id),
+            record.destination.and_then(|address| address.username),
         ],
     )?;
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct DeliveryLink {
+    pub channel_id: i64,
+    pub channel: String,
+    pub url: String,
+}
+
+pub(crate) fn delivery_links(conn: &Connection, post_id: i64) -> Result<Vec<DeliveryLink>> {
+    let mut stmt = conn.prepare(
+        "SELECT channel_id, title, target, chat_id, username, ids FROM (
+            SELECT q.channel_id, c.title, COALESCE(q.delivery_target, c.tg_id) AS target,
+                   q.delivery_chat_id AS chat_id, q.delivery_username AS username,
+                   q.tg_message_ids AS ids, q.sent_at, 0 AS audit, q.id AS row_id
+            FROM queue q JOIN channels c ON c.id = q.channel_id
+            WHERE q.post_id = ?1 AND q.state = 'sent' AND q.tg_message_ids IS NOT NULL
+            UNION ALL
+            SELECT s.channel_id, c.title, COALESCE(s.delivery_target, c.tg_id),
+                   s.delivery_chat_id, s.delivery_username, s.tg_message_ids, s.sent_at, 1, s.id
+            FROM sends s JOIN channels c ON c.id = s.channel_id JOIN posts p ON p.id = s.post_id
+            WHERE s.post_id = ?1 AND s.ok = 1 AND s.sent_at >= p.imported_at
+                  AND s.tg_message_ids IS NOT NULL
+        ) ORDER BY channel_id, audit, sent_at DESC, row_id DESC",
+    )?;
+    let mut rows = stmt.query([post_id])?;
+    let mut linked = std::collections::HashSet::new();
+    let mut links = Vec::new();
+    while let Some(row) = rows.next()? {
+        let channel_id: i64 = row.get(0)?;
+        if linked.contains(&channel_id) {
+            continue;
+        }
+        let ids: String = row.get(5)?;
+        let Some(id) = super::reputation::parse_message_ids(&ids).first().copied() else {
+            continue;
+        };
+        let target: String = row.get(2)?;
+        let chat: Option<i64> = row.get(3)?;
+        let username: Option<String> = row.get(4)?;
+        let chat = chat.or_else(|| target.parse().ok());
+        let username = username.as_deref().or_else(|| target.strip_prefix('@'));
+        if let Some(url) = super::reputation::message_link(chat, username, id) {
+            linked.insert(channel_id);
+            links.push(DeliveryLink {
+                channel_id,
+                channel: row.get(1)?,
+                url,
+            });
+        }
+    }
+    Ok(links)
 }
 
 #[derive(serde::Serialize)]

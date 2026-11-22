@@ -193,10 +193,11 @@ test('merge 1, 2, and 4, then hide the remaining image in place', async ({ page 
   await expect(page.locator('.media-grid figure')).toHaveCount(2)
   await expect(draft).toHaveValue('Merge panels, edited')
   await expect(page.locator('.media-grid figure').first()).toContainText('48×12')
+  const image = page.locator('.media-grid figure').nth(1).locator('img')
   await (await imageOptions(page, 2)).getByRole('button', { name: 'Hide from outgoing copies' }).click()
-  await expect(page.locator('.media-grid figure').nth(1)).toContainText('Hidden from outgoing copies')
+  await expect(image).toHaveCSS('filter', 'grayscale(1) brightness(0.6)')
   await (await imageOptions(page, 2)).getByRole('button', { name: 'Restore', exact: true }).click()
-  await expect(page.locator('.media-grid figure').nth(1)).not.toContainText('Hidden from outgoing copies')
+  await expect(image).toHaveCSS('filter', 'none')
   expect(documents()).toBe(1)
 })
 
@@ -726,20 +727,28 @@ test('tags use one chip per canonical tag with source undo and inline suggestion
   }
   let suggested = false
   let reviewed = false
+  let discarded = false
   await page.route(endpoint, async (route) => {
     const response = await route.fetch()
     const data = await response.json()
     data.can_suggest_tags = true
     if (suggested) data.tag_review = {
-      job: { id: 10000, state: 'done', total: 1, progress: 1, message: '1 tag suggested', active: false },
+      job: { id: 10000, state: 'done', total: 1, progress: 1, message: '2 tags suggested', active: false },
       stale: false,
-      suggestions: reviewed ? [] : [{ id: 1, kind: 'character', tag: 'suggested_name', evidence: 'Local catalog', images: [1] }],
+      suggestions: [
+        ...(!reviewed ? [{ id: 1, kind: 'character', tag: 'suggested_name', evidence: 'Local catalog', images: [1] }] : []),
+        ...(!discarded ? [{ id: 2, kind: 'character', tag: 'another_name', evidence: 'Local catalog', images: [] }] : []),
+      ],
     }
     await route.fulfill({ response, json: data })
   })
   await page.route(endpoint + '/tag-suggestions', async (route) => {
     const fields = new URLSearchParams(route.request().postData() ?? '')
     if (fields.get('action') === 'generate') suggested = true
+    else if (fields.get('action') === 'discard_all') {
+      expect(fields.get('job_id')).toBe('10000')
+      discarded = true
+    }
     else {
       expect(fields.get('action')).toBe('accept')
       expect(fields.get('tag')).toBe('edited_suggestion')
@@ -775,10 +784,54 @@ test('tags use one chip per canonical tag with source undo and inline suggestion
 
   await tags.getByRole('button', { name: 'Suggest tags', exact: true }).click()
   await expect(tags.getByRole('link', { name: 'Image 1' })).toHaveAttribute('href', '#media-1')
-  await tags.getByRole('textbox', { name: 'Edit suggested character tag suggested_name' }).fill('edited_suggestion')
-  await tags.getByRole('button', { name: 'Accept tag' }).click()
+  const suggestion = tags.locator('form').filter({ has: page.getByRole('textbox', { name: 'Edit suggested character tag suggested_name' }) })
+  await suggestion.getByRole('textbox').fill('edited_suggestion')
+  await suggestion.getByRole('button', { name: 'Accept tag' }).click()
   await expect(tags.getByRole('link', { name: '#edited_suggestion' })).toBeVisible()
+  const removeAll = tags.getByRole('button', { name: 'Remove all tags' })
+  page.once('dialog', (dialog) => dialog.dismiss())
+  await removeAll.click()
+  await expect(tags.getByRole('link', { name: '#edited_suggestion' })).toBeVisible()
+  page.once('dialog', (dialog) => dialog.accept())
+  await removeAll.click()
+  await expect(tags.getByRole('list', { name: 'Post tags' })).toHaveCount(0)
+  await expect(tags.getByRole('textbox', { name: 'Edit suggested character tag another_name' })).toBeVisible()
+
+  const restore = tags.getByRole('button', { name: 'Restore source tag browser_source' })
+  if (!await restore.isVisible()) await tags.getByText(/Removed source tags/).click()
+  await restore.click()
+  await expect(tags.getByRole('link', { name: '#browser_source' })).toBeVisible()
+  await tags.getByRole('button', { name: 'Discard all suggestions' }).click()
   await expect(tags.getByRole('button', { name: 'Accept tag' })).toHaveCount(0)
+  await expect(tags.getByRole('button', { name: 'Discard all suggestions' })).toHaveCount(0)
+  await expect(tags.getByRole('link', { name: '#browser_source' })).toBeVisible()
+})
+
+test('the mobile post header shows the state control and confirmed Telegram delivery', async ({ page }) => {
+  const id = await browserPost('Posted artwork example', [19])
+  const db = new DatabaseSync(join(directory, 'archive', 'nujijushi.sqlite3'))
+  try {
+    db.exec('PRAGMA busy_timeout=5000')
+    db.prepare("UPDATE posts SET state = 'new' WHERE id = ?").run(id)
+    db.prepare(`INSERT INTO queue (post_id, channel_id, state, added_at, sent_at, delivery_target, tg_message_ids)
+      VALUES (?, 1, 'sent', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '@local_test_channel', '321,322')`).run(id)
+  } finally {
+    db.close()
+  }
+  await page.setViewportSize({ width: 390, height: 844 })
+  await signIn(page, '/posts/' + id)
+  const header = page.locator('.post-heading')
+  const state = header.locator('.post-state-menu summary')
+  await expect(state).toHaveAccessibleName('Post state: New')
+  await expect(header.getByRole('link', { name: /Delete post/ })).toBeVisible()
+  await expect(page.getByRole('link', { name: /View post in .* on Telegram/ })).toHaveAttribute('href', 'https://t.me/local_test_channel/321')
+  for (const verdict of ['Rejected', 'Archived', 'Approved']) {
+    await state.click()
+    await expect(header.getByRole('button', { name: 'New', exact: true })).toHaveCount(0)
+    await header.getByRole('button', { name: verdict, exact: true }).click()
+    await expect(state).toHaveAccessibleName('Post state: ' + verdict)
+    await expect(header.getByText('All changes saved', { exact: true })).toBeVisible()
+  }
 })
 
 test('guest reputation requires an explicit verdict and uses the entered points', async ({ page }) => {
@@ -792,18 +845,21 @@ test('guest reputation requires an explicit verdict and uses the entered points'
     db.prepare('INSERT INTO reputation_suggestions (subject_id, user_id, review_member) VALUES (?, 99, 1)').run(subject)
     const balance = () => db.prepare('SELECT balance FROM reputation_events WHERE user_id = 99 ORDER BY id DESC LIMIT 1').get()?.balance
     await signIn(page, '/posts/' + id)
+    const state = page.locator('.post-heading .post-state-menu summary')
+    await expect(state).toHaveAccessibleName('Post state: New')
+    await state.click()
     const points = page.getByRole('spinbutton', { name: /Approval points/ })
     await points.fill('17')
     await page.getByLabel('Notes', { exact: true }).fill('Reviewed the source')
     await expect(page.getByText('All changes saved', { exact: true })).toBeVisible()
     expect(balance()).toBeUndefined()
-    const state = page.getByRole('combobox', { name: 'State', exact: true })
-    await expect(state).toHaveValue('new')
+    await expect(state).toHaveAccessibleName('Post state: New')
     await page.getByRole('button', { name: 'Approve', exact: true }).click()
-    await expect(state).toHaveValue('approved')
+    await expect(state).toHaveAccessibleName('Post state: Approved')
     expect(balance()).toBe(1700)
+    await state.click()
     await page.getByRole('button', { name: 'Reject', exact: true }).click()
-    await expect(state).toHaveValue('rejected')
+    await expect(state).toHaveAccessibleName('Post state: Rejected')
     expect(balance()).toBeLessThan(1700)
   } finally {
     db.close()

@@ -67,6 +67,7 @@ pub(super) struct PostDetailPage {
     pub merge_job: Option<JobView>,
     pub gallery_version: String,
     pub outgoing_count: usize,
+    pub deliveries: Vec<crate::db::queue::DeliveryLink>,
     pub tag_review: Option<super::tag_suggestions::ReviewView>,
     pub can_suggest_tags: bool,
     pub captions: Vec<CaptionView>,

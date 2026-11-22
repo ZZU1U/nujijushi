@@ -283,6 +283,23 @@ pub(crate) fn remove_by_id(conn: &Connection, post_id: i64, tag_id: i64) -> Resu
     Ok(())
 }
 
+pub(crate) fn clear_post_tags(conn: &mut Connection, post_id: i64) -> Result<()> {
+    super::transaction(conn, |conn| {
+        super::posts::get(conn, post_id)?;
+        conn.execute(
+            "INSERT INTO post_tag_removals (post_id, tag_id)
+             SELECT post_id, tag_id FROM post_tags WHERE post_id = ?1 AND origin = 'source'
+             ON CONFLICT (post_id, tag_id) DO NOTHING",
+            [post_id],
+        )?;
+        conn.execute(
+            "DELETE FROM post_tags WHERE post_id = ?1 AND origin = 'manual'",
+            [post_id],
+        )?;
+        Ok(())
+    })
+}
+
 #[derive(Debug, serde::Serialize)]
 pub struct TagProvenance {
     pub id: i64,

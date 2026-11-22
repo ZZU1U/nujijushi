@@ -630,19 +630,32 @@ async fn execute_plan(
         let next_due = scheduler::next_due(channel, sent_at, jitter);
         let published_ids = ids.clone();
         let target = channel.tg_id.clone();
+        let chat_id = outcome.chat_id;
+        let chat_username = outcome.chat_username;
+        let username_for_db = chat_username.clone();
         state
             .db
             .call(move |conn| {
                 let tx =
                     conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-                queue_db::mark_sent(&tx, queue_id, &joined, sent_at)?;
+                queue_db::mark_sent_to(
+                    &tx,
+                    queue_id,
+                    &joined,
+                    sent_at,
+                    Some(queue_db::DeliveryDestination {
+                        target: &target,
+                        chat_id,
+                        username: username_for_db.as_deref(),
+                    }),
+                )?;
                 crate::db::channels::record_success(&tx, channel_id, sent_at, next_due)?;
                 crate::db::reputation::record_publication(
                     &tx,
                     &plan.post,
                     &target,
-                    outcome.chat_id,
-                    outcome.chat_username.as_deref(),
+                    chat_id,
+                    username_for_db.as_deref(),
                     &published_ids,
                 )?;
                 tx.commit()?;
@@ -657,6 +670,11 @@ async fn execute_plan(
                 post_id,
                 caption: Some(&caption_text),
                 message_ids: &ids,
+                destination: queue_db::DeliveryDestination {
+                    target: &channel.tg_id,
+                    chat_id,
+                    username: chat_username.as_deref(),
+                },
             },
         )
         .await?;

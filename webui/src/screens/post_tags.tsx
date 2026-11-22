@@ -12,7 +12,8 @@ export function PostTags({ data, editor }: { data: PostDetailPage; editor: PostA
   const additions = [...new Set(pending.flatMap((edit) => edit.action === 'add'
     ? edit.tags.split(/[,\n]/).map((tag) => tag.trim().replace(/^#+/, '')).filter(Boolean) : []))]
   const added = new Set([...post.tags.map(({ name }) => name), ...additions])
-  const changing = (id: number) => pending.some((edit) => edit.action !== 'add' && edit.tag_id === id)
+  const clearing = pending.some((edit) => edit.action === 'remove_all')
+  const changing = (id: number) => clearing || pending.some((edit) => 'tag_id' in edit && edit.tag_id === id)
 
   function add(tags: string) {
     if (tags.split(/[,\n]/).some((tag) => tag.trim())) editor.changeTags({ action: 'add', tags })
@@ -30,11 +31,16 @@ export function PostTags({ data, editor }: { data: PostDetailPage; editor: PostA
   return <section className="panel" id="post-tags">
     <div className="post-panel-heading">
       <h2>Tags</h2>
-      {enabled && <ActionForm action={endpoint} beforeSubmit={editor.flush} feedback="inline">
-        <button type="submit" name="action" value="generate" className="small ghost" disabled={review?.job.active}>
-          {review ? 'Suggest again' : 'Suggest tags'}
-        </button>
-      </ActionForm>}
+      <div className="post-buttons">
+        {added.size > 0 && <button type="button" className="small ghost" disabled={clearing} onClick={() => {
+          if (window.confirm('Remove all tags from this post?')) editor.changeTags({ action: 'remove_all' })
+        }}>Remove all tags</button>}
+        {enabled && <ActionForm action={endpoint} beforeSubmit={editor.flush} feedback="inline">
+          <button type="submit" name="action" value="generate" className="small ghost" disabled={review?.job.active}>
+            {review ? 'Suggest again' : 'Suggest tags'}
+          </button>
+        </ActionForm>}
+      </div>
     </div>
     {(post.tags.length > 0 || additions.length > 0) && <ul className="post-chips" aria-label="Post tags">
       {post.tags.map((tag) => <li key={tag.id} className="post-chip" data-pending={changing(tag.id) || undefined}
@@ -71,10 +77,16 @@ export function PostTags({ data, editor }: { data: PostDetailPage; editor: PostA
 }
 
 function TagReview({ review, endpoint, editor }: { review: TagSuggestions; endpoint: string; editor: PostAutosave }) {
+  const suggestions = !editor.order && !review.stale ? review.suggestions : []
   return <div className="tag-review">
-    <JobProgress initial={review.job} />
+    <div className="post-panel-heading">
+      <JobProgress initial={review.job} />
+      {suggestions.length > 0 && <ActionForm action={endpoint} beforeSubmit={editor.flush} fields={{ job_id: review.job.id }}>
+        <button type="submit" name="action" value="discard_all" className="small ghost">Discard all suggestions</button>
+      </ActionForm>}
+    </div>
     {review.stale && <p className="hint">The artwork or source metadata changed. Suggest tags again.</p>}
-    {!editor.order && review.suggestions.map((suggestion) => <ActionForm key={suggestion.id} action={endpoint}
+    {suggestions.map((suggestion) => <ActionForm key={suggestion.id} action={endpoint}
       beforeSubmit={editor.flush} className="post-tool-row" fields={{ job_id: review.job.id, suggestion_id: suggestion.id }}>
       <label>{suggestion.kind}
         <TextField name="tag" defaultValue={suggestion.tag} aria-label={'Edit suggested ' + suggestion.kind + ' tag ' + suggestion.tag} />

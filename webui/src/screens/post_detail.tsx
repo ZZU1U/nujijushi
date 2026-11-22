@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { ActionForm, CaptionPreview } from '../ui'
+import { useRef, useState } from 'react'
+import { ActionForm, CaptionPreview, capitalize } from '../ui'
 import { Badge } from '../components/Badge'
 import { ChannelSelect } from '../components/ChannelSelect'
 import type { PostDetailPage } from '../api'
@@ -16,12 +16,11 @@ export function PostDetail({ data, reload }: { data: PostDetailPage; reload: (qu
       <div>
         <a href="/posts" className="hint" data-return-to-posts="">← Posts</a>
         <h1>{post.title || 'Post #' + post.id}</h1>
-        <div className="hint">#{post.id} · {post.source} / {post.source_id}
-          <Badge className={'state-' + post.state}>{post.state}</Badge>
-        </div>
+        <div className="hint">#{post.id} · {post.source} / {post.source_id}</div>
       </div>
       <div className="post-heading-actions">
         <span className="hint" role="status">{editor.failure ? '' : editor.status}</span>
+        <PostStateControl data={data} editor={editor} />
         <a className="button small ghost post-delete-link" href={endpoint + '/delete'}>Delete post…</a>
       </div>
     </header>
@@ -67,7 +66,7 @@ export function PostDetail({ data, reload }: { data: PostDetailPage; reload: (qu
 }
 
 function PostFields({ data, editor }: { data: PostDetailPage; editor: PostAutosave }) {
-  const { post, ratings, states, guest_review } = data
+  const { ratings } = data
   return <section className="panel post-fields">
     <h2>Post details</h2>
     <label>Title
@@ -89,26 +88,44 @@ function PostFields({ data, editor }: { data: PostDetailPage; editor: PostAutosa
           <option value="no">Force SFW</option>
         </select>
       </label>
-      <label>State
-        <select name="state" value={editor.field('state')} onChange={(event) => editor.changeField('state', event.target.value, true)}>
-          {states.map((state) => {
-            const verdict = guest_review && (state === 'approved' || state === 'rejected')
-            if (verdict && state !== post.state) return null
-            return <option value={state} key={state} disabled={verdict}>{state}</option>
-          })}
-        </select>
-      </label>
     </div>
     <label>Notes
       <input name="notes" value={editor.field('notes')} onChange={(event) => editor.changeField('notes', event.target.value)} onBlur={editor.flush} />
     </label>
-    {guest_review && <GuestReview postId={post.id} flush={editor.flush} />}
   </section>
 }
 
-function GuestReview({ postId, flush }: { postId: number; flush: () => Promise<boolean> }) {
+function PostStateControl({ data, editor }: { data: PostDetailPage; editor: PostAutosave }) {
+  const menu = useRef<HTMLDetailsElement>(null)
+  const [reviewing, setReviewing] = useState(false)
+  const current = editor.field('state')
+  const options = data.guest_review ? data.states.filter((state) => state === 'archived') : data.states
+
+  function close() {
+    if (!menu.current) return
+    menu.current.open = false
+    menu.current.querySelector('summary')?.focus()
+  }
+
+  return <details ref={menu} className="post-state-menu" onKeyDown={(event) => {
+    if (event.key === 'Escape' && menu.current?.open) close()
+  }}>
+    <summary className={'badge post-state-toggle state-' + current} aria-label={'Post state: ' + capitalize(current)}>
+      <span>State</span><strong>{capitalize(current)}</strong>
+    </summary>
+    <div className="post-state-options">
+      {data.guest_review && <GuestReview postId={data.post.id} flush={editor.flush} onSaved={close}
+        busy={reviewing} onBusyChange={setReviewing} />}
+      {options.map((state) => <button key={state} type="button" className="small ghost" disabled={state === current || reviewing}
+        onClick={() => { editor.changeField('state', state, true); close() }}>{capitalize(state)}</button>)}
+    </div>
+  </details>
+}
+
+function GuestReview({ postId, flush, onSaved, busy, onBusyChange }: {
+  postId: number; flush: () => Promise<boolean>; onSaved: () => void; busy: boolean; onBusyChange: (busy: boolean) => void
+}) {
   const [points, setPoints] = useState('')
-  const [busy, setBusy] = useState(false)
   const endpoint = '/posts/' + postId
   return <fieldset className="guest-review" disabled={busy}>
     <legend>Guest submission</legend>
@@ -118,10 +135,10 @@ function GuestReview({ postId, flush }: { postId: number; flush: () => Promise<b
     </label>
     <div className="post-buttons">
       <ActionForm id="approve-guest" action={endpoint} fields={{ state: 'approved', approval_points: points }}
-        onSaved={() => setPoints('')} beforeSubmit={flush} onBusyChange={setBusy} feedback="inline">
+        onSaved={() => { setPoints(''); onSaved() }} beforeSubmit={flush} onBusyChange={onBusyChange} feedback="inline">
         <button type="submit" className="small">Approve</button>
       </ActionForm>
-      <ActionForm action={endpoint} fields={{ state: 'rejected' }} beforeSubmit={flush} onBusyChange={setBusy} feedback="inline">
+      <ActionForm action={endpoint} fields={{ state: 'rejected' }} onSaved={onSaved} beforeSubmit={flush} onBusyChange={onBusyChange} feedback="inline">
         <button type="submit" className="small ghost">Reject</button>
       </ActionForm>
     </div>

@@ -112,6 +112,16 @@ pub(super) async fn action(
                 "Suggestion discarded"
             }
         }
+        "discard_all" => {
+            let job_id = form
+                .job_id
+                .ok_or_else(|| Error::invalid("Missing suggestion batch. Reload the post."))?;
+            ws.app
+                .db
+                .call(move |conn| tag_suggestions::discard_all(conn, post_id, job_id))
+                .await?;
+            "Remaining suggestions discarded"
+        }
         _ => return Err(Error::invalid("Unknown suggestion action").into()),
     };
     Ok(super::admin::accepted(

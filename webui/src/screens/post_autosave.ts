@@ -7,6 +7,7 @@ type Fields = Partial<Record<Field, string>>
 type TagEdit =
   | { action: 'add'; tags: string }
   | { action: 'remove_tag' | 'undo'; tag_id: number }
+  | { action: 'remove_all' }
 type Order = { ids: number[]; version: string }
 type Edit =
   | { kind: 'fields'; fields: Fields }

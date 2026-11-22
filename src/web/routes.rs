@@ -1033,9 +1033,14 @@ async fn post_page(
             .db
             .call(move |conn| crate::db::reputation::reviewable(conn, id))
             .await?;
-    let post_queues = app
+    let (post_queues, deliveries) = app
         .db
-        .call(move |conn| queue_db::for_post(conn, id))
+        .call(move |conn| {
+            Ok((
+                queue_db::for_post(conn, id)?,
+                queue_db::delivery_links(conn, id)?,
+            ))
+        })
         .await?;
     let now = chrono::Utc::now();
     let tag_review = tag_review.map(|review| super::tag_suggestions::review_view(review, now));
@@ -1169,6 +1174,7 @@ async fn post_page(
         merge_job: merge_job.as_ref().map(|job| job_view(job, now)),
         gallery_version,
         outgoing_count: outgoing.media.len(),
+        deliveries,
         tag_review,
         can_suggest_tags: suggestions_enabled && post.media.iter().any(|media| !media.is_video),
         captions,
@@ -1176,6 +1182,7 @@ async fn post_page(
         ratings: Rating::all().iter().map(|r| r.as_str()).collect::<Vec<_>>(),
         states: PostState::all()
             .iter()
+            .filter(|state| **state != PostState::New)
             .map(|s| s.as_str())
             .collect::<Vec<_>>(),
         channels: channels.iter().map(ChannelChoice::from).collect(),
@@ -1227,6 +1234,9 @@ async fn post_update(
         .transpose()
         .map_err(|_| WebError(Error::invalid("bad rating")))?;
     let state = form.state.as_deref().and_then(PostState::try_parse);
+    if state == Some(PostState::New) {
+        return Err(Error::invalid("Choose approved, rejected, or archived").into());
+    }
     if form.approval_points.is_some() && state != Some(PostState::Approved) {
         return Err(Error::invalid("choose approved to set a reward").into());
     }
@@ -1363,6 +1373,13 @@ async fn post_tag_action(
                 })
                 .await?;
             "tag removed"
+        }
+        "remove_all" => {
+            ws.app
+                .db
+                .call(move |conn| tag_db::clear_post_tags(conn, id))
+                .await?;
+            "All tags removed"
         }
         "remove" => {
             let tag_id = tag_id()?;

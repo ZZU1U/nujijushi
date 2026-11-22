@@ -26,6 +26,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0019_gallery_visibility.sql"),
     include_str!("../../migrations/0020_gallery_order.sql"),
     include_str!("../../migrations/0021_duplicate_index_recovery.sql"),
+    include_str!("../../migrations/0022_delivery_links.sql"),
 ];
 
 pub fn schema_version(conn: &Connection) -> Result<i64> {
@@ -154,6 +155,52 @@ mod tests {
             )
             .unwrap();
         assert_eq!(edit_columns, 2);
+        let delivery_columns: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sends')
+                 WHERE name IN ('delivery_target', 'delivery_chat_id', 'delivery_username')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(delivery_columns, 3);
+    }
+
+    #[test]
+    fn delivery_link_migration_keeps_the_original_destination_for_matching_sends() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..21] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 21).unwrap();
+        conn.execute_batch(
+            "INSERT INTO posts (id, source, source_id, imported_at, updated_at)
+                 VALUES (1, 'local', 'delivered', '2026-01-01', '2026-01-01');
+             INSERT INTO channels (id, alias, title, tg_id, created_at)
+                 VALUES (1, 'artwork', 'Artwork', '@new_channel', '2026-01-01');
+             INSERT INTO queue (id, post_id, channel_id, state, added_at, sent_at, tg_message_ids,
+                                delivery_target)
+                 VALUES (1, 1, 1, 'sent', '2026-01-01', '2026-01-03', '22,23', '@old_channel');
+             INSERT INTO sends (channel_id, queue_id, post_id, sent_at, ok, tg_message_ids)
+                 VALUES (1, 1, 1, '2026-01-02', 1, '22,23'),
+                        (1, 1, 1, '2026-01-03', 1, '22,23');",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+        super::super::queue::requeue(&conn, 1).unwrap();
+        let links = super::super::queue::delivery_links(&conn, 1).unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].url, "https://t.me/old_channel/22");
+        assert_eq!(
+            conn.query_row(
+                "SELECT delivery_target FROM sends WHERE id = 1",
+                [],
+                |row| row.get::<_, Option<String>>(0)
+            )
+            .unwrap(),
+            None
+        );
     }
 
     #[test]

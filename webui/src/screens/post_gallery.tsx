@@ -7,7 +7,7 @@ import { ActionForm, CompressionOptions, JobProgress, externalUrl } from '../ui'
 import type { PostAutosave } from './post_autosave'
 
 export function PostGallery({ data, editor }: { data: PostDetailPage; editor: PostAutosave }) {
-  const { post, media, media_total, outgoing_count, merge_job, submitter, gallery_version } = data
+  const { post, media, media_total, outgoing_count, merge_job, submitter, gallery_version, deliveries } = data
   const [selected, setSelected] = useState(new Set<number>())
   const [thumbnailsOnly] = useThumbnailsOnly()
   const [open, setOpen] = useState<number>()
@@ -70,6 +70,11 @@ export function PostGallery({ data, editor }: { data: PostDetailPage; editor: Po
         {command('compress_all', 'Compress all', {}, <CompressionOptions />)}
       </details>}
     </div>
+    {deliveries.length > 0 && <div className="post-deliveries">
+      <span className="hint">Posted on Telegram</span>
+      {deliveries.map(({ channel_id, channel, url }) => <a key={channel_id} href={url} target="_blank" rel="noopener noreferrer"
+        aria-label={'View post in ' + channel + ' on Telegram'}>{channel}<span aria-hidden="true"> ↗</span></a>)}
+    </div>}
     {merge_job && <div className="hint post-job-status"><JobProgress initial={merge_job} /></div>}
     {outgoing_count === 0 && media.length > 0 && <p className="hint">No outgoing media</p>}
     {data.can_merge && selectedItems.length > 0 && <ActionForm
@@ -90,6 +95,7 @@ export function PostGallery({ data, editor }: { data: PostDetailPage; editor: Po
           key={item.id}
           id={'media-' + (index + 1)}
           data-media-id={item.id}
+          data-hidden={item.hidden || undefined}
           data-selected={selected.has(item.id) || undefined}
           data-drop-target={dragTarget === item.id || undefined}
           draggable={ordered.length > 1 && !editing}
@@ -141,7 +147,7 @@ export function PostGallery({ data, editor }: { data: PostDetailPage; editor: Po
             </MediaOptions>
           </div>
           <figcaption className="hint">{item.ext} {item.width}×{item.height} · {item.kib} KiB
-            {item.hidden && <Badge tone="amber">Hidden from outgoing copies</Badge>}
+            {item.hidden && <span className="visually-hidden">Hidden from outgoing copies</span>}
           </figcaption>
           {item.over_photo_limit && <p className="hint">Exceeds the photo upload limits</p>}
         </figure>)}

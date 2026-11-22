@@ -1,6 +1,6 @@
 //! Send audit trail: every attempt lands in the `sends` table.
 
-use crate::db::queue::{self as queue_db, SendRecord};
+use crate::db::queue::{self as queue_db, DeliveryDestination, SendRecord};
 use crate::error::Result;
 use crate::model::SendLog;
 use crate::state::AppState;
@@ -12,6 +12,7 @@ pub struct SendAttempt<'a> {
     pub post_id: i64,
     pub caption: Option<&'a str>,
     pub message_ids: &'a [i32],
+    pub destination: DeliveryDestination<'a>,
 }
 
 pub async fn record_success(state: &AppState, attempt: SendAttempt<'_>) -> Result<()> {
@@ -28,6 +29,9 @@ pub async fn record_success(state: &AppState, attempt: SendAttempt<'_>) -> Resul
         )
     };
     let caption = attempt.caption.map(|c| c.to_string());
+    let target = attempt.destination.target.to_owned();
+    let chat_id = attempt.destination.chat_id;
+    let username = attempt.destination.username.map(str::to_owned);
     state
         .db
         .call(move |conn| {
@@ -41,6 +45,11 @@ pub async fn record_success(state: &AppState, attempt: SendAttempt<'_>) -> Resul
                     message_ids: ids.as_deref(),
                     caption: caption.as_deref(),
                     error: None,
+                    destination: Some(DeliveryDestination {
+                        target: &target,
+                        chat_id,
+                        username: username.as_deref(),
+                    }),
                 },
             )
         })
@@ -68,6 +77,7 @@ pub async fn record_failure(
                     message_ids: None,
                     caption: None,
                     error: Some(&error),
+                    destination: None,
                 },
             )?;
             crate::db::channels::record_failure(conn, channel_id, 3)

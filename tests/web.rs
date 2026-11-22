@@ -652,6 +652,144 @@ async fn a_single_queue_item_can_be_published_as_a_job() {
 }
 
 #[tokio::test]
+async fn post_detail_links_to_confirmed_telegram_deliveries_after_requeue() {
+    use nujijushi::db::{channels, queue};
+    use nujijushi::tg::publish::{PublishOutcome, publish_item};
+
+    let h = harness();
+    let mut public = h.add_channel().await;
+    let private = Channel::new("Private channel", "-1001234567890");
+    let private_id = h
+        .state
+        .db
+        .with(|conn| channels::insert(conn, &private))
+        .unwrap();
+    let (post_id, public_queue) = h.queue_a_post("telegram-links", &public).await;
+    let private_queue = h
+        .state
+        .db
+        .with(|conn| queue::enqueue_new(conn, post_id, private_id, 0))
+        .unwrap()
+        .unwrap();
+    let path = format!("/posts/{post_id}");
+    assert_eq!(h.page(&path).await["deliveries"], serde_json::json!([]));
+
+    let PublishOutcome::Published {
+        message_ids: public_ids,
+        ..
+    } = publish_item(&h.state, public_queue, false).await.unwrap()
+    else {
+        panic!("public delivery failed");
+    };
+    let PublishOutcome::Published {
+        message_ids: private_ids,
+        ..
+    } = publish_item(&h.state, private_queue, false).await.unwrap()
+    else {
+        panic!("private delivery failed");
+    };
+    let expected = serde_json::json!([
+        {"channel_id": public.id, "channel": "Test", "url": format!("https://t.me/test_channel/{}", public_ids[0])},
+        {"channel_id": private_id, "channel": "Private channel", "url": format!("https://t.me/c/1234567890/{}", private_ids[0])}
+    ]);
+    assert_eq!(h.page(&path).await["deliveries"], expected);
+
+    public.tg_id = "@moved_channel".into();
+    h.state
+        .db
+        .with(|conn| {
+            channels::update(conn, &public)?;
+            queue::requeue(conn, public_queue)
+        })
+        .unwrap();
+    assert_eq!(h.page(&path).await["deliveries"], expected);
+}
+
+#[tokio::test]
+async fn editor_state_can_move_between_verdicts_and_archive_but_cannot_reset_to_new() {
+    let h = harness();
+    let post = h.post_only("post-state").await;
+    let path = format!("/posts/{post}");
+    let detail = h.page(&path).await;
+    assert_eq!(detail["post"]["state"], "new");
+    assert_eq!(
+        detail["states"],
+        serde_json::json!(["approved", "rejected", "archived"])
+    );
+    for state in ["approved", "archived", "rejected", "approved"] {
+        assert_eq!(
+            h.send(h.post(&path, &format!("csrf={}&state={state}", h.ws.csrf)))
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(h.page(&path).await["post"]["state"], state);
+    }
+    let reset = format!("csrf={}&state=new&title=Changed", h.ws.csrf);
+    assert_eq!(
+        h.send(h.post(&path, &reset)).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+    let detail = h.page(&path).await;
+    assert_eq!(detail["post"]["state"], "approved");
+    assert_eq!(detail["post"]["title"], "Artwork post-state");
+}
+
+#[tokio::test]
+async fn remove_all_tags_clears_both_origins_and_source_tags_can_be_restored() {
+    use nujijushi::db::{posts, tags};
+
+    let h = harness();
+    let post = h.post_only("untag").await;
+    let other = h.post_only("untag-other").await;
+    h.state
+        .db
+        .with(|conn| tags::add_manual(conn, post, &["original".into(), "favorite".into()]))
+        .unwrap();
+    let path = format!("/posts/{post}/tags");
+    assert_eq!(
+        h.send(h.post(&path, "csrf=bad&action=remove_all"))
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let form = format!("csrf={}&action=remove_all", h.ws.csrf);
+    assert_eq!(h.send(h.post(&path, &form)).await.status(), StatusCode::OK);
+    assert_eq!(h.send(h.post(&path, &form)).await.status(), StatusCode::OK);
+
+    let source_tag = h
+        .state
+        .db
+        .with(|conn| {
+            assert!(tags::provenance(conn, post)?.is_empty());
+            assert_eq!(tags::for_post(conn, other)?, ["original"]);
+            let mut updated = NormalizedPost::new("pixiv", "untag");
+            updated.tags = vec!["original".into(), "newly_imported".into()];
+            posts::upsert(conn, &updated, &[])?;
+            assert_eq!(tags::for_post(conn, post)?, ["newly_imported"]);
+            let removed = tags::removals(conn, post)?;
+            assert_eq!(removed.len(), 1);
+            assert_eq!(removed[0].name, "original");
+            Ok(removed[0].id)
+        })
+        .unwrap();
+    let undo = format!("csrf={}&action=undo&tag_id={source_tag}", h.ws.csrf);
+    assert_eq!(h.send(h.post(&path, &undo)).await.status(), StatusCode::OK);
+    h.state
+        .db
+        .with(|conn| {
+            let restored = tags::provenance(conn, post)?
+                .into_iter()
+                .find(|tag| tag.id == source_tag)
+                .unwrap();
+            assert!(restored.source);
+            assert!(!restored.manual);
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[tokio::test]
 async fn web_review_validates_rewards_and_queues_new_suggestions_atomically() {
     use nujijushi::db::{posts, reputation};
 
@@ -2927,6 +3065,44 @@ async fn tag_suggestions_review_is_explicit_and_preserves_existing_tags_and_remo
         .send(h.post(&path, &resolve(review.suggestions[2].id, "accept", "stale")))
         .await;
     assert_eq!(stale.status(), StatusCode::BAD_REQUEST);
+    let discard_all = format!("csrf={}&job_id={}&action=discard_all", h.ws.csrf, job.id);
+    assert_eq!(
+        h.send(h.post(&path, &discard_all)).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+    h.state
+        .db
+        .with(|conn| {
+            let mut updated = NormalizedPost::new("local", "tagged01");
+            updated.tags = vec!["hidden_source".into(), "original".into()];
+            updated.raw_json = Some(r#"{"tag_string_copyright":"source_series"}"#.into());
+            posts::upsert(conn, &updated, &[])?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        h.page(&format!("/posts/{post_id}")).await["tag_review"]["suggestions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+    assert_eq!(
+        h.send(h.post(&path, &discard_all)).await.status(),
+        StatusCode::OK
+    );
+    let detail = h.page(&format!("/posts/{post_id}")).await;
+    assert_eq!(detail["tag_review"]["suggestions"], serde_json::json!([]));
+    h.state
+        .db
+        .with(|conn| {
+            let mut remaining = tags::for_post(conn, post_id)?;
+            remaining.sort();
+            assert_eq!(remaining, ["fixed_character", "keep_manual", "original"]);
+            assert_eq!(tags::removals(conn, post_id)?[0].name, "hidden_source");
+            Ok(())
+        })
+        .unwrap();
     server.abort();
 }
 
@@ -4370,6 +4546,7 @@ async fn posts_cursor_filter_and_web_default_follow_archive_state() {
                     caption: None,
                     message_ids: None,
                     error: None,
+                    destination: None,
                 },
             )?;
             tags::add_manual(

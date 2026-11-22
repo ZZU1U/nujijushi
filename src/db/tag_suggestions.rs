@@ -289,12 +289,7 @@ pub fn resolve(
     edited: Option<&str>,
 ) -> Result<()> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let current = input(&tx, post_id)?;
-    if batch(&tx, post_id)? != Some((job_id, Some(current.fingerprint))) {
-        return Err(Error::invalid(
-            "These suggestions are stale. Reload the post or suggest tags again.",
-        ));
-    }
+    check_batch(&tx, post_id, job_id)?;
     let changed = tx.execute(
         "DELETE FROM post_tag_suggestions WHERE id = ?1 AND job_id = ?2",
         params![suggestion_id, job_id],
@@ -313,6 +308,27 @@ pub fn resolve(
         tags::add_manual(&tx, post_id, &[raw.to_owned()])?;
     }
     tx.commit()?;
+    Ok(())
+}
+
+pub(crate) fn discard_all(conn: &mut Connection, post_id: i64, job_id: i64) -> Result<()> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    check_batch(&tx, post_id, job_id)?;
+    tx.execute(
+        "DELETE FROM post_tag_suggestions WHERE job_id = ?1",
+        [job_id],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn check_batch(conn: &Connection, post_id: i64, job_id: i64) -> Result<()> {
+    let current = input(conn, post_id)?;
+    if batch(conn, post_id)? != Some((job_id, Some(current.fingerprint))) {
+        return Err(Error::invalid(
+            "These suggestions are stale. Reload the post or suggest tags again.",
+        ));
+    }
     Ok(())
 }
 
