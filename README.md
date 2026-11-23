@@ -110,3 +110,8 @@ Use `nujijushi gc --sent` to preview reclaimable storage from sent posts. Add `-
 For setup problems, start with `nujijushi doctor`. Use `nujijushi doctor --offline` to check local configuration and dependencies.
 
 Archive and republish artwork you have the right to share.
+
+## Acknowledgments
+
+- Thanks to AlpinDale for creating FoidFinder, which powers the optional artwork tag suggestions. [FoidFinder](https://github.com/AlpinDale/foidfinder) · [AlpinDale](https://github.com/AlpinDale)
+- Thanks to the Nazurin project for inspiring nujijushi. [Nazurin](https://github.com/y-young/nazurin)
