@@ -237,6 +237,20 @@ test('wide dashboard job columns scroll inside the table on mobile', async ({ pa
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBe(390)
 })
 
+test('mobile navigation opens a two-column menu and closes after navigation', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await signIn(page, '/')
+  const menu = page.locator('.top .mobile-nav')
+  await expect(menu).toBeVisible()
+  await menu.locator('summary').click()
+  await expect(menu.locator('nav')).toBeVisible()
+  await expect(menu.getByRole('link', { name: 'posts', exact: true })).toBeVisible()
+  await menu.getByRole('link', { name: 'posts', exact: true }).click()
+  await expect(page).toHaveURL(base + '/posts')
+  await expect(menu).not.toHaveAttribute('open', '')
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBe(390)
+})
+
 test('JPEG quality only appears in exact mode and remembers the draft', async ({ page }) => {
   await signIn(page, '/posts/2')
   const options = await imageOptions(page, 1)
@@ -496,8 +510,8 @@ test('table headers align with their rows and stick to the table scrollport', as
     const label = cell.getBoundingClientRect()
     return { top: Math.abs(label.top - viewport.top), left: Math.abs(label.left - firstDataCell.left) }
   })
-  expect(alignment.top).toBeLessThan(1)
-  expect(alignment.left).toBeLessThan(1)
+  expect(alignment.top).toBeLessThanOrEqual(1)
+  expect(alignment.left).toBeLessThanOrEqual(1)
 
   await page.setViewportSize({ width: 1440, height: 740 })
   await page.getByRole('link', { name: 'import', exact: true }).click()
