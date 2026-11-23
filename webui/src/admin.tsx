@@ -242,6 +242,8 @@ function Workspace({ session, signOut }: { session: Session; signOut: (path: str
   function click(event: MouseEvent) {
     if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return
     const anchor = event.target instanceof Element ? event.target.closest('a[href]') : null
+    const mobileMenu = event.target instanceof Element ? event.target.closest('details.mobile-nav') : null
+    if (anchor && mobileMenu instanceof HTMLDetailsElement) mobileMenu.open = false
     if (!(anchor instanceof HTMLAnchorElement) || anchor.target || anchor.hasAttribute('download')) return
     const url = new URL(anchor.href)
     if (url.origin !== location.origin || !localRoute.test(url.pathname)) return
@@ -259,7 +261,11 @@ function Workspace({ session, signOut }: { session: Session; signOut: (path: str
     <div className="admin-shell" onClick={click}>
       <header className="top">
         <a className="brand" href="/"><span className="dot" />nujijushi</a>
-        <nav>{nav.map(([href, label]) => <a key={href} href={href} className={tab === href ? 'active' : ''}>{label}</a>)}</nav>
+        <nav className="desktop-nav">{nav.map(([href, label]) => <a key={href} href={href} className={tab === href ? 'active' : ''}>{label}</a>)}</nav>
+        <details className="mobile-nav">
+          <summary>Menu</summary>
+          <nav aria-label="Mobile navigation">{nav.map(([href, label]) => <a key={href} href={href} className={tab === href ? 'active' : ''}>{label}</a>)}</nav>
+        </details>
         <ActionForm action="/logout" className="inline" beforeSubmit={async () => await navigationGuard.current?.() ?? true}>
           <button className="link" type="submit">log out</button>
         </ActionForm>
