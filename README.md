@@ -13,6 +13,8 @@ nujijushi is a local artwork archive that publishes curated posts to Telegram ch
 
 Download and extract the binary for your Linux or macOS architecture from [GitHub Releases](https://github.com/ZZU1U/nujijushi/releases), then put it on your `PATH`.
 
+For a Linux server, use Docker Compose with an image from GitHub Container Registry. [Docker deployment and backups](docs/docker.md)
+
 To install from a checkout with Rust 1.95 and Node.js 24 LTS:
 
 ```bash

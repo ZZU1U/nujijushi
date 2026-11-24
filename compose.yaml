@@ -1,0 +1,12 @@
+services:
+  nujijushi:
+    image: "${NUJIJUSHI_IMAGE:-ghcr.io/zzu1u/nujijushi:main}"
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8788:8788"
+    volumes:
+      - type: bind
+        source: ./data
+        target: /data
+        bind:
+          create_host_path: false
