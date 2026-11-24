@@ -1,5 +1,6 @@
 .admin-shell { min-width: 0; width: 100%; }
 body.login-body .admin-shell { display: grid; justify-items: center; }
+.mobile-nav { display: none; }
 .navigation-progress { height: 2px; background: var(--accent); position: fixed; inset: 0 0 auto; z-index: 20; }
 .admin-notice {
   position: fixed; bottom: 1rem; right: 1rem; max-width: min(32rem, calc(100vw - 2rem));
@@ -38,6 +39,44 @@ body.login-body .admin-shell { display: grid; justify-items: center; }
 .cols > * { min-inline-size: 0; }
 @media (max-width: 720px) {
   .top nav { min-width: 0; }
+  .top { align-items: center; }
+  .top .desktop-nav { display: none; }
+  .mobile-nav { display: block; position: relative; margin-inline-start: auto; }
+  .mobile-nav summary {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    padding: 0 .75rem;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .mobile-nav summary::-webkit-details-marker { display: none; }
+  .mobile-nav summary::after { content: "▾"; margin-inline-start: .35rem; color: var(--muted); }
+  .mobile-nav nav {
+    position: absolute;
+    z-index: 15;
+    top: calc(100% + .45rem);
+    right: 0;
+    width: min(18rem, calc(100vw - 2rem));
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: .25rem;
+    padding: .5rem;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel);
+    box-shadow: 0 12px 32px #0009;
+  }
+  .mobile-nav nav a {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    padding: .55rem .65rem;
+  }
+  .top > .inline { order: 3; }
+  .top > .inline .link { min-height: 44px; }
   .setup-steps { grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr)); }
   .setup-heading { flex-wrap: wrap; }
   .table-scroll td, main code { overflow-wrap: anywhere; }
