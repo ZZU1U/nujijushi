@@ -113,5 +113,6 @@ Archive and republish artwork you have the right to share.
 
 ## Acknowledgments
 
+- Thanks to mikf and the gallery-dl contributors. Their work powers nujijushi’s imports from online galleries and artwork feeds. [gallery-dl](https://codeberg.org/mikf/gallery-dl) · [Supported sites](https://gdl-org.github.io/docs/supportedsites.html)
 - Thanks to AlpinDale for creating FoidFinder, which powers the optional artwork tag suggestions. [FoidFinder](https://github.com/AlpinDale/foidfinder) · [AlpinDale](https://github.com/AlpinDale)
 - Thanks to the Nazurin project for inspiring nujijushi. [Nazurin](https://github.com/y-young/nazurin)
