@@ -1,7 +1,8 @@
 import type { ComponentProps } from 'react'
+import { appUrl } from '../paths'
 
 export function thumbnailUrl(hash: string) {
-  return '/thumb/' + hash
+  return appUrl('/thumb/' + hash)
 }
 
 interface ThumbnailProps extends Omit<ComponentProps<'img'>, 'src' | 'loading' | 'decoding'> {

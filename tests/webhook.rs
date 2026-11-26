@@ -41,9 +41,14 @@ struct Harness {
 }
 
 fn harness() -> Harness {
+    harness_at("")
+}
+
+fn harness_at(base_path: &str) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("config.toml"), webhook_config()).unwrap();
-    let cfg = Config::load_from_home(dir.path().to_path_buf()).unwrap();
+    let mut cfg = Config::load_from_home(dir.path().to_path_buf()).unwrap();
+    cfg.web_base_path = base_path.into();
     let mock = Arc::new(MockTransport::new());
     let transport: Arc<dyn Transport> = mock.clone();
     let state = AppState::open(cfg, Some(transport)).unwrap();
@@ -84,7 +89,11 @@ impl Harness {
     }
 
     async fn post(&self, secret: Option<&str>, body: &str) -> StatusCode {
-        let mut request = Request::post(nujijushi::bot::WEBHOOK_PATH);
+        let mut request = Request::post(format!(
+            "{}{}",
+            self.state.cfg.web_base_path,
+            nujijushi::bot::WEBHOOK_PATH
+        ));
         if let Some(secret) = secret {
             request = request.header(SECRET_HEADER, secret);
         }
@@ -98,13 +107,15 @@ impl Harness {
 
 #[tokio::test]
 async fn a_valid_delivery_is_handled_without_the_ui_cookie() {
-    let harness = harness();
-    harness.mock.push_update(1, whoami_update());
+    for prefix in ["", "/tools/archive"] {
+        let harness = harness_at(prefix);
+        harness.mock.push_update(1, whoami_update());
 
-    let status = harness.post(Some(&harness.secret()), "{}").await;
-    assert_eq!(status, StatusCode::OK);
-    let reply = harness.mock.last_text().unwrap_or_default();
-    assert!(reply.contains("99"), "the handler answered, got {reply:?}");
+        let status = harness.post(Some(&harness.secret()), "{}").await;
+        assert_eq!(status, StatusCode::OK);
+        let reply = harness.mock.last_text().unwrap_or_default();
+        assert!(reply.contains("99"), "the handler answered, got {reply:?}");
+    }
 }
 
 #[tokio::test]

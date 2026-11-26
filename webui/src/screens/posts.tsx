@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { api, expired, friendly, type Card, type CardsPage, type PostsPage } from '../api'
-import { Actions, ActionForm, useActions } from '../ui'
+import { Actions, ActionForm, useActions, PageLink } from '../ui'
 import { Badge } from '../components/Badge'
 import { ChannelSelect } from '../components/ChannelSelect'
 import { TagAutocomplete } from '../components/TagAutocomplete'
@@ -38,7 +38,7 @@ function PostCard({ card, setup, selected, select }: {
     </div>
     <div className="meta">
       <div className="row">
-        <a className="post-link" href={'/posts/' + card.id} aria-label={'Open post #' + card.id}>#{card.id}</a>
+        <PageLink className="post-link" href={'/posts/' + card.id} aria-label={'Open post #' + card.id}>#{card.id}</PageLink>
         <Badge className={'state-' + card.state}>{card.state}</Badge>
         {card.queue_badges.map((badge) => <Badge key={badge.channel + badge.class} tone={badge.class === 'sent' ? 'green' : badge.class === 'unknown' ? 'amber' : undefined}>
           {badge.label} · {badge.channel}
@@ -48,7 +48,7 @@ function PostCard({ card, setup, selected, select }: {
       </div>
       <div className="hint">{card.artist}</div>
       <div className="snippet">{card.snippet}</div>
-      {card.tags.length > 0 && <div className="post-card-tags">{card.tags.map((tag) => <a key={tag.name} href={tag.url}>#{tag.name}</a>)}</div>}
+      {card.tags.length > 0 && <div className="post-card-tags">{card.tags.map((tag) => <PageLink key={tag.name} href={tag.url}>#{tag.name}</PageLink>)}</div>}
       <div className="hint">{card.source} · {card.imported}</div>
     </div>
   </article>
@@ -230,7 +230,7 @@ export function Posts({ path, snapshots }: { path: string; snapshots: Map<string
     {setup && <section className="panel">
       <h2>Choose your first post</h2>
       <p>Select one post and its Telegram channel. The post stays on hold until you confirm its preview.</p>
-      <a href="/">Back to setup</a>
+      <PageLink href="/">Back to setup</PageLink>
     </section>}
     <form className="filters panel" data-post-filters="" onSubmit={(event) => { event.preventDefault(); apply(filter) }}>
       <input ref={searchInput} name="search" aria-label="Search posts" placeholder="search title / description / id"
@@ -253,15 +253,15 @@ export function Posts({ path, snapshots }: { path: string; snapshots: Map<string
       <TagAutocomplete name="tag" aria-label="Tag filter" placeholder="Search tags" value={filter.tag}
         onChange={(value) => edit('tag', value)} onPick={(tag) => edit('tag', tag, true)} />
       {data && <span className="hint">{data.total} post(s)</span>}
-      <a className="hint post-duplicates-link" href="/duplicates">review duplicates</a>
+      <PageLink className="hint post-duplicates-link" href="/duplicates">review duplicates</PageLink>
     </form>
     {data && data.top_tags.length > 0 && <details id="posts-tag-menu" className="panel" key={data.filters.tag ?? ''} open={Boolean(data.filters.tag)}>
       <summary>Tags{data.filters.tag && ' · #' + data.filters.tag}</summary>
       <div className="tagcloud">
-        {data.top_tags.map((tag) => <a key={tag.tag} href={tag.url} aria-current={tag.active || undefined} className={tag.active ? 'active' : ''}>
+        {data.top_tags.map((tag) => <PageLink key={tag.tag} href={tag.url} aria-current={tag.active || undefined} className={tag.active ? 'active' : ''}>
           #{tag.tag} <span className="hint">{tag.count}</span>
-        </a>)}
-        {data.filters.tag && <a href={data.clear_tag_url}>Clear tag</a>}
+        </PageLink>)}
+        {data.filters.tag && <PageLink href={data.clear_tag_url}>Clear tag</PageLink>}
       </div>
     </details>}
     {grid && data && <ActionForm action={setup ? '/setup/queue' : '/posts'} fields={fields} id="bulk" data-grid-page={data.page_number}>
@@ -291,7 +291,7 @@ export function Posts({ path, snapshots }: { path: string; snapshots: Map<string
           else next.add(card.id)
           setSelected(next)
         }} />)}
-      </div> : <p className="hint">Nothing here. <a href="/import">Import some artwork</a>.</p>}
+      </div> : <p className="hint">Nothing here. <PageLink href="/import">Import some artwork</PageLink>.</p>}
     </ActionForm>}
     {grid?.cursor && <div ref={sentinel} data-posts-more="" className="pager">
       <button type="button" disabled={batch === 'loading'} onClick={() => void more()}>Load more</button>

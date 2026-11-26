@@ -1,5 +1,5 @@
 import { Fragment } from 'react'
-import { ActionForm, TextField, SelectField, TextArea, CaptionPreview, Timezones, text, capitalize, listKey } from '../ui'
+import { ActionForm, TextField, SelectField, TextArea, CaptionPreview, Timezones, text, capitalize, listKey, PageLink } from '../ui'
 import type { ChannelEditPage } from '../api'
 
 export function ChannelEdit({ data }: { data: ChannelEditPage }) {
@@ -9,8 +9,8 @@ export function ChannelEdit({ data }: { data: ChannelEditPage }) {
       <section className="panel">
         <h2>{channel.title}{" "}<span className="hint">{channel.tg_id}</span>{" "}<code>{channel.alias}</code></h2>
         <p className="hint">
-          <a href={text("/channels/", channel.id, "/queue")}>open queue</a> ·
-          <a href={text("/channels/", channel.id, "/preview")}>preview next slots</a>
+          <PageLink href={text("/channels/", channel.id, "/queue")}>open queue</PageLink> ·
+          <PageLink href={text("/channels/", channel.id, "/preview")}>preview next slots</PageLink>
           {channel.paused ? <><span className="badge red">paused after {channel.failures} failures</span></> : null}
         </p>
         <ActionForm action={text("/channels/", channel.id, "/edit")} data-verify-destination={channel.tg_id}>

@@ -43,9 +43,14 @@ struct Harness {
 }
 
 fn harness() -> Harness {
+    harness_at("")
+}
+
+fn harness_at(base_path: &str) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("config.toml"), config()).unwrap();
-    let cfg = Config::load_from_home(dir.path().to_path_buf()).unwrap();
+    let mut cfg = Config::load_from_home(dir.path().to_path_buf()).unwrap();
+    cfg.web_base_path = base_path.into();
     let mock = Arc::new(MockTransport::new());
     let transport: Arc<dyn Transport> = mock.clone();
     let state = AppState::open(cfg, Some(transport)).unwrap();
@@ -4665,12 +4670,45 @@ async fn posts_cursor_filter_and_web_default_follow_archive_state() {
 
 #[tokio::test]
 async fn admin_login_uses_a_separate_challenge_and_bootstraps_the_session() {
-    let h = harness();
+    assert_admin_login("").await;
+}
+
+#[tokio::test]
+async fn the_prefixed_admin_serves_metrics_and_scopes_auth_and_redirects() {
+    let prefix = "/tools/archive";
+    assert_admin_login(prefix).await;
+
+    let h = harness_at(prefix);
+    for (path, expected) in [
+        ("/metrics", StatusCode::NOT_FOUND),
+        ("/tools/archives/metrics", StatusCode::NOT_FOUND),
+        ("/tools/archive/metrics", StatusCode::OK),
+    ] {
+        let response = h
+            .send(Request::get(path).body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(response.status(), expected, "{path}");
+    }
+    let protected = h
+        .send(
+            Request::get(format!("{prefix}/api/status?sample=1"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(protected.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        protected.headers()[header::LOCATION],
+        "/tools/archive/login?next=%2Fapi%2Fstatus%3Fsample%3D1"
+    );
+}
+
+async fn assert_admin_login(prefix: &str) {
+    let h = harness_at(prefix);
     let request = |path, form: Option<String>, cookie: Option<&str>| {
-        let mut builder =
-            Request::builder()
-                .uri(path)
-                .method(if form.is_some() { "POST" } else { "GET" });
+        let mut builder = Request::builder()
+            .uri(format!("{prefix}{path}"))
+            .method(if form.is_some() { "POST" } else { "GET" });
         if let Some(cookie) = cookie {
             builder = builder.header(header::COOKIE, cookie);
         }
@@ -4686,6 +4724,7 @@ async fn admin_login_uses_a_separate_challenge_and_bootstraps_the_session() {
     assert_ne!(csrf, h.ws.csrf);
     let cookie = challenge.headers()[header::SET_COOKIE].to_str().unwrap();
     assert!(cookie.contains("HttpOnly; SameSite=Strict"));
+    assert!(cookie.contains(&format!("Path={prefix}/api/v1/login;")));
     let cookie = cookie.split(';').next().unwrap();
     let form = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("csrf", csrf)
@@ -4701,8 +4740,32 @@ async fn admin_login_uses_a_separate_challenge_and_bootstraps_the_session() {
         .await;
     assert_eq!(login.status(), StatusCode::OK);
     assert_eq!(Harness::json(&login)["location"], "/posts?nsfw=no");
-    let session = h.page("/api/v1/session").await;
-    assert_eq!(session["csrf"], h.ws.csrf);
+    let session_path = if prefix.is_empty() { "/" } else { prefix };
+    let cookies: Vec<_> = login
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .map(|value| value.to_str().unwrap())
+        .collect();
+    assert!(cookies[0].contains(&format!("Path={session_path};")));
+    assert!(cookies[1].contains(&format!("Path={prefix}/api/v1/login;")));
+    assert!(cookies[1].ends_with("Max-Age=0"));
+    let session_cookie = cookies[0].split(';').next().unwrap();
+    let session = h
+        .send(request("/api/v1/session", None, Some(session_cookie)))
+        .await;
+    assert_eq!(Harness::json(&session)["csrf"], h.ws.csrf);
+    let logout = h
+        .send(request(
+            "/api/v1/logout",
+            Some(format!("csrf={}", h.ws.csrf)),
+            Some(session_cookie),
+        ))
+        .await;
+    assert_eq!(logout.status(), StatusCode::OK);
+    let cookie = logout.headers()[header::SET_COOKIE].to_str().unwrap();
+    assert!(cookie.contains(&format!("Path={session_path};")));
+    assert!(cookie.ends_with("Max-Age=0"));
     let expired = h.send(request("/api/v1/session", None, None)).await;
     assert_eq!(expired.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(expired.headers()[header::CACHE_CONTROL], "no-store");

@@ -1,11 +1,12 @@
 import type { ActionFields, ActionResult } from '../api'
+import { apiUrl } from '../paths'
 
 export class RequestError extends Error {
   constructor(public status: number, message: string) { super(message) }
 }
 
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch('/api/v1' + path, {
+  const response = await fetch(apiUrl(path), {
     ...options,
     credentials: 'same-origin',
     cache: 'no-store',

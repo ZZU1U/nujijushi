@@ -2,7 +2,7 @@ import type { QueuePage, QueueRow } from '../api'
 import { Badge } from '../components/Badge'
 import { DataTable, type Column } from '../components/DataTable'
 import { DeliveryActions } from '../components/DeliveryActions'
-import { ActionForm } from '../ui'
+import { ActionForm, PageLink } from '../ui'
 import { Thumbnail } from '../components/Thumbnail'
 import { channelPath, postPath } from '../routes'
 
@@ -15,7 +15,7 @@ export function Queue({ data }: { data: QueuePage }) {
   return <section className="panel" data-queue-revision={activity.revision}>
     <h2>queue · {channel.title} <span className="hint">{channel.tg_id}</span></h2>
     <p className="hint">
-      <a href={channelRoot + '/edit'}>settings</a> · <a href={channelRoot + '/preview'}>preview next slots</a>
+      <PageLink href={channelRoot + '/edit'}>settings</PageLink> · <PageLink href={channelRoot + '/preview'}>preview next slots</PageLink>
     </p>
     {channel.enabled
       ? <ActionForm action={channelRoot + '/schedule'} className="inline">
@@ -23,13 +23,13 @@ export function Queue({ data }: { data: QueuePage }) {
           {channel.paused ? 'Resume schedule' : 'Pause schedule'}
         </button>
       </ActionForm>
-      : <p className="hint">Scheduling is off. <a href={channelRoot + '/preview'}>Review the preview to start</a>.</p>}
+      : <p className="hint">Scheduling is off. <PageLink href={channelRoot + '/preview'}>Review the preview to start</PageLink>.</p>}
     <ActionForm action={channelRoot + '/flush'} className="inline"
       data-confirm={`Publish all queued posts to ${channel.title} (${channel.tg_id}) now? This ignores the schedule and daily cap.`}>
       <button className="small" type="submit" disabled={activity.queued === 0 || flushing}>Flush queue</button>
     </ActionForm>
     {attempt && <p className="queue-attempt">
-      Latest send attempt{attempt.post_id && <> for <a href={postPath(attempt.post_id)}>post #{attempt.post_id}</a></>}
+      Latest send attempt{attempt.post_id && <> for <PageLink href={postPath(attempt.post_id)}>post #{attempt.post_id}</PageLink></>}
       {' '}<Badge tone={attempt.state === 'Sent' ? 'green' : 'red'}>{attempt.state}</Badge>
       {attempt.error && <span className="hint">{attempt.error}</span>}
     </p>}
@@ -68,7 +68,7 @@ function QueueTable({ channel, activity, items }: Pick<QueuePage, 'channel' | 'a
     {
       label: 'post',
       cell: (item) => <>
-        <a href={postPath(item.post_id)}>#{item.post_id}</a>
+        <PageLink href={postPath(item.post_id)}>#{item.post_id}</PageLink>
         {item.pinned && <Badge>pinned</Badge>}
         <Badge tone="accent" data-role="publishing" hidden={item.state !== 'sending' && !publishing.has(item.id)}>
           publishing…
@@ -98,7 +98,7 @@ function QueueTable({ channel, activity, items }: Pick<QueuePage, 'channel' | 'a
   return <DataTable label="Channel queue" id="channel-queue-items" rows={items} columns={columns}
     rowKey={(item) => item.id}
     rowAttributes={(item) => ({ className: item.state === 'unknown' ? 'row-unknown' : undefined, 'data-queue': item.id })}
-    empty={<p className="hint">Empty. Queue posts from <a href="/posts">the posts grid</a>.</p>} />
+    empty={<p className="hint">Empty. Queue posts from <PageLink href="/posts">the posts grid</PageLink>.</p>} />
 }
 
 function QueueActions({ item, channel }: { item: QueueRow; channel: QueuePage['channel'] }) {
@@ -126,7 +126,7 @@ function QueueActions({ item, channel }: { item: QueueRow; channel: QueuePage['c
         </>
         : <>
           {item.state === 'held'
-            ? <a className="button small" href={channelRoot + '/preview'}>review preview</a>
+            ? <PageLink className="button small" href={channelRoot + '/preview'}>review preview</PageLink>
             : <>
               <button name="action" value={item.pinned ? 'unpin' : 'pin'} className="small ghost">
                 {item.pinned ? 'unpin' : 'pin'}

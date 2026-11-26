@@ -27,6 +27,8 @@ pub struct Config {
     pub public_telegram_fallback: bool,
     pub ui_token: Option<String>,
     pub bind: String,
+    /// Web mount path, empty for the root and without a trailing slash otherwise.
+    pub web_base_path: String,
     /// Where imported posts are mirrored (local folder, WebDAV, Telegram).
     pub storage: StorageConfig,
     pub tag_suggestions: TagSuggestionsConfig,
@@ -219,6 +221,7 @@ struct TelegramSection {
 struct WebSection {
     bind: Option<String>,
     token: Option<String>,
+    base_path: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -374,6 +377,12 @@ impl Config {
         let bind = env_str("NUJIJUSHI_BIND")
             .or(file.web.bind)
             .unwrap_or_else(|| "127.0.0.1:8788".to_string());
+        let web_base_path = parse_web_base_path(
+            env_str("NUJIJUSHI_WEB_BASE_PATH")
+                .or(file.web.base_path)
+                .as_deref()
+                .unwrap_or_default(),
+        )?;
 
         Ok(Config {
             home,
@@ -395,6 +404,7 @@ impl Config {
             public_telegram_fallback: file.import.public_telegram_fallback.unwrap_or(true),
             ui_token,
             bind,
+            web_base_path,
             storage: parse_storage(&file.storage)?,
             tag_suggestions: file.tag_suggestions,
             proxy_url: env_str("NUJIJUSHI_PROXY")
@@ -504,6 +514,8 @@ impl Config {
 
 [web]
 bind = "{bind}"
+# Mount all web routes here. A reverse proxy should preserve this prefix.
+base_path = "{web_base_path}"  # e.g. "/archive", or "" for the root
 # Password for the admin UI (also NUJIJUSHI_UI_TOKEN). Generated on `nujijushi init`.
 token = "{ui_token}"
 
@@ -585,6 +597,7 @@ queue_quota_per_day = 20
 "#,
             home = self.home.display(),
             bind = self.bind,
+            web_base_path = self.web_base_path,
             ui_token = self.ui_token.clone().unwrap_or_else(|| "change-me".into()),
             timeout = self.import_timeout_secs,
             admins = if self.access.admins.is_empty() {
@@ -607,6 +620,27 @@ queue_quota_per_day = 20
         restrict_permissions(&path)?;
         Ok(true)
     }
+}
+
+fn parse_web_base_path(raw: &str) -> Result<String> {
+    let raw = raw.trim();
+    if raw.is_empty() || raw == "/" {
+        return Ok(String::new());
+    }
+    let path = raw.strip_suffix('/').unwrap_or(raw);
+    if path.strip_prefix('/').is_some_and(|segments| {
+        segments.split('/').all(|segment| {
+            !matches!(segment, "" | "." | "..")
+                && segment
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-._~".contains(&b))
+        })
+    }) {
+        return Ok(path.to_owned());
+    }
+    Err(Error::config(
+        "[web] base_path must be an absolute path like /archive, using letters, digits, -, ., _ or ~ in each segment",
+    ))
 }
 
 fn parse_storage(section: &StorageSection) -> Result<StorageConfig> {
@@ -757,6 +791,28 @@ mod tests {
         assert!(cfg.access.allow_import);
         assert!(!cfg.access.allow_publish);
         assert_eq!(cfg.access.import_quota_per_day, 20);
+    }
+
+    #[test]
+    fn web_base_path_is_normalized_and_validated() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        for (raw, expected) in [("", ""), ("/", ""), ("/tools/archive/", "/tools/archive")] {
+            std::fs::write(&file, format!("[web]\nbase_path = {raw:?}\n")).unwrap();
+            let cfg = Config::load_from_home(dir.path().to_path_buf()).unwrap();
+            assert_eq!(cfg.web_base_path, expected);
+        }
+        for bad in [
+            "archive",
+            "//archive",
+            "/a//b",
+            "/../archive",
+            "/a/%2e",
+            "/{id}",
+            "/a?b",
+        ] {
+            assert!(parse_web_base_path(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

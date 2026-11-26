@@ -86,10 +86,29 @@ fn ui_page(path: &str) -> bool {
     }
 }
 
-pub(super) async fn navigation(req: Request, next: Next) -> Response {
+pub(super) async fn navigation(
+    State(ws): State<Arc<WebState>>,
+    req: Request,
+    next: Next,
+) -> Response {
     if matches!(*req.method(), Method::GET | Method::HEAD) && ui_page(req.uri().path()) {
         return match SHELL {
-            Some(shell) => ([(header::CACHE_CONTROL, "no-store")], Html(shell)).into_response(),
+            Some(shell) => {
+                let shell = shell
+                    .replace(
+                        "=\"./assets/",
+                        &format!("=\"{}", ws.url("/admin-assets/assets/")),
+                    )
+                    .replacen(
+                        "name=\"nujijushi-base-path\" content=\"\"",
+                        &format!(
+                            "name=\"nujijushi-base-path\" content=\"{}\"",
+                            ws.base_path()
+                        ),
+                        1,
+                    );
+                ([(header::CACHE_CONTROL, "no-store")], Html(shell)).into_response()
+            }
             None => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 [(header::CACHE_CONTROL, "no-store")],

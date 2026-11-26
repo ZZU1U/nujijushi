@@ -1,15 +1,15 @@
 import { Fragment } from 'react'
-import { ActionForm, TextField, text, listKey, externalUrl, useActions } from '../ui'
+import { ActionForm, TextField, text, listKey, externalUrl, useActions, PageLink } from '../ui'
 import type { DuplicatesPage, DuplicatePost, DuplicateImage } from '../api'
 import { Thumbnail } from '../components/Thumbnail'
 
 function details(post: DuplicatePost) {
   return <>
     <div>
-      <h3><a href={text("/posts/", post.id)}>#{post.id}{post.title ? <> · {post.title}</> : null}</a></h3>
+      <h3><PageLink href={text("/posts/", post.id)}>#{post.id}{post.title ? <> · {post.title}</> : null}</PageLink></h3>
       <p>{post.artist} · {post.url ? <><a href={externalUrl(post.url)} target="_blank" rel="noopener noreferrer">{post.source}</a></> : <>{post.source}</>}</p>
       <p><span className="badge">{post.state}</span>
-        {post.queues.length ? post.queues.map((queue, index) => <Fragment key={listKey(queue, index)}><a className="badge" href={text("/channels/", queue.channel_id, "/queue")}>{queue.alias} · {queue.state}</a></Fragment>) : <><span className="hint">No queue or delivery history</span></>}
+        {post.queues.length ? post.queues.map((queue, index) => <Fragment key={listKey(queue, index)}><PageLink className="badge" href={text("/channels/", queue.channel_id, "/queue")}>{queue.alias} · {queue.state}</PageLink></Fragment>) : <><span className="hint">No queue or delivery history</span></>}
       </p>
     </div>
   </>
@@ -19,9 +19,9 @@ function thumbnail(item: DuplicateImage, post_id: number) {
   return <>
     <figure>
       {item.thumb ? <>
-        <a href={text("/posts/", post_id)}><Thumbnail hash={item.hash} alt={text("Matched image ", item.position)} /></a>
+        <PageLink href={text("/posts/", post_id)}><Thumbnail hash={item.hash} alt={text("Matched image ", item.position)} /></PageLink>
       </> : <>
-        <a href={text("/posts/", post_id)}>Open post #{post_id}</a>
+        <PageLink href={text("/posts/", post_id)}>Open post #{post_id}</PageLink>
       </>}
       <figcaption className="hint">Image {item.position}</figcaption>
     </figure>
@@ -60,8 +60,8 @@ export function Duplicates({ data }: { data: DuplicatesPage }) {
         </article>
       </Fragment>)}
       <nav className="pager">
-        {previous ? <><a href={text("/duplicates?page=", previous)}>Previous</a></> : null}
-        {next ? <><a href={text("/duplicates?page=", next)}>Next</a></> : null}
+        {previous ? <><PageLink href={text("/duplicates?page=", previous)}>Previous</PageLink></> : null}
+        {next ? <><PageLink href={text("/duplicates?page=", next)}>Next</PageLink></> : null}
       </nav>
     </section>
   </>

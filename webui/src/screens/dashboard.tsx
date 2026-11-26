@@ -1,5 +1,5 @@
 import { Fragment } from 'react'
-import { ActionForm, text, listKey } from '../ui'
+import { ActionForm, text, listKey, PageLink } from '../ui'
 import type { DashboardChannel, DashboardPage, Job, UnknownDelivery } from '../api'
 import { Badge } from '../components/Badge'
 import { ChannelLinks } from '../components/ChannelLinks'
@@ -19,7 +19,7 @@ export function Dashboard({ data }: { data: DashboardPage }) {
             <p className="hint">Complete these steps to publish your first post.</p>
           </div>
           {(setup.next && setup.next.href) ? <>
-            <a className="button" href={setup.next.href ?? undefined}>{setup.next.action} →</a>
+            <PageLink className="button" href={setup.next.href ?? undefined}>{setup.next.action} →</PageLink>
           </> : null}
         </div>
         <ol className="setup-steps">
@@ -102,9 +102,9 @@ export function Dashboard({ data }: { data: DashboardPage }) {
       </section>
 
       <section className="panel">
-        <h2>jobs <a className="hint" href="/jobs">all jobs →</a></h2>
+        <h2>jobs <PageLink className="hint" href="/jobs">all jobs →</PageLink></h2>
         <JobTable jobs={jobs} layout="recent"
-          empty={<p className="hint">Nothing queued. <a href="/import">Import something</a>.</p>} />
+          empty={<p className="hint">Nothing queued. <PageLink href="/import">Import something</PageLink>.</p>} />
       </section>
     </div>
   </>
@@ -123,7 +123,7 @@ const unconfirmedColumns: Column<UnknownDelivery>[] = [
       </div>)}
     </>,
   },
-  { label: 'post', cell: (item) => <a href={'/posts/' + item.post_id}>#{item.post_id}</a> },
+  { label: 'post', cell: (item) => <PageLink href={'/posts/' + item.post_id}>#{item.post_id}</PageLink> },
   { label: 'note', className: 'hint', cell: (item) => item.error },
   {
     label: 'actions', hideLabel: true, className: 'actions',
@@ -141,7 +141,7 @@ function DashboardChannels({ channels, jobs }: { channels: DashboardChannel[]; j
     {
       label: 'channel',
       cell: (channel) => <>
-        <a href={text('/channels/', channel.id, '/edit')}>{channel.title}</a>
+        <PageLink href={text('/channels/', channel.id, '/edit')}>{channel.title}</PageLink>
         <span className="hint">{channel.tg_id}</span>
         {channel.paused && <Badge tone="red">paused</Badge>}
         {channel.failures > 0 && <Badge tone="red">{channel.failures} fails</Badge>}
@@ -169,7 +169,7 @@ function DashboardChannels({ channels, jobs }: { channels: DashboardChannel[]; j
   ]
   return <DataTable label="Channels" rows={channels} columns={columns} rowKey={(channel) => channel.id}
     rowAttributes={(channel) => ({ 'data-channel': channel.id })}
-    empty={<p className="hint">No channels yet. <a href="/channels">Create one</a> — you need the bot as an admin in it.</p>} />
+    empty={<p className="hint">No channels yet. <PageLink href="/channels">Create one</PageLink> — you need the bot as an admin in it.</p>} />
 }
 
 const storageColumns: Column<DashboardPage['storage'][number]>[] = [
@@ -184,7 +184,7 @@ const storageColumns: Column<DashboardPage['storage'][number]>[] = [
 const sendColumns: Column<DashboardPage['sends'][number]>[] = [
   { label: 'time', cell: (send) => send.at },
   { label: 'channel', cell: (send) => 'ch #' + send.channel_id },
-  { label: 'post', cell: (send) => send.post_id && <a href={'/posts/' + send.post_id}>#{send.post_id}</a> },
+  { label: 'post', cell: (send) => send.post_id && <PageLink href={'/posts/' + send.post_id}>#{send.post_id}</PageLink> },
   { label: 'result', cell: (send) => send.ok ? <Badge tone="green">ok</Badge> : <Badge tone="red">fail</Badge> },
   { label: 'note', className: 'hint', cell: (send) => send.error },
 ]

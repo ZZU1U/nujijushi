@@ -209,6 +209,10 @@ to require that bundle at build time. A Rust-only build still starts the HTTP se
 and job worker. Known admin pages return 503 with build instructions. Assets,
 metrics, and the Telegram webhook have their own routes.
 
+`[web] base_path` mounts the whole router under one prefix. Axum strips the
+mount before dispatch, and the shell passes the prefix to React for browser
+URLs. Admin JSON and form paths stay relative to the app root.
+
 The React app loads its CSRF token from `GET /api/v1/session` using the HttpOnly
 session cookie. Sign-in uses a short-lived cookie-bound challenge. Protected API
 requests with an expired session return 401. Admin writes are URL-encoded,

@@ -114,7 +114,7 @@ pub fn router(ws: Arc<WebState>) -> Router {
         })
         .layer(middleware::from_fn(super::admin::api_headers));
 
-    Router::new()
+    let app = Router::new()
         .nest("/api/v1", api)
         .route("/api/status", get(api_status))
         .route("/admin-assets/assets/{name}", get(super::admin::asset))
@@ -126,8 +126,16 @@ pub fn router(ws: Arc<WebState>) -> Router {
             ws.clone(),
             auth::require_session,
         ))
-        .layer(middleware::from_fn(super::admin::navigation))
-        .with_state(ws)
+        .layer(middleware::from_fn_with_state(
+            ws.clone(),
+            super::admin::navigation,
+        ))
+        .with_state(ws.clone());
+    if ws.base_path().is_empty() {
+        app
+    } else {
+        Router::new().nest_service(ws.base_path(), app)
+    }
 }
 
 pub(super) fn check_csrf(ws: &WebState, provided: &str) -> WebResult<()> {
@@ -150,12 +158,11 @@ async fn session(State(ws): State<Arc<WebState>>) -> Response {
 }
 
 const LOGIN_COOKIE: &str = "nujijushi_login";
+const LOGIN_PATH: &str = "/api/v1/login";
 
-async fn login_challenge() -> Response {
+async fn login_challenge(State(ws): State<Arc<WebState>>) -> Response {
     let csrf = crate::config::random_token();
-    let cookie = format!(
-        "{LOGIN_COOKIE}={csrf}; Path=/api/v1/login; HttpOnly; SameSite=Strict; Max-Age=600"
-    );
+    let cookie = auth::cookie(LOGIN_COOKIE, &csrf, &ws.url(LOGIN_PATH), 600);
     (
         [(header::SET_COOKIE, cookie)],
         Json(SessionView { csrf: &csrf }),
@@ -184,22 +191,31 @@ async fn login_submit(
         .filter(|path| auth::local_page(path).is_some())
         .unwrap_or("/");
     let mut response = action_result(target, "Signed in");
-    if let Ok(cookie) = HeaderValue::from_str(&auth::session_cookie(&ws.session)) {
-        response.headers_mut().append(header::SET_COOKIE, cookie);
+    let cookies = [
+        auth::cookie(auth::COOKIE, &ws.session, session_path(&ws), 2_592_000),
+        auth::cookie(LOGIN_COOKIE, "", &ws.url(LOGIN_PATH), 0),
+    ];
+    for cookie in cookies {
+        if let Ok(value) = HeaderValue::from_str(&cookie) {
+            response.headers_mut().append(header::SET_COOKIE, value);
+        }
     }
-    response.headers_mut().append(
-        header::SET_COOKIE,
-        HeaderValue::from_static(
-            "nujijushi_login=; Path=/api/v1/login; HttpOnly; SameSite=Strict; Max-Age=0",
-        ),
-    );
     response
+}
+
+fn session_path(ws: &WebState) -> &str {
+    if ws.base_path().is_empty() {
+        "/"
+    } else {
+        ws.base_path()
+    }
 }
 
 async fn logout(State(ws): State<Arc<WebState>>, Form(form): Form<FormMap>) -> WebResult<Response> {
     check_csrf(&ws, forms::field(&form, "csrf").unwrap_or_default())?;
     let mut response = action_result("/login", "");
-    if let Ok(cookie) = HeaderValue::from_str(&auth::clear_cookie()) {
+    if let Ok(cookie) = HeaderValue::from_str(&auth::cookie(auth::COOKIE, "", session_path(&ws), 0))
+    {
         response.headers_mut().insert(header::SET_COOKIE, cookie);
     }
     Ok(response)

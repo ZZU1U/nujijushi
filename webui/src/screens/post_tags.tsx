@@ -1,5 +1,5 @@
 import { useState, type ClipboardEvent } from 'react'
-import { ActionForm, JobProgress, TextField } from '../ui'
+import { ActionForm, JobProgress, TextField, PageLink } from '../ui'
 import { TagAutocomplete } from '../components/TagAutocomplete'
 import type { PostDetailPage, TagSuggestions } from '../api'
 import type { PostAutosave } from './post_autosave'
@@ -45,7 +45,7 @@ export function PostTags({ data, editor }: { data: PostDetailPage; editor: PostA
     {(post.tags.length > 0 || additions.length > 0) && <ul className="post-chips" aria-label="Post tags">
       {post.tags.map((tag) => <li key={tag.id} className="post-chip" data-pending={changing(tag.id) || undefined}
         title={tag.source && tag.manual ? 'Source and manual' : tag.source ? 'Source' : 'Manual'}>
-        <a href={'/posts?tag=' + encodeURIComponent(tag.name)}>#{tag.name}</a>
+        <PageLink href={'/posts?tag=' + encodeURIComponent(tag.name)}>#{tag.name}</PageLink>
         <button type="button" className="chip-action" disabled={changing(tag.id)} aria-label={'Remove tag ' + tag.name}
           onClick={() => editor.changeTags({ action: 'remove_tag', tag_id: tag.id })}>×</button>
       </li>)}

@@ -36,8 +36,8 @@ impl WebState {
             .ok_or_else(|| {
                 Error::config("no UI token: set [web] token in config.toml or NUJIJUSHI_UI_TOKEN")
             })?;
-        let session = auth::derive(token, "session");
-        let csrf = auth::derive(token, "csrf");
+        let session = auth::derive_at(token, "session", &app.cfg.web_base_path);
+        let csrf = auth::derive_at(token, "csrf", &app.cfg.web_base_path);
         let webhook_secret = if app.cfg.bot_mode == crate::config::BotMode::Webhook {
             Some(crate::bot::webhook_secret(&app)?)
         } else {
@@ -49,6 +49,14 @@ impl WebState {
             csrf,
             webhook_secret,
         }))
+    }
+
+    pub(super) fn base_path(&self) -> &str {
+        &self.app.cfg.web_base_path
+    }
+
+    pub(super) fn url(&self, path: &str) -> String {
+        format!("{}{path}", self.base_path())
     }
 }
 
@@ -68,7 +76,7 @@ pub async fn serve(state: AppState, bind: Option<String>) -> Result<()> {
         .await
         .map_err(|e| Error::other(format!("cannot bind {socket}: {e}")))?;
     if admin::assets_available() {
-        println!("admin UI   http://{socket}/");
+        println!("admin UI   http://{socket}{}", ws.url("/"));
     } else {
         tracing::info!("admin UI assets missing; HTTP service listening on {socket}");
     }

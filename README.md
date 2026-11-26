@@ -50,6 +50,13 @@ the CLI, bot, webhook, metrics, and job worker remain available.
 
 Release binaries embed the frontend and run with the usual `nujijushi run` or `nujijushi serve` command. Stop older processes and back up your archive before upgrading a database used by an older binary.
 
+To serve nujijushi at a URL like `https://example.com/archive/`, set this in `config.toml` and forward the full path through your reverse proxy. [Reverse proxy setup](docs/operations.md#serve-under-a-url-prefix)
+
+```toml
+[web]
+base_path = "/archive"
+```
+
 ## Quick start
 
 For guided web setup, run `nujijushi init`, then `nujijushi run` and open the [admin UI](http://127.0.0.1:8788/). The dashboard walks you through configuring Telegram, importing artwork, and holding the first post for preview. Confirm the preview when you are ready to let the scheduler publish it.

@@ -1109,6 +1109,11 @@ async fn cmd_doctor(cfg: Config, strict: bool, offline: bool) -> Result<()> {
             "missing - the admin UI will refuse to start".into()
         },
     });
+    checks.push(Check {
+        level: Level::Ok,
+        label: "web base path".into(),
+        detail: format!("{}/", cfg.web_base_path),
+    });
 
     checks.push(match crate::http::client(&cfg) {
         Ok(_) if cfg.proxy_enabled() => Check {

@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { ActionForm, CaptionPreview, capitalize } from '../ui'
+import { ActionForm, CaptionPreview, capitalize, PageLink } from '../ui'
 import { Badge } from '../components/Badge'
 import { ChannelSelect } from '../components/ChannelSelect'
 import type { PostDetailPage } from '../api'
@@ -14,14 +14,14 @@ export function PostDetail({ data, reload }: { data: PostDetailPage; reload: (qu
   return <>
     <header className="post-heading">
       <div>
-        <a href="/posts" className="hint" data-return-to-posts="">← Posts</a>
+        <PageLink href="/posts" className="hint" data-return-to-posts="">← Posts</PageLink>
         <h1>{post.title || 'Post #' + post.id}</h1>
         <div className="hint">#{post.id} · {post.source} / {post.source_id}</div>
       </div>
       <div className="post-heading-actions">
         <span className="hint" role="status">{editor.failure ? '' : editor.status}</span>
         <PostStateControl data={data} editor={editor} />
-        <a className="button small ghost post-delete-link" href={endpoint + '/delete'}>Delete post…</a>
+        <PageLink className="button small ghost post-delete-link" href={endpoint + '/delete'}>Delete post…</PageLink>
       </div>
     </header>
     {editor.failure && <div className="post-save-error" role="alert">
@@ -58,7 +58,7 @@ export function PostDetail({ data, reload }: { data: PostDetailPage; reload: (qu
             </summary>
             <CaptionPreview caption={caption.caption} />
             <p className="hint">{caption.length} chars · {caption.messages} message(s) · {caption.verdict}</p>
-          </details>) : <p className="hint"><a href="/channels#add-channel">Add a channel</a> to preview a caption.</p>}
+          </details>) : <p className="hint"><PageLink href="/channels#add-channel">Add a channel</PageLink> to preview a caption.</p>}
         </section>
       </aside>
     </div>

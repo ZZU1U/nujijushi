@@ -5,8 +5,9 @@ import {
   type JobsPage, type ChannelEditPage, type ChannelsPage, type PostDeletePage, type PostDetailPage,
   type PreviewPage, type QueuePage, type QueueStatus, type Session, type SettingsPage, type UsersPage, type WatchesPage
 } from './api'
-import { Actions, ActionForm, useActions } from './ui'
+import { Actions, ActionForm, useActions, PageLink } from './ui'
 import { Resource } from './resource'
+import { apiUrl, appPath, appUrl } from './paths'
 import { Channels } from './screens/channels'
 import { ChannelEdit } from './screens/channel_edit'
 import { Dashboard } from './screens/dashboard'
@@ -29,9 +30,14 @@ const nav = [
   ['/watches', 'watched sources'], ['/users', 'users'], ['/settings', 'settings'], ['/jobs', 'jobs'],
 ]
 const localRoute = /^(?:\/|\/(?:login|posts(?:\/\d+(?:\/delete)?)?|channels(?:\/\d+\/(?:edit|queue|preview))?|jobs|import|users|watches|duplicates|settings))$/
-const current = () => location.pathname + location.search + location.hash
+const current = () => (appPath(location.pathname) ?? '/') + location.search + location.hash
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 const loginUrl = (path: string) => '/login?next=' + encodeURIComponent(path)
+
+function pagePath(path: string) {
+  const url = new URL(path, location.origin)
+  if (url.origin === location.origin && localRoute.test(url.pathname)) return url.pathname + url.search + url.hash
+}
 
 function Login({ onLogin }: { onLogin: (session: Session, path: string) => void }) {
   const [challenge, setChallenge] = useState<string>()
@@ -64,7 +70,7 @@ function Login({ onLogin }: { onLogin: (session: Session, path: string) => void 
   return <main className="login">
     <h1><span className="dot" /> nujijushi</h1>
     <p className="hint">Use the UI token from your nujijushi configuration.</p>
-    <form className="card" onSubmit={submit}>
+    <form className="card" method="post" action={apiUrl('/login')} onSubmit={submit}>
       <label>ui token <input name="token" type="password" value={token} onChange={(event) => setToken(event.target.value)} autoFocus required /></label>
       <button type="submit" disabled={busy}>unlock</button>
       {error && <p className="action-error" role="alert">{error}</p>}
@@ -196,9 +202,9 @@ function Workspace({ session, signOut }: { session: Session; signOut: (path: str
   }
 
   async function navigate(next: string, replace = false) {
-    const url = new URL(next, location.origin)
-    if (url.origin !== location.origin || !localRoute.test(url.pathname)) return
-    next = url.pathname + url.search + url.hash
+    const target = pagePath(next)
+    if (!target) return
+    next = target
     if (next === '/posts' && /^\/posts\/\d+\/delete/.test(pathRef.current)) next = gridBack.current
     if (next === pathRef.current) return
     const attempt = ++navigationAttempt.current
@@ -206,8 +212,8 @@ function Workspace({ session, signOut }: { session: Session; signOut: (path: str
     if (!mounted.current || attempt !== navigationAttempt.current) return
     change(next)
     if (next !== current()) {
-      if (replace) history.replaceState(null, '', next)
-      else history.pushState(null, '', next)
+      if (replace) history.replaceState(null, '', appUrl(next))
+      else history.pushState(null, '', appUrl(next))
     }
   }
 
@@ -229,7 +235,7 @@ function Workspace({ session, signOut }: { session: Session; signOut: (path: str
       const allowed = !navigationGuard.current || await navigationGuard.current()
       if (!mounted.current || attempt !== navigationAttempt.current) return
       if (allowed) change(next)
-      else history.pushState(null, '', pathRef.current)
+      else history.pushState(null, '', appUrl(pathRef.current))
     }
     window.addEventListener('popstate', pop)
     return () => {
@@ -246,10 +252,11 @@ function Workspace({ session, signOut }: { session: Session; signOut: (path: str
     if (anchor && mobileMenu instanceof HTMLDetailsElement) mobileMenu.open = false
     if (!(anchor instanceof HTMLAnchorElement) || anchor.target || anchor.hasAttribute('download')) return
     const url = new URL(anchor.href)
-    if (url.origin !== location.origin || !localRoute.test(url.pathname)) return
+    const pathname = appPath(url.pathname)
+    if (url.origin !== location.origin || !pathname || !localRoute.test(pathname)) return
     if (anchor.getAttribute('href')?.startsWith('#')) return
     event.preventDefault()
-    navigate(anchor.hasAttribute('data-return-to-posts') ? gridBack.current : url.pathname + url.search + url.hash)
+    navigate(anchor.hasAttribute('data-return-to-posts') ? gridBack.current : pathname + url.search + url.hash)
   }
 
   const pathname = path.split(/[?#]/)[0]
@@ -260,11 +267,11 @@ function Workspace({ session, signOut }: { session: Session; signOut: (path: str
   }}>
     <div className="admin-shell" onClick={click}>
       <header className="top">
-        <a className="brand" href="/"><span className="dot" />nujijushi</a>
-        <nav className="desktop-nav">{nav.map(([href, label]) => <a key={href} href={href} className={tab === href ? 'active' : ''}>{label}</a>)}</nav>
+        <PageLink className="brand" href="/"><span className="dot" />nujijushi</PageLink>
+        <nav className="desktop-nav">{nav.map(([href, label]) => <PageLink key={href} href={href} className={tab === href ? 'active' : ''}>{label}</PageLink>)}</nav>
         <details className="mobile-nav">
           <summary>Menu</summary>
-          <nav aria-label="Mobile navigation">{nav.map(([href, label]) => <a key={href} href={href} className={tab === href ? 'active' : ''}>{label}</a>)}</nav>
+          <nav aria-label="Mobile navigation">{nav.map(([href, label]) => <PageLink key={href} href={href} className={tab === href ? 'active' : ''}>{label}</PageLink>)}</nav>
         </details>
         <ActionForm action="/logout" className="inline" beforeSubmit={async () => await navigationGuard.current?.() ?? true}>
           <button className="link" type="submit">log out</button>
@@ -279,14 +286,14 @@ function Workspace({ session, signOut }: { session: Session; signOut: (path: str
 
 function Admin() {
   const [session, setSession] = useState<Session>()
-  const [loading, setLoading] = useState(location.pathname !== '/login')
+  const [loading, setLoading] = useState(appPath(location.pathname) !== '/login')
   const [error, setError] = useState('')
   const signOut = useCallback((path: string) => {
-    history.replaceState(null, '', path === '/login' ? path : loginUrl(path))
+    history.replaceState(null, '', appUrl(path === '/login' ? path : loginUrl(path)))
     setSession(undefined)
   }, [])
   useEffect(() => {
-    if (location.pathname === '/login') return
+    if (appPath(location.pathname) === '/login') return
     const controller = new AbortController()
     api<Session>('/session', { signal: controller.signal }).then(setSession).catch((error) => {
       if (controller.signal.aborted) return
@@ -300,7 +307,8 @@ function Admin() {
   if (error) return <main role="alert">{error} <button onClick={() => location.reload()}>Retry</button></main>
   if (session) return <Workspace session={session} signOut={signOut} />
   return <Login onLogin={(session, path) => {
-    history.replaceState(null, '', path.split('?')[0] === '/login' ? '/' : path)
+    const target = pagePath(path) ?? '/'
+    history.replaceState(null, '', appUrl(target.split(/[?#]/)[0] === '/login' ? '/' : target))
     setSession(session)
   }} />
 }

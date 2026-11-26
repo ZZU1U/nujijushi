@@ -23,6 +23,31 @@ $NUJIJUSHI_HOME/
 └── export/              # backups
 ```
 
+### Serve under a URL prefix
+
+Set `base_path = "/archive"` under your existing `[web]` section, or set
+`NUJIJUSHI_WEB_BASE_PATH=/archive`, then restart nujijushi. Use an empty value
+in the file or `/` to serve at the root. Nested prefixes such as `/tools/archive`
+work too. Configure the reverse proxy to forward paths and query strings with
+the prefix intact. For nginx, use `proxy_pass` with a bare upstream address.
+
+```nginx
+location = /archive {
+    proxy_pass http://127.0.0.1:8788;
+}
+location /archive/ {
+    proxy_pass http://127.0.0.1:8788;
+}
+```
+
+Open `https://example.com/archive/`. API requests use `/archive/api/v1/…`, metrics
+are at `/archive/metrics`, and the local Telegram webhook is at
+`/archive/tg/webhook`. With `[bot] webhook_url = "https://example.com"`,
+nujijushi registers `https://example.com/archive/tg/webhook`. You can also
+provide a public base URL with a path or the full public webhook URL.
+Paths carried inside admin JSON and form data, such as an action's `location`
+and a login form's `next`, are relative to the application root.
+
 ## Cookies (only when a site needs them)
 
 Export cookies for the site in Netscape format (e.g. with the "Get cookies.txt"

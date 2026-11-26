@@ -8,6 +8,8 @@ bot_token = "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ"
 [web]
 # The admin UI binds here. Keep it on loopback unless you know what you are doing.
 bind = "127.0.0.1:8788"
+# Mount all web routes under a path such as "/archive". The proxy should preserve it.
+base_path = ""
 # Password for the admin UI. `nujijushi init` generates one if this file is created by nujijushi.
 token = "change-me-to-a-long-random-string"
 
@@ -43,7 +45,7 @@ enabled = true
 queue_alerts = false
 guest_reputation = false  # score guest submissions and require admin review before guests queue new posts
 # polling: ask Telegram for updates (works anywhere, no public address needed).
-# webhook: Telegram POSTs to /tg/webhook on the web server; needs a public HTTPS URL
+# webhook: Telegram POSTs to /tg/webhook under the web base path; needs a public HTTPS URL
 #          (put a TLS proxy in front of [web] bind) and reaches it with a secret header.
 #          Telegram only delivers to 443, 80, 88 or 8443 - behind CGNAT or an ISP that
 #          filters them, keep polling: it needs no inbound port.

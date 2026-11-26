@@ -190,7 +190,7 @@ pub async fn admin_recipients(state: &AppState, except: Option<i64>) -> Result<V
     Ok(ids)
 }
 
-/// The URL Telegram should POST to, derived from `[bot] webhook_url`.
+/// The URL Telegram should POST to. A bare origin uses the configured web mount.
 pub fn webhook_target(cfg: &crate::config::Config) -> Result<String> {
     let base = cfg.webhook_url.as_deref().ok_or_else(|| {
         crate::error::Error::config(
@@ -201,7 +201,14 @@ pub fn webhook_target(cfg: &crate::config::Config) -> Result<String> {
     if trimmed.ends_with(WEBHOOK_PATH) {
         Ok(trimmed.to_string())
     } else {
-        Ok(format!("{trimmed}{WEBHOOK_PATH}"))
+        let mount = if !cfg.web_base_path.is_empty()
+            && url::Url::parse(trimmed).is_ok_and(|url| url.path() == "/")
+        {
+            cfg.web_base_path.as_str()
+        } else {
+            ""
+        };
+        Ok(format!("{trimmed}{mount}{WEBHOOK_PATH}"))
     }
 }
 
@@ -249,6 +256,29 @@ mod webhook_tests {
         );
         let error = webhook_target(&cfg(BotMode::Webhook, None)).unwrap_err();
         assert!(error.to_string().contains("webhook_url"));
+    }
+
+    #[test]
+    fn webhook_target_uses_the_mount_or_the_explicit_public_path() {
+        let mut cfg = cfg(BotMode::Webhook, None);
+        cfg.web_base_path = "/tools/archive".into();
+        for (url, target) in [
+            ("https://bot.example.com:8443/", "/tools/archive/tg/webhook"),
+            (
+                "https://bot.example.com:8443/tools/archive/",
+                "/tools/archive/tg/webhook",
+            ),
+            (
+                "https://bot.example.com:8443/public/tg/webhook",
+                "/public/tg/webhook",
+            ),
+        ] {
+            cfg.webhook_url = Some(url.into());
+            assert_eq!(
+                webhook_target(&cfg).unwrap(),
+                format!("https://bot.example.com:8443{target}")
+            );
+        }
     }
 
     #[test]

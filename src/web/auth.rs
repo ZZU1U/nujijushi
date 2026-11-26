@@ -12,7 +12,17 @@ pub const COOKIE: &str = "nujijushi_session";
 
 /// `key:hash(token)` - deterministic per token, no state needed.
 pub fn derive(token: &str, purpose: &str) -> String {
+    derive_at(token, purpose, "")
+}
+
+pub(super) fn derive_at(token: &str, purpose: &str, base_path: &str) -> String {
     let mut hasher = blake3::Hasher::new();
+    // Keep existing root sessions valid and scope new mounts independently.
+    if !base_path.is_empty() {
+        hasher.update(b"nujijushi-web-base-path\0");
+        hasher.update(base_path.as_bytes());
+        hasher.update(b"\0");
+    }
     hasher.update(b"nujijushi-ui-v1");
     hasher.update(purpose.as_bytes());
     hasher.update(token.as_bytes());
@@ -57,7 +67,7 @@ pub async fn require_session(
     req: Request,
     next: Next,
 ) -> Response {
-    let path = req.uri().path().to_string();
+    let path = req.uri().path();
     // metrics sits outside the session gate on purpose: a scraper has no cookie,
     // and the document only carries counts (never titles, captions or tokens)
     if path == "/login"
@@ -84,7 +94,7 @@ pub async fn require_session(
         .finish();
     (
         [(header::CACHE_CONTROL, "no-store")],
-        Redirect::to(&format!("/login?{target}")),
+        Redirect::to(&ws.url(&format!("/login?{target}"))),
     )
         .into_response()
 }
@@ -97,13 +107,8 @@ pub(super) fn local_page(value: &str) -> Option<Uri> {
     (uri.scheme().is_none() && uri.authority().is_none()).then_some(uri)
 }
 
-/// `Set-Cookie` header for a successful login.
-pub fn session_cookie(value: &str) -> String {
-    format!("{COOKIE}={value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000")
-}
-
-pub fn clear_cookie() -> String {
-    format!("{COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0")
+pub(super) fn cookie(name: &str, value: &str, path: &str, max_age: u32) -> String {
+    format!("{name}={value}; Path={path}; HttpOnly; SameSite=Strict; Max-Age={max_age}")
 }
 
 #[cfg(test)]
@@ -116,6 +121,7 @@ mod tests {
         assert_eq!(a, derive("secret", "session"));
         assert_ne!(a, derive("secret", "csrf"));
         assert_ne!(a, derive("other", "session"));
+        assert_ne!(a, derive_at("secret", "session", "/archive"));
         assert!(a.starts_with("session:"));
     }
 

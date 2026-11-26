@@ -1,5 +1,5 @@
 import { Fragment } from 'react'
-import { ActionForm, TextField, SelectField, Timezones, text, capitalize, listKey } from '../ui'
+import { ActionForm, TextField, SelectField, Timezones, text, capitalize, listKey, PageLink } from '../ui'
 import type { ChannelsPage, ChannelSummaryRow } from '../api'
 import { Badge } from '../components/Badge'
 import { ChannelLinks } from '../components/ChannelLinks'
@@ -13,7 +13,7 @@ const columns: Column<ChannelSummaryRow>[] = [
   {
     label: 'channel',
     cell: (channel) => <>
-      <a href={text('/channels/', channel.id, '/edit')}>{channel.title}</a>
+      <PageLink href={text('/channels/', channel.id, '/edit')}>{channel.title}</PageLink>
       <div className="hint">{channel.tg_id}</div>
       {channel.paused && <Badge tone="red">paused</Badge>}
       {!channel.enabled && <Badge>disabled</Badge>}

@@ -1,3 +1,4 @@
+import { PageLink } from '../components/PageLink'
 import type { JobsPage } from '../api'
 import { JobTable, useLiveJobs } from '../components/JobTable'
 
@@ -13,7 +14,7 @@ export function Jobs({ data }: { data: JobsPage }) {
       {' '}· raise <code>[import] max_concurrent</code> to do more at once.
     </p>
     <JobTable jobs={jobs} layout="history"
-      empty={<p className="hint">No jobs yet. <a href="/import">Import something</a> or publish from the dashboard.</p>} />
+      empty={<p className="hint">No jobs yet. <PageLink href="/import">Import something</PageLink> or publish from the dashboard.</p>} />
     {jobs.length > 0 && <p className="hint" data-live-hint="">this list updates itself while something is running</p>}
   </section>
 }

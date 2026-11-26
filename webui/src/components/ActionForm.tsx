@@ -1,6 +1,7 @@
 import { useRef, useState, type FormEvent, type FormHTMLAttributes, type ReactNode } from 'react'
 import { action, expired, friendly, type ActionFields, type ActionResult } from '../api'
 import { useActions } from '../context'
+import { apiUrl } from '../paths'
 import { SelectField, TextField } from './FormFields'
 
 export { SelectField, TextField }
@@ -116,7 +117,7 @@ export function ActionForm({
     }
   }
 
-  return <form {...props} method="post" action={'/api/v1' + endpoint} aria-busy={busy || undefined} onSubmit={submit}>
+  return <form {...props} method="post" action={apiUrl(endpoint)} aria-busy={busy || undefined} onSubmit={submit}>
     {children}
     {message && <span className={'action-feedback' + (failed ? ' action-error' : '')}
       role={failed ? 'alert' : 'status'}>{message}</span>}

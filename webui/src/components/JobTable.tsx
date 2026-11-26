@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import type { Job } from '../api'
-import { ActionForm, JobBar, JobState, useActions } from '../ui'
+import { ActionForm, JobBar, JobState, useActions, PageLink } from '../ui'
 import { Badge } from './Badge'
 import { DataTable, type Column } from './DataTable'
 
@@ -31,7 +31,7 @@ const history: Column<Job>[] = [
   {
     label: 'actions', hideLabel: true, className: 'actions',
     cell: (job) => <>
-      {job.post_id && <a className="button small ghost" href={'/posts/' + job.post_id}>post</a>}
+      {job.post_id && <PageLink className="button small ghost" href={'/posts/' + job.post_id}>post</PageLink>}
       <RetryImport job={job} />
     </>,
   },
@@ -42,7 +42,7 @@ const imports: Column<Job>[] = [
     ...result,
     cell: (job) => <>
       <span data-role="message">{job.message}</span>
-      {job.post_id && <a href={'/posts/' + job.post_id}>Open post</a>}
+      {job.post_id && <PageLink href={'/posts/' + job.post_id}>Open post</PageLink>}
       <RetryImport job={job} fromImport />
     </>,
   },

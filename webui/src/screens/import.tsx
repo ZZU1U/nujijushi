@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ActionForm, TextArea } from '../ui'
+import { ActionForm, TextArea, PageLink } from '../ui'
 import { JobTable, useLiveJobs } from '../components/JobTable'
 import type { ImportPage } from '../api'
 
@@ -34,7 +34,7 @@ export function Import({ data }: { data: ImportPage }) {
     </section>
 
     <section className="panel">
-      <h2>jobs <a className="hint" href="/jobs">all jobs →</a></h2>
+      <h2>jobs <PageLink className="hint" href="/jobs">all jobs →</PageLink></h2>
       <JobTable jobs={jobs} layout="imports" empty={<p className="hint">No jobs yet.</p>} />
       {jobs.length > 0 && <p className="hint" data-live-hint="">this list updates itself while something is running</p>}
     </section>

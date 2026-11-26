@@ -12,6 +12,7 @@ const binary = resolve(process.env.NUJIJUSHI_TEST_BIN || '../target/debug/nujiju
 let directory: string
 let server: ChildProcess
 let base: string
+let archiveEnv: NodeJS.ProcessEnv
 let cli: (...args: string[]) => Buffer
 
 function png(height: number, color: number, width = 16) {
@@ -51,13 +52,38 @@ async function localPort() {
   })
 }
 
+async function startServer(basePath: string) {
+  const port = await localPort()
+  const url = 'http://127.0.0.1:' + port + basePath
+  const child = spawn(binary, ['serve', '--bind', '127.0.0.1:' + port], {
+    env: { ...archiveEnv, NUJIJUSHI_WEB_BASE_PATH: basePath || '/' }, stdio: ['ignore', 'ignore', 'inherit'],
+  })
+  try {
+    await expect.poll(async () => {
+      try { return (await fetch(url + '/login')).status } catch { return 0 }
+    }).toBe(200)
+    return { child, url }
+  } catch (error) {
+    await stopServer(child)
+    throw error
+  }
+}
+
+async function stopServer(child: ChildProcess) {
+  if (child.exitCode === null && child.signalCode === null) {
+    await new Promise<void>((resolve) => { child.once('exit', () => resolve()); child.kill() })
+  }
+}
+
 test.beforeAll(async () => {
   directory = await mkdtemp(join(tmpdir(), 'nujijushi-browser-'))
   const galleryDl = join(directory, 'gallery-dl')
   await writeFile(galleryDl, "#!/bin/sh\nprintf '[]\\n'\n", { mode: 0o700 })
   const env = { ...process.env, NUJIJUSHI_HOME: join(directory, 'archive'),
     NUJIJUSHI_UI_TOKEN: token, TG_BOT_TOKEN: '', NUJIJUSHI_BOT_MODE: 'polling',
-    NUJIJUSHI_BOT: '0', NUJIJUSHI_ADMINS: '', NUJIJUSHI_PROXY: '', NUJIJUSHI_GALLERY_DL: galleryDl }
+    NUJIJUSHI_BOT: '0', NUJIJUSHI_ADMINS: '', NUJIJUSHI_PROXY: '', NUJIJUSHI_GALLERY_DL: galleryDl,
+    NUJIJUSHI_WEB_BASE_PATH: '/' }
+  archiveEnv = env
   cli = (...args: string[]) => execFileSync(binary, args, { env, stdio: ['ignore', 'pipe', 'pipe'] })
   cli('init')
   const config = join(env.NUJIJUSHI_HOME, 'config.toml')
@@ -71,18 +97,13 @@ test.beforeAll(async () => {
   await Promise.all(Array.from({ length: 54 }, (_, i) =>
     writeFile(join(posts, 'piece-' + i + '-unique.png'), png(16, i))))
   cli('import', posts)
-  const port = await localPort()
-  base = 'http://127.0.0.1:' + port
-  server = spawn(binary, ['serve', '--bind', '127.0.0.1:' + port], { env, stdio: ['ignore', 'ignore', 'inherit'] })
-  await expect.poll(async () => {
-    try { return (await fetch(base + '/login')).status } catch { return 0 }
-  }).toBe(200)
+  const started = await startServer('')
+  server = started.child
+  base = started.url
 })
 
 test.afterAll(async () => {
-  if (server && server.exitCode === null) {
-    await new Promise<void>((resolve) => { server.once('exit', () => resolve()); server.kill() })
-  }
+  if (server) await stopServer(server)
   if (directory) await rm(directory, { recursive: true, force: true })
 })
 
@@ -115,6 +136,46 @@ async function browserPost(name: string, heights: number[]) {
     db.close()
   }
 }
+
+test('the admin works at a nested URL prefix', async ({ page }) => {
+  const prefix = '/tools/archive'
+  const { child, url } = await startServer(prefix)
+  try {
+    const documents = countDocuments(page)
+    const paths = new Set<string>()
+    page.on('request', (request) => paths.add(new URL(request.url()).pathname))
+    const grid = url + '/posts?source=local'
+    await page.goto(grid)
+    await expect(page).toHaveURL(url + '/login?next=%2Fposts%3Fsource%3Dlocal')
+    await expect(page.locator('link[rel="stylesheet"]')).toHaveAttribute('href', new RegExp('^' + prefix + '/admin-assets/'))
+    await page.getByLabel('ui token').fill(token)
+    await page.getByRole('button', { name: 'unlock' }).click()
+    await expect(page).toHaveURL(grid)
+
+    const thumbnail = page.locator('.card.post img').first()
+    await expect(thumbnail).toHaveAttribute('src', new RegExp('^' + prefix + '/thumb/'))
+    await expect.poll(() => thumbnail.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0)
+    const link = page.getByRole('link', { name: /Open post/ }).first()
+    const href = await link.getAttribute('href')
+    expect(href).toMatch(new RegExp('^' + prefix + '/posts/'))
+    await link.click()
+    await expect(page).toHaveURL(new URL(href!, url).href)
+    const fullSize = page.locator('.media-grid img').first()
+    await expect(fullSize).toHaveAttribute('src', new RegExp('^' + prefix + '/media/'))
+    await expect.poll(() => fullSize.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0)
+    await page.goBack()
+    await expect(page).toHaveURL(grid)
+
+    await page.getByRole('button', { name: 'log out' }).click()
+    await expect(page.getByLabel('ui token')).toBeVisible()
+    await expect(page).toHaveURL(url + '/login?next=%2Fposts%3Fsource%3Dlocal')
+    expect((await page.request.get(url + '/api/v1/session')).status()).toBe(401)
+    expect(documents()).toBe(1)
+    expect([...paths].filter((path) => !path.startsWith(prefix + '/'))).toEqual([])
+  } finally {
+    await stopServer(child)
+  }
+})
 
 test('FANBOX creator links share a watch that checks automatically and shows its last run', async ({ page }) => {
   await signIn(page, '/watches')

@@ -3,6 +3,7 @@ import type { ActionFields, Media, PostDetailPage } from '../api'
 import { Thumbnail, thumbnailUrl } from '../components/Thumbnail'
 import { Badge } from '../components/Badge'
 import { useThumbnailsOnly } from '../preferences'
+import { appUrl } from '../paths'
 import { ActionForm, CompressionOptions, JobProgress, externalUrl } from '../ui'
 import type { PostAutosave } from './post_autosave'
 
@@ -115,14 +116,14 @@ export function PostGallery({ data, editor }: { data: PostDetailPage; editor: Po
           onDragEnd={endDrag}>
           <div className="artwork-tile">
             {thumbnailsOnly
-              ? <a href={'/media/' + item.hash} target="_blank" rel="noopener noreferrer" draggable={false}
+              ? <a href={appUrl('/media/' + item.hash)} target="_blank" rel="noopener noreferrer" draggable={false}
                 aria-label={`Open ${item.is_video ? 'video' : 'image'} ${index + 1} at full size`}>
                 <Thumbnail hash={item.thumb} alt="" draggable={false} width={item.width ?? undefined} height={item.height ?? undefined} />
               </a>
               : item.is_video
-              ? <video controls preload="none" poster={thumbnailUrl(item.thumb)} src={'/media/' + item.hash} />
-              : <a href={'/media/' + item.hash} target="_blank" rel="noopener noreferrer" draggable={false} aria-label={`Open image ${index + 1} at full size`}>
-                <img loading="lazy" decoding="async" src={'/media/' + item.hash} alt="" draggable={false}
+              ? <video controls preload="none" poster={thumbnailUrl(item.thumb)} src={appUrl('/media/' + item.hash)} />
+              : <a href={appUrl('/media/' + item.hash)} target="_blank" rel="noopener noreferrer" draggable={false} aria-label={`Open image ${index + 1} at full size`}>
+                <img loading="lazy" decoding="async" src={appUrl('/media/' + item.hash)} alt="" draggable={false}
                   width={item.width ?? undefined} height={item.height ?? undefined} />
               </a>}
             <MediaOptions item={item} position={index + 1} open={open === item.id}

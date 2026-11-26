@@ -1,5 +1,5 @@
 import { Fragment } from 'react'
-import { ActionForm, TextField, CaptionPreview, text, listKey } from '../ui'
+import { ActionForm, TextField, CaptionPreview, text, listKey, PageLink } from '../ui'
 import type { PreviewPage } from '../api'
 
 export function Preview({ data }: { data: PreviewPage }) {
@@ -7,7 +7,7 @@ export function Preview({ data }: { data: PreviewPage }) {
   return <>
     <section className="panel">
       <h2>next slots · {channel.title}{" "}<span className="hint">{channel.tg_id}</span></h2>
-      <p className="hint"><a href={text("/channels/", channel.id, "/edit")}>settings</a> · <a href={text("/channels/", channel.id, "/queue")}>queue</a></p>
+      <p className="hint"><PageLink href={text("/channels/", channel.id, "/edit")}>settings</PageLink> · <PageLink href={text("/channels/", channel.id, "/queue")}>queue</PageLink></p>
       {stopped ? <>
         <p className="hint">Scheduling is off for this channel. These times show when posts could go out after scheduling is enabled.</p>
       </> : null}
@@ -15,7 +15,7 @@ export function Preview({ data }: { data: PreviewPage }) {
         <article className="slot">
           <header>
             <span className="badge">held for review</span>
-            <a href={text("/posts/", held.post_id)}>View artwork #{held.post_id}</a>
+            <PageLink href={text("/posts/", held.post_id)}>View artwork #{held.post_id}</PageLink>
             <span className="hint">{held.media} media · {held.messages} message(s) · {held.reason}</span>
           </header>
           <CaptionPreview caption={held.caption}></CaptionPreview>
@@ -27,7 +27,7 @@ export function Preview({ data }: { data: PreviewPage }) {
             <header>
               <span className="badge">slot {item.slot}</span>
               <span className="hint">{item.eta} · in {item.eta_in}</span>
-              <a href={text("/posts/", item.post_id)}>#{item.post_id}</a>
+              <PageLink href={text("/posts/", item.post_id)}>#{item.post_id}</PageLink>
               <span className="hint">{item.media} media · {item.messages} message(s) · {item.reason}</span>
               {item.spoiler ? <><span className="badge">spoiler</span></> : null}
               {item.nsfw ? <><span className="badge red">nsfw</span></> : null}
@@ -49,7 +49,7 @@ export function Preview({ data }: { data: PreviewPage }) {
           <button type="submit">{(stopped ? "Confirm preview and enable scheduling" : "Confirm preview and release post")}</button>
         </ActionForm>
       </> : <>{Boolean((held && !(held.allowed))) ? <>
-        <p className="hint">This post cannot be released. Review the post or remove it from the <a href={text("/channels/", channel.id, "/queue")}>queue</a>.</p>
+        <p className="hint">This post cannot be released. Review the post or remove it from the <PageLink href={text("/channels/", channel.id, "/queue")}>queue</PageLink>.</p>
       </> : null}</>}
     </section>
   </>

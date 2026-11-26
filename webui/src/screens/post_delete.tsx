@@ -1,4 +1,4 @@
-import { ActionForm, TextField, text } from '../ui'
+import { ActionForm, TextField, text, PageLink } from '../ui'
 import type { PostDeletePage } from '../api'
 
 export function PostDelete({ data }: { data: PostDeletePage }) {
@@ -10,11 +10,11 @@ export function PostDelete({ data }: { data: PostDeletePage }) {
       <p>This permanently removes the post from your archive, including its notes, tags, media links, and queue entries. Copies already published to Telegram or mirrored to storage stay where they are.</p>
       {sending ? <>
         <p className="hint">This post is being sent. Wait for the send to finish, then refresh this page.</p>
-        <a className="button ghost" href={text("/posts/", id)}>Back to post</a>
+        <PageLink className="button ghost" href={text("/posts/", id)}>Back to post</PageLink>
       </> : <>
         <ActionForm action={text("/posts/", id, "/delete")} className="post-buttons">
           <TextField type="hidden" name="imported_at" value={imported_at} />
-          <a className="button ghost" href={text("/posts/", id)}>Cancel</a>
+          <PageLink className="button ghost" href={text("/posts/", id)}>Cancel</PageLink>
           <button className="danger" type="submit">Delete post</button>
         </ActionForm>
       </>}
