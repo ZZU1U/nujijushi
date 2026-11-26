@@ -35,11 +35,35 @@ pub struct Config {
     /// Hosts that must bypass the proxy (comma separated).
     pub proxy_no_proxy: Option<String>,
     pub gallery_dl: String,
+    pub pixiv_backend: PixivBackend,
+    pub twitter_backend: TwitterBackend,
+    #[cfg(test)]
+    pub(crate) pixiv_test_origin: Option<url::Url>,
+    #[cfg(test)]
+    pub(crate) twitter_test_origin: Option<url::Url>,
+    #[cfg(test)]
+    pub(crate) rednote_test_origin: Option<url::Url>,
     pub ffmpeg: String,
     pub import_timeout_secs: u64,
     pub max_concurrent_imports: usize,
     pub caption_limit: usize,
     pub max_upload_bytes: u64,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PixivBackend {
+    #[default]
+    GalleryDl,
+    Native,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TwitterBackend {
+    #[default]
+    GalleryDl,
+    Native,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -200,6 +224,10 @@ struct WebSection {
 #[derive(Debug, Default, Deserialize)]
 struct ImportSection {
     gallery_dl: Option<String>,
+    #[serde(default)]
+    pixiv_backend: PixivBackend,
+    #[serde(default)]
+    twitter_backend: TwitterBackend,
     ffmpeg: Option<String>,
     timeout_secs: Option<u64>,
     max_concurrent: Option<usize>,
@@ -380,6 +408,14 @@ impl Config {
             gallery_dl: env_str("NUJIJUSHI_GALLERY_DL")
                 .or(file.import.gallery_dl)
                 .unwrap_or_else(|| "gallery-dl".to_string()),
+            pixiv_backend: file.import.pixiv_backend,
+            twitter_backend: file.import.twitter_backend,
+            #[cfg(test)]
+            pixiv_test_origin: None,
+            #[cfg(test)]
+            twitter_test_origin: None,
+            #[cfg(test)]
+            rednote_test_origin: None,
             ffmpeg: file.import.ffmpeg.unwrap_or_else(|| "ffmpeg".to_string()),
             import_timeout_secs: file.import.timeout_secs.unwrap_or(1800),
             max_concurrent_imports: file.import.max_concurrent.unwrap_or(2).max(1),
@@ -474,6 +510,10 @@ token = "{ui_token}"
 [import]
 # External helpers. `nujijushi doctor` verifies these.
 gallery_dl = "gallery-dl"
+pixiv_backend = "gallery-dl"  # "native" for Pixiv artwork and creator watches
+# Native Pixiv uses cookies/pixiv.txt with PHPSESSID for signed-in access.
+twitter_backend = "gallery-dl"  # "native" for signed-in individual X posts
+# Native X uses cookies/twitter.txt (or cookies/x.com.txt) with auth_token and ct0.
 ffmpeg = "ffmpeg"
 timeout_secs = {timeout}
 max_concurrent = 2
@@ -707,6 +747,8 @@ mod tests {
         assert_eq!(cfg.bind, "127.0.0.1:8788");
         assert_eq!(cfg.caption_limit, 1024);
         assert_eq!(cfg.gallery_dl, "gallery-dl");
+        assert_eq!(cfg.pixiv_backend, PixivBackend::GalleryDl);
+        assert_eq!(cfg.twitter_backend, TwitterBackend::GalleryDl);
         assert!(cfg.bot_token.is_none());
         assert!(!cfg.proxy_enabled());
         assert!(cfg.bot_enabled);
@@ -715,6 +757,28 @@ mod tests {
         assert!(cfg.access.allow_import);
         assert!(!cfg.access.allow_publish);
         assert_eq!(cfg.access.import_quota_per_day, 20);
+    }
+
+    #[test]
+    fn pixiv_backend_is_opt_in_and_rejects_unknown_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[import]\npixiv_backend = \"native\"\n").unwrap();
+        let cfg = Config::load_from_home(dir.path().to_path_buf()).unwrap();
+        assert_eq!(cfg.pixiv_backend, PixivBackend::Native);
+        std::fs::write(&path, "[import]\npixiv_backend = \"other\"\n").unwrap();
+        assert!(Config::load_from_home(dir.path().to_path_buf()).is_err());
+    }
+
+    #[test]
+    fn twitter_backend_is_opt_in_and_rejects_unknown_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[import]\ntwitter_backend = \"native\"\n").unwrap();
+        let cfg = Config::load_from_home(dir.path().to_path_buf()).unwrap();
+        assert_eq!(cfg.twitter_backend, TwitterBackend::Native);
+        std::fs::write(&path, "[import]\ntwitter_backend = \"other\"\n").unwrap();
+        assert!(Config::load_from_home(dir.path().to_path_buf()).is_err());
     }
 
     #[test]

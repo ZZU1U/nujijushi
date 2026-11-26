@@ -53,7 +53,7 @@ jobs:
       - name: package
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf "$GITHUB_WORKSPACE/nujijushi-${{ github.ref_name || 'snapshot' }}-${{ matrix.target }}.tar.gz" nujijushi
+          tar czf "$GITHUB_WORKSPACE/nujijushi-${{ github.ref_name || 'snapshot' }}-${{ matrix.target }}.tar.gz" nujijushi -C "$GITHUB_WORKSPACE/crates/nujijushi-sources/src/twitter" LICENSE-signing
       - uses: actions/upload-artifact@v4
         with:
           name: nujijushi-${{ matrix.target }}

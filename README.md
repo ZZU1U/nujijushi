@@ -25,6 +25,25 @@ NUJIJUSHI_REQUIRE_WEBUI=1 cargo install --path . --locked
 
 Install `gallery-dl` for gallery-site imports and `ffmpeg` if you want video thumbnails. Importing a folder of images only needs nujijushi.
 
+To try native Pixiv artwork imports and creator watches, set this in `config.toml`:
+
+```toml
+[import]
+pixiv_backend = "native"
+```
+
+For signed-in Pixiv access, export a Netscape-format `cookies/pixiv.txt` containing `PHPSESSID`. Ugoira and other Pixiv URL types use gallery-dl. Set `pixiv_backend = "gallery-dl"` to switch back.
+
+To try native imports for individual X posts, set this under your existing `[import]` section:
+
+```toml
+twitter_backend = "native"
+```
+
+Export your signed-in x.com cookies in Netscape format to `cookies/twitter.txt`, including `auth_token` and `ct0`. Guest imports and profile watches use gallery-dl. [X import setup](docs/operations.md#native-x)
+
+Individual RedNote and Xiaohongshu note links, including app share links, import natively. Use `cookies/rednote.txt` for notes that require a signed-in account. [RedNote import setup](docs/operations.md#rednote)
+
 A Rust-only source build works with `cargo install --path . --locked`.
 If the Vite bundle is absent, the admin pages return build instructions and
 the CLI, bot, webhook, metrics, and job worker remain available.

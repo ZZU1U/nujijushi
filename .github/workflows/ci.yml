@@ -43,7 +43,7 @@ jobs:
           cache-dependency-path: webui/package-lock.json
       - run: npm ci --prefix webui
       - run: npm run build --prefix webui
-      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   test:
     name: test (${{ matrix.os }})
@@ -67,7 +67,7 @@ jobs:
           cache-dependency-path: webui/package-lock.json
       - run: npm ci --prefix webui
       - run: npm run build --prefix webui
-      - run: cargo test --locked
+      - run: cargo test --workspace --locked
 
   browser:
     name: admin browser tests

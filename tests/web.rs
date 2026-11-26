@@ -270,6 +270,40 @@ async fn importing_pasted_encoded_newlines_queues_each_link() {
 }
 
 #[tokio::test]
+async fn rednote_import_job_views_keep_access_tokens_private_on_retry() {
+    const URL: &str = "https://www.rednote.com/discovery/item/674051740000000007027a15?xsec_token=private-fixture&xsec_source=app";
+    const DISPLAY: &str = "https://www.rednote.com/explore/674051740000000007027a15";
+    let h = harness();
+    let form = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("csrf", &h.ws.csrf)
+        .append_pair("targets", URL)
+        .finish();
+    let response = h.send(h.post("/import", &form)).await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let id = Harness::json(&response)["job_ids"][0].as_i64().unwrap();
+    let view = h.page(&format!("/jobs/{id}/status")).await;
+    assert_eq!(view["payload"], DISPLAY);
+    assert!(!view.to_string().contains("private-fixture"));
+    h.state
+        .db
+        .call(move |conn| job_db::set_state(conn, id, "failed", Some("fixture failure")))
+        .await
+        .unwrap();
+    let response = h
+        .send(h.post("/jobs/retry", &format!("csrf={}&id={id}", h.ws.csrf)))
+        .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let new_id = Harness::json(&response)["job_ids"][0].as_i64().unwrap();
+    assert_eq!(
+        h.page(&format!("/jobs/{new_id}/status")).await["payload"],
+        DISPLAY
+    );
+    let jobs = h.jobs().await;
+    let retried = jobs.iter().find(|job| job.id == new_id).unwrap();
+    assert_eq!(retried.payload.as_deref(), Some(URL));
+}
+
+#[tokio::test]
 async fn direct_web_import_is_approved_when_the_job_creates_it() {
     let h = harness();
     let artwork = tempfile::tempdir().unwrap();

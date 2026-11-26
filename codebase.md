@@ -38,7 +38,7 @@ pub struct AppState {
 See [.env.example](.env.example) for environment overrides. `AppState::open` creates
 the home layout, opens and migrates the DB, and builds the blob store and renderer.
 
-## Data model (SQLite, schema v23 via `PRAGMA user_version`)
+## Data model (SQLite, schema v24 via `PRAGMA user_version`)
 
 | migration | tables and views | purpose |
 |---|---|---|
@@ -59,6 +59,7 @@ the home layout, opens and migrates the DB, and builds the blob store and render
 | `0021_duplicate_index_recovery.sql` | `duplicate_fingerprint_failures` | backoff for unreadable artwork and an index for exact duplicate lookup |
 | `0022_delivery_links.sql` | `sends` | snapshot Telegram destinations for links to confirmed deliveries |
 | `0023_daily_watches.sql` | `watched_sources` | record the start of the last check and backfill older watch activity |
+| `0024_pixiv_watch_state.sql` | `watched_pixiv_seen`, `watched_sources`, `watched_items` | native Pixiv watch baseline, seen artwork IDs, and pending artwork absence counts |
 
 Blob bytes live at `blobs/<aa>/<blake3>.<ext>` and thumbnails at
 `thumbs/<aa>/<blake3>.webp`. Identical files across posts are stored once. SQLite
@@ -91,6 +92,15 @@ The CLI, bot and web use `jobs::import_target` or its progress-reporting variant
    (Bot API: forward the post into a chat, read file IDs, download, delete the copy, rebuild
    album siblings from neighbouring message IDs). If forwarding fails for a public
    link, `[import] public_telegram_fallback` permits a single-image embed fallback.
+   With `[import] pixiv_backend = "native"`, Pixiv artwork imports and creator watches
+   use the Pixiv client in `crates/nujijushi-sources`. The app stages originals and
+   maps typed artwork data into `NormalizedPost`. Ugoira routes to gallery-dl.
+   With `[import] twitter_backend = "native"` and an X session file, individual
+   X status URLs use the same crate's signed-in post client. X profile watches
+   use gallery-dl.
+   Individual RedNote note links use the native RedNote client. It resolves app
+   share links and reads the note page, then stages the complete gallery or
+   direct video and archives it under the RedNote note ID.
    Other targets go through the `Source` registry. `gallerydl` stages URLs with
    `--write-metadata` and passes site cookies and the configured proxy. `localdir`
    reads folders.
@@ -245,7 +255,10 @@ ID cursor. The card badge identifies Telegram submissions from guests.
 * `jobs/watch.rs` handles manual and automatic feed checks. The worker queues enabled
   watches on startup and as they become due, 24 hours after the last attempt started.
   Checks record discoveries and the checkpoint before downloading so later checks can
-  retry pending items. `duplicates.rs` indexes still images in batches for the duplicate inbox.
+  retry pending items. After its first complete scan, a native Pixiv watch compares the
+  creator index with stored artwork IDs and requests summaries only for newly visible
+  IDs. Two complete scans that omit a pending ID defer its retries until it reappears.
+  `duplicates.rs` indexes still images in batches for the duplicate inbox.
 * `jobs/tag_suggestions/` sends still images to FoidFinder on loopback. The optional
   Danbooru fallback resolves character names and franchise metadata. Reviews,
   supporting image positions, and catalog mappings are stored in SQLite.

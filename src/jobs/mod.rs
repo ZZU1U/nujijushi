@@ -12,7 +12,7 @@ use crate::db::posts::{NewMedia, StoredImport};
 use crate::db::reputation::{self, MatchedSuggestion, Suggestion};
 use crate::db::{jobs as job_db, posts as post_db};
 use crate::error::{Error, Result};
-use crate::source::{NormalizedPost, gallerydl, telegram};
+use crate::source::{self, NormalizedPost, gallerydl, telegram};
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Default)]
@@ -138,10 +138,10 @@ pub async fn import_target_tracked(
     }
     let copy_chat = copy_chat_for(state, submitted_by);
     let posts = crate::source::fetch_target(state, target, copy_chat.as_deref()).await?;
-    let outcome = import_posts(state, posts.clone(), submitted_by, job_id).await?;
+    let outcome = import_posts(state, posts.clone(), submitted_by, job_id).await;
 
-    if target.starts_with("http") && !telegram::is_telegram_link(target) {
-        gallerydl::cleanup_staging(&posts);
+    if gallerydl::looks_like_url(target) && !telegram::is_telegram_link(target) {
+        source::cleanup_staging(&state.cfg, &posts);
     }
     telegram::cleanup(
         &posts
@@ -150,12 +150,14 @@ pub async fn import_target_tracked(
             .collect::<Vec<_>>(),
     );
 
+    let outcome = outcome?;
     if outcome.post_ids.is_empty() && outcome.suggestions.is_empty() {
         let detail = outcome
             .skipped
             .first()
             .map(|(_, err)| err.clone())
             .unwrap_or_else(|| "no posts returned".to_string());
+        let target = source::display_import_target(target);
         return Err(Error::other(format!("import of {target} failed: {detail}")));
     }
     Ok(outcome)

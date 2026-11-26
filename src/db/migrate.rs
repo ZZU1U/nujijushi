@@ -28,6 +28,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0021_duplicate_index_recovery.sql"),
     include_str!("../../migrations/0022_delivery_links.sql"),
     include_str!("../../migrations/0023_daily_watches.sql"),
+    include_str!("../../migrations/0024_pixiv_watch_state.sql"),
 ];
 
 pub fn schema_version(conn: &Connection) -> Result<i64> {
@@ -126,6 +127,7 @@ mod tests {
             "tag_rules",
             "tags",
             "watched_items",
+            "watched_pixiv_seen",
             "watched_sources",
         ] {
             assert!(
@@ -385,6 +387,37 @@ mod tests {
             super::super::watches::get(&conn, 2).unwrap().last_run_at,
             None
         );
+    }
+
+    #[test]
+    fn pixiv_watch_migration_preserves_existing_checkpoint_and_queue() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..23] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 23).unwrap();
+        conn.execute_batch(
+            "INSERT INTO watched_sources (id, name, url, initial_batch, checkpoint)
+                 VALUES (1, 'Artist', 'https://www.pixiv.net/users/7/artworks', 2, '2026-01-01T00:00:00Z');
+             INSERT INTO watched_items (watch_id, source_id, url, published_at, last_attempt_job_id)
+                 VALUES (1, '42', 'https://www.pixiv.net/artworks/42', '2026-01-01T00:00:00Z', 8);",
+        )
+        .unwrap();
+        migrate(&mut conn).unwrap();
+
+        use super::super::{parse_ts, watches};
+        let watch = watches::get(&conn, 1).unwrap();
+        assert_eq!(watch.checkpoint, parse_ts("2026-01-01T00:00:00Z"));
+        assert!(!watch.pixiv_baselined);
+        assert!(watches::pixiv_seen(&conn, 1).unwrap().is_empty());
+        assert_eq!(
+            watches::pending(&conn, 1, 1, true).unwrap(),
+            [(
+                "42".to_owned(),
+                "https://www.pixiv.net/artworks/42".to_owned()
+            )]
+        );
+        assert_eq!(watches::pixiv_deferred_count(&conn, 1).unwrap(), 0);
     }
 
     #[test]

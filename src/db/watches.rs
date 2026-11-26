@@ -1,12 +1,17 @@
 //! Watched feeds and the durable queue of discovered artwork.
 
+use std::collections::HashSet;
+
 use chrono::{DateTime, TimeDelta, Utc};
 use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 
 use crate::error::{Error, Result};
+use crate::source::pixiv::CreatorScan;
 use crate::source::watch::Candidate;
 
 use super::{fmt_ts, get_ts, jobs, transaction};
+
+const PIXIV_MISSING_LIMIT: i64 = 2;
 
 #[derive(Debug)]
 pub struct Watch {
@@ -18,6 +23,7 @@ pub struct Watch {
     pub checkpoint: Option<DateTime<Utc>>,
     pub last_job_id: Option<i64>,
     pub last_run_at: Option<DateTime<Utc>>,
+    pub(crate) pixiv_baselined: bool,
 }
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<Watch> {
@@ -30,6 +36,7 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<Watch> {
         checkpoint: get_ts(row, "checkpoint")?,
         last_job_id: row.get("last_job_id")?,
         last_run_at: get_ts(row, "last_run_at")?,
+        pixiv_baselined: row.get("pixiv_baselined")?,
     })
 }
 
@@ -141,6 +148,89 @@ pub fn record_scan(
     candidates: &[Candidate],
     started: DateTime<Utc>,
 ) -> Result<()> {
+    transaction(conn, |conn| {
+        record_discoveries(conn, watch, candidates, started)?;
+        conn.execute(
+            "UPDATE watched_items SET pixiv_missing_scans = 0
+             WHERE watch_id = ?1 AND handled = 0 AND pixiv_missing_scans > 0",
+            [watch.id],
+        )?;
+        Ok(())
+    })
+}
+
+pub(crate) fn pixiv_seen(conn: &Connection, watch_id: i64) -> Result<HashSet<String>> {
+    let mut stmt = conn.prepare("SELECT source_id FROM watched_pixiv_seen WHERE watch_id = ?1")?;
+    Ok(stmt
+        .query_map([watch_id], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+pub(crate) fn record_pixiv_scan(
+    conn: &mut Connection,
+    watch: &Watch,
+    scan: &CreatorScan,
+    seen: Option<&HashSet<String>>,
+    started: DateTime<Utc>,
+) -> Result<()> {
+    transaction(conn, |conn| {
+        record_discoveries(conn, watch, &scan.candidates, started)?;
+        let mut insert = conn.prepare(
+            "INSERT INTO watched_pixiv_seen (watch_id, source_id) VALUES (?1, ?2)
+             ON CONFLICT DO NOTHING",
+        )?;
+        for id in &scan.visible {
+            if seen.is_none_or(|seen| !seen.contains(id)) {
+                insert.execute(params![watch.id, id])?;
+            }
+        }
+        if !watch.pixiv_baselined {
+            conn.execute(
+                "UPDATE watched_sources SET pixiv_baselined = 1 WHERE id = ?1",
+                [watch.id],
+            )?;
+        }
+        update_pixiv_absences(conn, watch.id, &scan.visible)
+    })
+}
+
+fn update_pixiv_absences(
+    conn: &Connection,
+    watch_id: i64,
+    visible: &HashSet<String>,
+) -> Result<()> {
+    let mut select = conn.prepare(
+        "SELECT source_id, pixiv_missing_scans FROM watched_items
+         WHERE watch_id = ?1 AND handled = 0",
+    )?;
+    let pending = select
+        .query_map([watch_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut update = conn.prepare(
+        "UPDATE watched_items SET pixiv_missing_scans = ?3
+         WHERE watch_id = ?1 AND source_id = ?2",
+    )?;
+    for (id, misses) in pending {
+        let next = if visible.contains(&id) {
+            0
+        } else {
+            (misses + 1).min(PIXIV_MISSING_LIMIT)
+        };
+        if next != misses {
+            update.execute(params![watch_id, id, next])?;
+        }
+    }
+    Ok(())
+}
+
+fn record_discoveries(
+    conn: &Connection,
+    watch: &Watch,
+    candidates: &[Candidate],
+    started: DateTime<Utc>,
+) -> Result<()> {
     let checkpoint = candidates
         .iter()
         .map(|item| item.published_at)
@@ -149,36 +239,43 @@ pub fn record_scan(
         .chain(watch.checkpoint)
         .max()
         .unwrap_or(started);
-    transaction(conn, |conn| {
-        let mut insert = conn.prepare(
-            "INSERT INTO watched_items (watch_id, source_id, url, published_at)
+    let mut insert = conn.prepare(
+        "INSERT INTO watched_items (watch_id, source_id, url, published_at)
              VALUES (?1, ?2, ?3, ?4) ON CONFLICT (watch_id, source_id) DO NOTHING",
-        )?;
-        for item in candidates {
-            insert.execute(params![
-                watch.id,
-                item.source_id,
-                item.url,
-                fmt_ts(item.published_at)
-            ])?;
-        }
+    )?;
+    for item in candidates {
+        insert.execute(params![
+            watch.id,
+            item.source_id,
+            item.url,
+            fmt_ts(item.published_at)
+        ])?;
+    }
+    if watch.checkpoint != Some(checkpoint) {
         conn.execute(
             "UPDATE watched_sources SET checkpoint = ?1 WHERE id = ?2",
             params![fmt_ts(checkpoint), watch.id],
         )?;
-        Ok(())
-    })
+    }
+    Ok(())
 }
 
-pub fn pending(conn: &Connection, watch_id: i64, limit: i64) -> Result<Vec<(String, String)>> {
+pub fn pending(
+    conn: &Connection,
+    watch_id: i64,
+    limit: i64,
+    defer_absent: bool,
+) -> Result<Vec<(String, String)>> {
     let mut stmt = conn.prepare(
         "SELECT source_id, url FROM watched_items WHERE watch_id = ?1 AND handled = 0
+         AND (NOT ?3 OR pixiv_missing_scans < ?4)
          ORDER BY last_attempt_job_id, published_at, source_id LIMIT ?2",
     )?;
     Ok(stmt
-        .query_map(params![watch_id, limit], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })?
+        .query_map(
+            params![watch_id, limit, defer_absent, PIXIV_MISSING_LIMIT],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?
         .collect::<rusqlite::Result<_>>()?)
 }
 
@@ -201,6 +298,15 @@ pub fn pending_count(conn: &Connection, watch_id: i64) -> Result<i64> {
     Ok(conn.query_row(
         "SELECT COUNT(*) FROM watched_items WHERE watch_id = ?1 AND handled = 0",
         [watch_id],
+        |row| row.get(0),
+    )?)
+}
+
+pub(crate) fn pixiv_deferred_count(conn: &Connection, watch_id: i64) -> Result<i64> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM watched_items WHERE watch_id = ?1 AND handled = 0
+         AND pixiv_missing_scans >= ?2",
+        params![watch_id, PIXIV_MISSING_LIMIT],
         |row| row.get(0),
     )?)
 }
@@ -273,12 +379,12 @@ mod tests {
             let watch = get(conn, 1)?;
             record_scan(conn, &watch, &discovered, at)?;
             assert_eq!(get(conn, 1)?.checkpoint, Some(at));
-            let first = pending(conn, 1, 25)?;
+            let first = pending(conn, 1, 25, false)?;
             assert_eq!(first.len(), 25);
             for (id, _) in first {
                 attempted(conn, 1, &id, 1, id != "01")?;
             }
-            let second = pending(conn, 1, 25)?;
+            let second = pending(conn, 1, 25, false)?;
             assert_eq!(second.len(), 6);
             assert_eq!(second[0].0, "26");
             assert_eq!(second[5].0, "01");

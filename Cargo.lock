@@ -1383,6 +1383,7 @@ dependencies = [
  "image",
  "insta",
  "minijinja",
+ "nujijushi-sources",
  "rand 0.9.5",
  "regex-automata",
  "reqwest",
@@ -1399,6 +1400,23 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "nujijushi-sources"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "futures-util",
+ "rand 0.9.5",
+ "regex-automata",
+ "reqwest",
+ "ring",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "url",
 ]
 
 [[package]]

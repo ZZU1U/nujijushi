@@ -6,6 +6,9 @@ rust-version = "1.95"
 description = "Local artwork archive with a scheduled Telegram channel publisher"
 license = "MIT"
 
+[workspace]
+members = ["crates/nujijushi-sources"]
+
 [dependencies]
 async-trait = "0.1"
 anyhow = "1"
@@ -24,6 +27,7 @@ image = { version = "0.25", default-features = false, features = [
     "gif",
 ] }
 minijinja = "3"
+nujijushi-sources = { path = "crates/nujijushi-sources", version = "0.1.0" }
 rand = "0.9"
 # Already used by tracing-subscriber. Reuse its Unicode character classes for Telegram tags.
 regex-automata = { version = "0.4", default-features = false, features = ["meta", "syntax", "unicode-gencat"] }
@@ -46,6 +50,7 @@ url = "2"
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+nujijushi-sources = { path = "crates/nujijushi-sources", features = ["test-support"] }
 tower = { version = "0.5", features = ["util"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 insta = "1"

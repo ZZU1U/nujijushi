@@ -32,6 +32,7 @@ browser extension) into `$NUJIJUSHI_HOME/cookies/`:
 cookies/pixiv.txt      cookies/fanbox.txt      cookies/twitter.txt
 cookies/danbooru.txt   cookies/gelbooru.txt    cookies/artstation.txt
 cookies/deviantart.txt cookies/bluesky.txt     cookies/tumblr.txt
+cookies/rednote.txt
 ```
 
 For these supported sites, the importer looks up the site filename first and then
@@ -41,6 +42,32 @@ FANBOX session to `cookies/fanbox.txt`. The export must include `FANBOXSESSID`.
 
 `nujijushi doctor` reports each cookie file's age — refresh anything older than ~30 days.
 Public content (many sites) imports fine without cookies.
+
+### Native Pixiv
+
+Set `pixiv_backend = "native"` under `[import]` and restart nujijushi to use the Rust backend for individual illustrations, manga, and creator watches. It downloads all original pages and uses `[import] timeout_secs` and the shared proxy settings.
+
+The backend uses guest access when `cookies/pixiv.txt` is absent. For restricted works, export your signed-in Pixiv session in Netscape format to that path and include an unexpired `PHPSESSID` cookie. Run `nujijushi doctor --offline` to check that the file can be read. To verify access, compare both backends on a public artwork, a signed-in restricted artwork, and a creator watch. Check page order, ratings, and post IDs.
+
+The first native watch check fetches publication times for the creator's visible works. A new watch queues its configured initial batch, and an existing watch starts at its saved checkpoint. Later checks fetch the creator's artwork IDs and look up publication times only for IDs the watch has never seen. This includes older works that become visible after a session change. After two successful checks omit a pending work, the job reports it as deferred until the ID reappears. Archived copies are kept when works disappear from the profile.
+
+Ugoira and other Pixiv URL types use gallery-dl. Set `pixiv_backend = "gallery-dl"` to switch existing imports and watches back to gallery-dl.
+
+### Native X
+
+Set `twitter_backend = "native"` under `[import]` and restart nujijushi to try native signed-in imports of individual X posts. The backend downloads original photos and the highest-bitrate direct MP4 variants, including GIFs, in post order.
+
+Export cookies from a signed-in session on `x.com` in Netscape format. Save the file as `cookies/twitter.txt` or `cookies/x.com.txt`, with unexpired `auth_token` and `ct0`. The importer checks `twitter.txt` first. Run `nujijushi doctor --offline` to check the selected backend and local cookie readiness.
+
+With no cookie file, individual imports use gallery-dl. Profile watches continue to use gallery-dl. Streaming-only, quote-only, and repost-only media fall back to gallery-dl with the same cookie file. If a native import reports a session error, verify the post is visible to that account on X and refresh the export. Set `twitter_backend = "gallery-dl"` to restore the default route.
+
+### RedNote
+
+Paste an individual note URL from `rednote.com` or `xiaohongshu.com`, or copy a share link from the app. RedNote imports run natively and support image galleries and direct MP4 videos.
+
+If the site asks you to sign in, export your authorized browser session in Netscape format to `cookies/rednote.txt`. Export cookies for the domain where you can open the note. Each cookie stays within its own domain. Run `nujijushi doctor --offline` to check whether the file contains usable RedNote cookies, or import without the file to use guest access.
+
+Keep the full link when you submit an import, including the share query. The archive and job views display the note URL without the access token. If a share link expires, copy a fresh link from the app.
 
 ## Talking to the bot
 

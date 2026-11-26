@@ -10,6 +10,8 @@ use crate::error::{Error, Result};
 use crate::source::pair::{self, Group};
 use crate::source::{NormalizedPost, PostFile, Source, fanbox, normalize};
 
+pub(super) const STAGING_PREFIX: &str = "gdl-";
+
 pub struct GalleryDlSource {
     cfg: Config,
 }
@@ -176,19 +178,28 @@ impl Source for GalleryDlSource {
     }
 
     async fn fetch(&self, target: &str) -> Result<Vec<NormalizedPost>> {
-        self.fetch_with_policy(target, false).await
+        self.fetch_with_policy(target, false, None).await
     }
 }
 
 impl GalleryDlSource {
     pub async fn fetch_complete(&self, target: &str) -> Result<Vec<NormalizedPost>> {
-        self.fetch_with_policy(target, true).await
+        self.fetch_with_policy(target, true, None).await
+    }
+
+    pub(super) async fn fetch_with_cookie(
+        &self,
+        target: &str,
+        cookie: &Path,
+    ) -> Result<Vec<NormalizedPost>> {
+        self.fetch_with_policy(target, true, Some(cookie)).await
     }
 
     async fn fetch_with_policy(
         &self,
         target: &str,
         require_complete: bool,
+        cookie: Option<&Path>,
     ) -> Result<Vec<NormalizedPost>> {
         if !self.supports(target) {
             return Err(Error::invalid(format!("not a URL: {target}")));
@@ -197,13 +208,14 @@ impl GalleryDlSource {
         let staging = self
             .cfg
             .staging_dir()
-            .join(format!("gdl-{}", uuid::Uuid::new_v4()));
+            .join(format!("{STAGING_PREFIX}{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&staging)?;
 
+        let automatic_cookie = self.cookie_file(target);
         let mut args = download_args(
             &staging,
             target,
-            self.cookie_file(target).as_deref(),
+            cookie.or(automatic_cookie.as_deref()),
             self.cfg.proxy_url.as_deref(),
         );
         let watched_fanbox = require_complete
@@ -289,32 +301,6 @@ impl GalleryDlSource {
                 let _ = std::fs::remove_dir_all(&staging);
                 Err(err)
             }
-        }
-    }
-}
-
-/// Remove a staging directory after its files were ingested.
-pub fn cleanup_staging(posts: &[NormalizedPost]) {
-    let mut roots: Vec<PathBuf> = posts
-        .iter()
-        .flat_map(|p| p.files.iter())
-        .filter_map(|f| f.path.parent().map(Path::to_path_buf))
-        .collect();
-    roots.sort();
-    roots.dedup();
-    // walk up to the staging root (gdl-<uuid>) so nothing is left behind
-    for dir in roots {
-        let mut current = dir.as_path();
-        while let Some(parent) = current.parent() {
-            let name = current
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            if name.starts_with("gdl-") {
-                let _ = std::fs::remove_dir_all(current);
-                break;
-            }
-            current = parent;
         }
     }
 }

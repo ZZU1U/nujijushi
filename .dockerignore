@@ -5,6 +5,8 @@
 !build.rs
 !src/
 !src/**
+!crates/
+!crates/**
 !migrations/
 !migrations/**
 !templates/

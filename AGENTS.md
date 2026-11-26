@@ -19,8 +19,8 @@ tools. HTTP integration tests bind loopback sockets.
 npm ci --prefix webui
 npm run build --prefix webui
 cargo fmt --all --check
-cargo clippy --all-targets --locked -- -D warnings
-cargo test --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 ```
 
 CI (`.github/workflows/ci.yml`) runs formatting and Clippy on Ubuntu, Rust tests

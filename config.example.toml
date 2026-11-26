@@ -14,8 +14,14 @@ token = "change-me-to-a-long-random-string"
 [import]
 # External helpers. `nujijushi doctor` verifies both.
 gallery_dl = "gallery-dl"
+# Use "native" for Pixiv artwork and creator watches.
+# For signed-in access, export PHPSESSID in Netscape format to cookies/pixiv.txt.
+pixiv_backend = "gallery-dl"
+# Use "native" for signed-in individual X posts.
+# Export auth_token and ct0 from x.com to cookies/twitter.txt in Netscape format.
+twitter_backend = "gallery-dl"
 ffmpeg = "ffmpeg"
-# Hard limit for one gallery-dl run.
+# Hard limit for one gallery-dl run, native post import, or native Pixiv feed scan.
 timeout_secs = 1800
 # Parallel imports (web UI / worker).
 max_concurrent = 2

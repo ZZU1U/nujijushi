@@ -66,6 +66,27 @@ pub fn rating_from_tags(tags: &[String]) -> Rating {
     }
 }
 
+pub(super) fn pixiv_rating(restriction: i64) -> Rating {
+    match restriction {
+        0 => Rating::Sfw,
+        1 => Rating::Questionable,
+        _ => Rating::Explicit,
+    }
+}
+
+pub(super) fn add_title_tags(mut tags: Vec<String>, title: Option<&str>) -> Vec<String> {
+    if let Some(title) = title {
+        tags.extend(
+            title
+                .split_whitespace()
+                .filter(|word| word.starts_with('#'))
+                .filter_map(tags::normalize),
+        );
+        tags = tags::normalize_all(tags);
+    }
+    tags
+}
+
 fn first_string(value: &Value, keys: &[&str]) -> Option<String> {
     for key in keys {
         match value.get(*key) {
@@ -150,7 +171,7 @@ fn handle_from_url(url: &str) -> Option<String> {
 
 /// Is this display name just the handle, spelled differently (`@Name` vs `name`)?
 /// Such a name adds nothing: captions print `**name** (handle)`.
-fn same_handle(name: &str, handle: Option<&str>) -> bool {
+pub(super) fn same_handle(name: &str, handle: Option<&str>) -> bool {
     let Some(handle) = handle else {
         return false;
     };
@@ -403,7 +424,7 @@ pub fn from_gallery_metadata(
         post.title = first_string(meta, &["caption"]).and_then(|t| tidy_description(&t));
     }
 
-    let mut tags = collect_tags(
+    let tags = collect_tags(
         meta,
         &[
             "tags",
@@ -416,15 +437,7 @@ pub fn from_gallery_metadata(
             "tag_string_meta",
         ],
     );
-    if let Some(name) = &post.title {
-        for word in name.split_whitespace().filter(|w| w.starts_with('#')) {
-            if let Some(tag) = tags::normalize(word) {
-                tags.push(tag);
-            }
-        }
-        tags = tags::normalize_all(tags);
-    }
-    post.tags = tags;
+    post.tags = add_title_tags(tags, post.title.as_deref());
 
     // rating: explicit field first, then flags, then tag heuristics
     let mut rating = first_string(meta, &["rating", "x_restrict", "safety", "rating_general"])
@@ -438,11 +451,7 @@ pub fn from_gallery_metadata(
     if rating.is_none()
         && let Some(x) = meta.get("x_restrict").and_then(|v| v.as_i64())
     {
-        rating = Some(match x {
-            0 => Rating::Sfw,
-            1 => Rating::Questionable,
-            _ => Rating::Explicit,
-        });
+        rating = Some(pixiv_rating(x));
     }
     post.rating = rating.unwrap_or_else(|| rating_from_tags(&post.tags));
 
@@ -606,6 +615,11 @@ pub fn normalize_source_name(category: &str) -> String {
         "twitter"
     } else if name.ends_with("pixiv.net") || name.contains("pixiv") {
         "pixiv"
+    } else if matches!(
+        name,
+        "rednote" | "xiaohongshu" | "rednote.com" | "xiaohongshu.com"
+    ) {
+        "rednote"
     } else if name.ends_with("danbooru.donmai.us") || name.contains("danbooru") {
         "danbooru"
     } else if name.contains("gelbooru") {

@@ -1,4 +1,4 @@
-//! Supported gallery-dl feeds and their stable post identities.
+//! Supported watched feeds and their stable post identities.
 
 use std::collections::HashSet;
 
@@ -7,13 +7,13 @@ use serde_json::Value;
 use url::Url;
 
 use super::{fanbox, gallerydl, normalize};
-use crate::config::Config;
+use crate::config::{Config, PixivBackend};
 use crate::error::{Error, Result};
 
 #[derive(Debug)]
 enum Site {
     Fanbox(String),
-    Pixiv,
+    Pixiv(u64),
     Twitter,
     Bluesky,
     Danbooru,
@@ -24,7 +24,7 @@ impl Site {
     fn source(&self) -> &'static str {
         match self {
             Self::Fanbox(_) => "fanbox",
-            Self::Pixiv => "pixiv",
+            Self::Pixiv(_) => "pixiv",
             Self::Twitter => "twitter",
             Self::Bluesky => "bluesky",
             Self::Danbooru => "danbooru",
@@ -56,7 +56,7 @@ impl Site {
                 }
                 format!("{}/posts/{id}", fanbox::creator_url(creator))
             }
-            Self::Pixiv => format!("https://www.pixiv.net/artworks/{id}"),
+            Self::Pixiv(_) => format!("https://www.pixiv.net/artworks/{id}"),
             Self::Twitter => format!("https://x.com/i/web/status/{id}"),
             Self::Danbooru => format!("https://danbooru.donmai.us/posts/{id}"),
             Self::Gelbooru => format!("https://gelbooru.com/index.php?page=post&s=view&id={id}"),
@@ -146,7 +146,7 @@ impl Feed {
                 | ["users", id, "artworks"]
                 | ["en", "users", id, "artworks"],
             ) if numeric(id) => (
-                Site::Pixiv,
+                Site::Pixiv(id.parse().map_err(|_| invalid())?),
                 format!("https://www.pixiv.net/users/{id}/artworks"),
             ),
             (
@@ -254,7 +254,14 @@ impl Feed {
         args
     }
 
-    pub async fn discover(
+    pub(crate) fn native_pixiv_creator(&self, cfg: &Config) -> Option<u64> {
+        match self.site {
+            Site::Pixiv(creator) if cfg.pixiv_backend == PixivBackend::Native => Some(creator),
+            _ => None,
+        }
+    }
+
+    pub(crate) async fn discover_gallery_dl(
         &self,
         cfg: &Config,
         initial: usize,

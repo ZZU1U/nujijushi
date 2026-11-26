@@ -10,9 +10,16 @@ use crate::error::{Error, Result};
 /// Used for storage uploads and the t.me embed fallback; the Telegram client
 /// gets the same proxy (see `tg::teloxide_impl`).
 pub fn client(cfg: &Config) -> Result<reqwest::Client> {
+    client_with_redirects(cfg, reqwest::redirect::Policy::limited(5))
+}
+
+pub(crate) fn client_with_redirects(
+    cfg: &Config,
+    redirects: reqwest::redirect::Policy,
+) -> Result<reqwest::Client> {
     let mut builder = client_builder()
         .connect_timeout(Duration::from_secs(15))
-        .redirect(reqwest::redirect::Policy::limited(5));
+        .redirect(redirects);
 
     if let Some(url) = cfg.proxy_url.as_deref() {
         // reqwest silently accepts a bare host, so be explicit about schemes

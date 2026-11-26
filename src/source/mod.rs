@@ -1,11 +1,16 @@
 //! Source abstraction: turn a URL (or a folder) into normalized posts + staged files.
 
+mod cookies;
 mod fanbox;
 pub mod gallerydl;
 pub mod localdir;
 pub mod normalize;
 pub mod pair;
+pub(crate) mod pixiv;
+pub(crate) mod rednote;
+mod staging;
 pub mod telegram;
+pub(crate) mod twitter;
 pub mod watch;
 
 use std::path::PathBuf;
@@ -87,6 +92,7 @@ pub fn source_label(source: &str) -> &'static str {
     match source {
         "twitter" | "x" => "Twitter",
         "pixiv" => "Pixiv",
+        "rednote" | "xiaohongshu" => "RedNote",
         "fanbox" | "fanbox.cc" => "Fanbox",
         host if host.ends_with(".fanbox.cc") => "Fanbox",
         "danbooru" => "Danbooru",
@@ -123,6 +129,15 @@ pub async fn fetch_with(cfg: &Config, target: &str) -> Result<Vec<NormalizedPost
     if target.is_empty() {
         return Err(crate::error::Error::invalid("empty import target"));
     }
+    if let Some(posts) = pixiv::fetch(cfg, target).await? {
+        return Ok(posts);
+    }
+    if let Some(posts) = twitter::fetch(cfg, target).await? {
+        return Ok(posts);
+    }
+    if let Some(posts) = rednote::fetch(cfg, target).await? {
+        return Ok(posts);
+    }
     for source in registry(cfg) {
         if source.supports(target) {
             tracing::debug!(source = source.kind(), target, "dispatching import");
@@ -139,6 +154,49 @@ pub async fn fetch_with(cfg: &Config, target: &str) -> Result<Vec<NormalizedPost
     Err(crate::error::Error::invalid(format!(
         "no source can handle {target}"
     )))
+}
+
+/// Render an import target for logs and job views. RedNote links can contain
+/// an opaque share code or an access token, so retain only a display URL.
+pub fn display_import_target(target: &str) -> std::borrow::Cow<'_, str> {
+    url::Url::parse(target.trim())
+        .ok()
+        .and_then(|url| nujijushi_sources::rednote::display_url(&url))
+        .map_or(std::borrow::Cow::Borrowed(target), std::borrow::Cow::Owned)
+}
+
+pub(crate) async fn fetch_watched(cfg: &Config, url: &str) -> Result<Vec<NormalizedPost>> {
+    if let Some(posts) = pixiv::fetch(cfg, url).await? {
+        return Ok(posts);
+    }
+    gallerydl::GalleryDlSource::new(cfg.clone())
+        .fetch_complete(url)
+        .await
+}
+
+pub(crate) fn cleanup_staging(cfg: &Config, posts: &[NormalizedPost]) {
+    let staging = cfg.staging_dir();
+    let roots: std::collections::BTreeSet<_> = posts
+        .iter()
+        .flat_map(|post| &post.files)
+        .filter_map(|file| {
+            let relative = file.path.strip_prefix(&staging).ok()?;
+            let std::path::Component::Normal(root) = relative.components().next()? else {
+                return None;
+            };
+            let name = root.to_str()?;
+            let id = name
+                .strip_prefix(gallerydl::STAGING_PREFIX)
+                .or_else(|| name.strip_prefix(pixiv::STAGING_PREFIX))
+                .or_else(|| name.strip_prefix(twitter::STAGING_PREFIX))
+                .or_else(|| name.strip_prefix(rednote::STAGING_PREFIX))?;
+            uuid::Uuid::parse_str(id).ok()?;
+            Some(root)
+        })
+        .collect();
+    for root in roots {
+        let _ = std::fs::remove_dir_all(staging.join(root));
+    }
 }
 
 /// Fetch a target, routing Telegram links to the bot-API importer.

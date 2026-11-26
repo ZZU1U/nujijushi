@@ -963,6 +963,46 @@ async fn cmd_doctor(cfg: Config, strict: bool, offline: bool) -> Result<()> {
 
     checks.push(tool_check("gallery-dl", &cfg.gallery_dl, &["--version"]).await);
     checks.push(tool_check("ffmpeg", &cfg.ffmpeg, &["-version"]).await);
+    let (level, detail) = match cfg.pixiv_backend {
+        crate::config::PixivBackend::GalleryDl => (Level::Ok, "gallery-dl".into()),
+        crate::config::PixivBackend::Native => match crate::source::pixiv::session_cookie(&cfg) {
+            Ok(Some(_)) => (Level::Ok, "native with cookies/pixiv.txt".into()),
+            Ok(None) => (Level::Ok, "native with guest access".into()),
+            Err(error) => (Level::Warn, error.to_string()),
+        },
+    };
+    checks.push(Check {
+        label: "Pixiv backend".into(),
+        level,
+        detail,
+    });
+    let (level, detail) = match cfg.twitter_backend {
+        crate::config::TwitterBackend::GalleryDl => (Level::Ok, "gallery-dl".into()),
+        crate::config::TwitterBackend::Native => match crate::source::twitter::session(&cfg) {
+            Ok(Some(_)) => (Level::Ok, "native with an X cookie file".into()),
+            Ok(None) => (
+                Level::Ok,
+                "native selected, guest imports use gallery-dl".into(),
+            ),
+            Err(error) => (Level::Warn, error.to_string()),
+        },
+    };
+    checks.push(Check {
+        label: "X backend".into(),
+        level,
+        detail,
+    });
+    let (level, detail) =
+        match crate::source::rednote::session(&cfg, chrono::Utc::now().timestamp()) {
+            Ok(Some(_)) => (Level::Ok, "native with cookies/rednote.txt".into()),
+            Ok(None) => (Level::Ok, "native with guest access".into()),
+            Err(error) => (Level::Warn, error.to_string()),
+        };
+    checks.push(Check {
+        label: "RedNote backend".into(),
+        level,
+        detail,
+    });
     let tagger = &cfg.tag_suggestions;
     let (level, detail) = if tagger.enabled {
         match crate::jobs::tag_suggestions::health(tagger.tagger_port).await {
@@ -1513,10 +1553,11 @@ async fn cmd_import(
         .collect();
     let mut failures = 0;
     for target in targets.iter().copied() {
-        println!("importing {target}");
+        let display = crate::source::display_import_target(target);
+        println!("importing {display}");
         match crate::jobs::import_and_record(state, target).await {
             Ok(outcome) => {
-                println!("  {}: {}", target, outcome.summary());
+                println!("  {display}: {}", outcome.summary());
                 for (source_id, reason) in &outcome.skipped {
                     println!("  skipped {source_id}: {reason}");
                 }

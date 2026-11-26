@@ -10,6 +10,7 @@ FROM rust:1.95.0-bookworm AS build
 WORKDIR /app
 COPY Cargo.toml Cargo.lock rust-toolchain.toml build.rs ./
 COPY src ./src
+COPY crates ./crates
 COPY migrations ./migrations
 COPY templates ./templates
 COPY --from=web /app/webui/dist ./webui/dist
@@ -27,6 +28,7 @@ RUN apt-get update \
     && install -d -m 0700 -o nujijushi -g nujijushi /data
 
 COPY --from=build /app/target/release/nujijushi /usr/local/bin/nujijushi
+COPY --from=build /app/crates/nujijushi-sources/src/twitter/LICENSE-signing /usr/share/doc/nujijushi/LICENSE-signing
 ENV HOME=/data \
     NUJIJUSHI_HOME=/data \
     NUJIJUSHI_BIND=0.0.0.0:8788 \

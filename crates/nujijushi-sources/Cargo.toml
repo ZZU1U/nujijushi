@@ -1,0 +1,23 @@
+[package]
+name = "nujijushi-sources"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+publish = false
+
+[features]
+test-support = []
+
+[dependencies]
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
+rand = "0.9"
+regex-automata = { version = "0.4", default-features = false, features = ["meta", "syntax", "unicode-gencat"] }
+reqwest = { version = "0.12", default-features = false }
+ring = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+url = "2"

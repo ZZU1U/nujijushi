@@ -2133,6 +2133,10 @@ pub fn job_view(job: &job_db::Job, now: chrono::DateTime<chrono::Utc>) -> JobVie
             .flatten(),
         payload: if crate::jobs::is_gallery_edit(&job.kind) {
             job.post_id.map(|id| format!("post #{id}"))
+        } else if job.kind == crate::jobs::KIND_IMPORT {
+            job.payload
+                .as_deref()
+                .map(|target| crate::source::display_import_target(target).into_owned())
         } else {
             job.payload.clone()
         },

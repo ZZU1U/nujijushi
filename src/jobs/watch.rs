@@ -6,10 +6,14 @@ use chrono::Utc;
 
 use crate::db::{jobs, posts, watches};
 use crate::error::{Error, Result};
-use crate::source::{gallerydl, watch::Feed};
+use crate::source::{self, watch::Feed};
 use crate::state::AppState;
 
 use super::{JobReport, enqueue_import_mirrors, store_post};
+
+#[cfg(test)]
+#[path = "watch/pixiv_tests.rs"]
+mod pixiv_tests;
 
 pub async fn lock(state: &AppState, watch_id: i64) -> Result<Option<File>> {
     state
@@ -24,32 +28,63 @@ pub async fn check(state: &AppState, watch_id: i64, job_id: i64) -> Result<JobRe
         .call(move |conn| watches::start_check(conn, watch_id, started))
         .await?;
     let feed = Feed::parse(&watch.url)?;
+    let native_creator = feed.native_pixiv_creator(&state.cfg);
+    let native_pixiv = native_creator.is_some();
+    let initial = usize::from(watch.initial_batch);
     let limit = if watch.checkpoint.is_none() {
         i64::from(watch.initial_batch)
     } else {
         25
     };
     let mut errors = Vec::new();
-    match feed
-        .discover(
+    if let Some(creator) = native_creator {
+        let seen = if watch.pixiv_baselined {
+            Some(
+                state
+                    .db
+                    .call(move |conn| watches::pixiv_seen(conn, watch_id))
+                    .await?,
+            )
+        } else {
+            None
+        };
+        match source::pixiv::discover_watch(
             &state.cfg,
-            usize::from(watch.initial_batch),
+            creator,
+            initial,
             watch.checkpoint,
+            seen.as_ref(),
         )
         .await
-    {
-        Ok(items) => {
-            state
-                .db
-                .call(move |conn| watches::record_scan(conn, &watch, &items, started))
-                .await?
+        {
+            Ok(scan) => {
+                state
+                    .db
+                    .call(move |conn| {
+                        watches::record_pixiv_scan(conn, &watch, &scan, seen.as_ref(), started)
+                    })
+                    .await?
+            }
+            Err(err) => errors.push(err.to_string()),
         }
-        Err(err) => errors.push(err.to_string()),
+    } else {
+        match feed
+            .discover_gallery_dl(&state.cfg, initial, watch.checkpoint)
+            .await
+        {
+            Ok(items) => {
+                state
+                    .db
+                    .call(move |conn| watches::record_scan(conn, &watch, &items, started))
+                    .await?
+            }
+            Err(err) => errors.push(err.to_string()),
+        }
     }
 
     let pending = state
         .db
-        .call(move |conn| watches::pending(conn, watch_id, limit))
+        .call(move |conn| watches::pending(conn, watch_id, limit, native_pixiv))
         .await?;
     let total = pending.len() as i64;
     let mut added = 0;
@@ -83,13 +118,23 @@ pub async fn check(state: &AppState, watch_id: i64, job_id: i64) -> Result<JobRe
             .await?;
     }
 
-    let remaining = state
+    let (remaining, deferred) = state
         .db
-        .call(move |conn| watches::pending_count(conn, watch_id))
+        .call(move |conn| {
+            let deferred = if native_pixiv {
+                watches::pixiv_deferred_count(conn, watch_id)?
+            } else {
+                0
+            };
+            Ok((watches::pending_count(conn, watch_id)? - deferred, deferred))
+        })
         .await?;
-    let summary = format!(
+    let mut summary = format!(
         "{added} added · {skipped} skipped (already archived) · {failed} failed · {remaining} pending"
     );
+    if deferred > 0 {
+        summary.push_str(&format!(" · {deferred} deferred"));
+    }
     if errors.is_empty() {
         Ok(JobReport::Batch {
             message: summary,
@@ -111,16 +156,14 @@ async fn import_one(state: &AppState, source: &'static str, id: &str, url: &str)
         return Ok(false);
     }
 
-    let downloaded = gallerydl::GalleryDlSource::new((*state.cfg).clone())
-        .fetch_complete(url)
-        .await?;
+    let downloaded = source::fetch_watched(&state.cfg, url).await?;
     let result = match downloaded.as_slice() {
         [post] if post.source == source && post.source_id == id && !post.files.is_empty() => {
             store_post(state, post, None, true).await
         }
-        _ => Err(Error::other("gallery-dl did not return the expected post")),
+        _ => Err(Error::other("download did not return the expected post")),
     };
-    gallerydl::cleanup_staging(&downloaded);
+    source::cleanup_staging(&state.cfg, &downloaded);
     let stored = result?;
     if stored.created
         && let Some(post_id) = stored.post_id
