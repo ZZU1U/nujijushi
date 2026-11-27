@@ -294,6 +294,19 @@ pub fn set_paused(conn: &Connection, id: i64, paused: bool) -> Result<()> {
     Ok(())
 }
 
+/// Manual resume after a review: clear the failure streak so the circuit breaker
+/// starts with a fresh budget instead of re-pausing on the next single failure.
+pub fn resume(conn: &Connection, id: i64) -> Result<()> {
+    let changed = conn.execute(
+        "UPDATE channels SET paused = 0, consecutive_failures = 0 WHERE id = ?1",
+        [id],
+    )?;
+    if changed == 0 {
+        return Err(Error::NotFound(format!("channel {id}")));
+    }
+    Ok(())
+}
+
 pub fn set_enabled(conn: &Connection, id: i64, enabled: bool) -> Result<()> {
     conn.execute(
         "UPDATE channels SET enabled = ?1 WHERE id = ?2",
@@ -444,5 +457,32 @@ mod tests {
         a_stored.title = "A renamed".into();
         db.with(|conn| update(conn, &a_stored)).unwrap();
         assert_eq!(db.with(|conn| get(conn, a_id)).unwrap().alias, "alpha");
+    }
+
+    #[test]
+    fn manual_resume_gives_the_circuit_breaker_a_fresh_budget() {
+        let db = db();
+        let id = db
+            .with(|conn| insert(conn, &Channel::new("Test", "@test")))
+            .unwrap();
+        db.with(|conn| {
+            for _ in 0..3 {
+                record_failure(conn, id, 3)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        let paused = db.with(|conn| get(conn, id)).unwrap();
+        assert!(paused.paused);
+        assert_eq!(paused.consecutive_failures, 3);
+
+        db.with(|conn| resume(conn, id)).unwrap();
+        let resumed = db.with(|conn| get(conn, id)).unwrap();
+        assert!(!resumed.paused);
+        assert_eq!(resumed.consecutive_failures, 0);
+
+        // One new failure after a manual review must not re-pause immediately.
+        db.with(|conn| record_failure(conn, id, 3)).unwrap();
+        assert!(!db.with(|conn| get(conn, id)).unwrap().paused);
     }
 }

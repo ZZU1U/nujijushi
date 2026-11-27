@@ -2102,15 +2102,7 @@ async fn cmd_channel(state: &AppState, cmd: ChannelCmd) -> Result<()> {
             let id = existing.id;
             state
                 .db
-                .call(move |conn| {
-                    crate::db::channels::set_paused(conn, id, false)?;
-                    // clear the failure streak so the circuit breaker starts over
-                    conn.execute(
-                        "UPDATE channels SET consecutive_failures = 0 WHERE id = ?1",
-                        [id],
-                    )?;
-                    Ok(())
-                })
+                .call(move |conn| crate::db::channels::resume(conn, id))
                 .await?;
             println!("resumed #{} {}", existing.id, existing.title);
             Ok(())

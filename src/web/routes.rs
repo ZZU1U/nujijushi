@@ -1742,7 +1742,11 @@ async fn channel_schedule(
                     "Confirm a preview to start scheduling for this channel",
                 ));
             }
-            channel_db::set_paused(&tx, id, paused)?;
+            if paused {
+                channel_db::set_paused(&tx, id, true)?;
+            } else {
+                channel_db::resume(&tx, id)?;
+            }
             tx.commit()?;
             Ok(())
         })
