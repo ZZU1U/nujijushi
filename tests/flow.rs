@@ -187,6 +187,23 @@ async fn publishes_an_album_with_a_rendered_caption() {
     let states = harness.queue_state(&channel).await;
     assert_eq!(states[0].0, QueueState::Sent);
 
+    let audits = harness
+        .state
+        .db
+        .call(|conn| {
+            Ok(
+                conn.query_row("SELECT COUNT(*) FROM sends WHERE ok = 1", [], |row| {
+                    row.get::<_, i64>(0)
+                })?,
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        audits, 1,
+        "the send audit commits with the queue state (daily cap)"
+    );
+
     let channel_id = channel.id;
     let stored = harness
         .state

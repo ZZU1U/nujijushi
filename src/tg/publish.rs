@@ -658,26 +658,29 @@ async fn execute_plan(
                     username_for_db.as_deref(),
                     &published_ids,
                 )?;
+                // The daily-cap counter and delivery links read `sends`, so the
+                // audit row commits with the queue state; never after it.
+                queue_db::log_send(
+                    &tx,
+                    queue_db::SendRecord {
+                        channel_id,
+                        queue_id,
+                        post_id,
+                        ok: true,
+                        message_ids: Some(&joined),
+                        caption: Some(&caption_text),
+                        error: None,
+                        destination: Some(queue_db::DeliveryDestination {
+                            target: &target,
+                            chat_id,
+                            username: chat_username.as_deref(),
+                        }),
+                    },
+                )?;
                 tx.commit()?;
                 Ok(())
             })
             .await?;
-        audit::record_success(
-            state,
-            audit::SendAttempt {
-                channel_id,
-                queue_id,
-                post_id,
-                caption: Some(&caption_text),
-                message_ids: &ids,
-                destination: queue_db::DeliveryDestination {
-                    target: &channel.tg_id,
-                    chat_id,
-                    username: chat_username.as_deref(),
-                },
-            },
-        )
-        .await?;
         return Ok(PublishOutcome::Published {
             queue_id,
             post_id,
