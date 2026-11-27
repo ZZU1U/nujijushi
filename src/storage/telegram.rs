@@ -8,7 +8,7 @@ use super::{MirrorPost, Sink};
 use crate::error::{Error, Result};
 use crate::media::plan_messages;
 use crate::render::truncate::{CAPTION_LIMIT, fit_caption};
-use crate::tg::{MediaKind, OutgoingMedia, SendOptions, Transport};
+use crate::tg::{MediaKind, OutgoingMedia, SendOptions, TgError, Transport};
 
 pub struct TelegramSink {
     transport: Arc<dyn Transport>,
@@ -81,11 +81,28 @@ impl Sink for TelegramSink {
             if media.is_empty() {
                 continue;
             }
-            let batch = self
+            let batch = match self
                 .transport
                 .send_batch(&self.chat_id, media, SendOptions::default())
                 .await
-                .map_err(|err| Error::Telegram(err.to_string()))?;
+            {
+                Ok(batch) => batch,
+                // Nothing went out, or the first attempt is unconfirmed: the
+                // normal failed/unknown handling is right for those.
+                Err(err) if ids.is_empty() && !matches!(err, TgError::Uncertain(_)) => {
+                    return Err(Error::Telegram(err.to_string()));
+                }
+                Err(err) => {
+                    // Some groups are already in the backup channel. Retrying the
+                    // whole post would duplicate them, so block it for review.
+                    return Err(Error::Partial(format!(
+                        "sent {} message(s) before failing (ids: {}): {err}. \
+                         Verify the backup channel before retrying.",
+                        ids.len(),
+                        ids.join(",")
+                    )));
+                }
+            };
             ids.extend(batch.message_ids.iter().map(|id| id.to_string()));
         }
         if ids.is_empty() {
@@ -154,5 +171,22 @@ mod tests {
     async fn check_fails_for_an_unknown_chat() {
         let sink = TelegramSink::new(Arc::new(MockTransport::new()), "-100999".into());
         assert!(sink.check().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_mid_album_failure_is_partial_and_not_blindly_retried() {
+        let dir = tempfile::tempdir().unwrap();
+        // One photo then one video: two messages. The second one fails.
+        let mock = Arc::new(MockTransport::with_script(vec![
+            None,
+            Some(TgError::Permanent("file is too big".into())),
+        ]));
+        let sink = TelegramSink::new(mock.clone(), "-100123".into());
+        let item = sample_mirror(&dir);
+
+        let error = sink.put(&item).await.unwrap_err();
+        assert!(matches!(error, Error::Partial(_)), "got {error:?}");
+        assert!(error.to_string().contains("Verify the backup channel"));
+        assert_eq!(mock.send_count(), 1, "the first group went out");
     }
 }

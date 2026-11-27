@@ -271,3 +271,92 @@ url = "http://{proxy_addr}"
         "absolute-form URIs reached the proxy: {requests:?}"
     );
 }
+
+#[tokio::test]
+async fn a_partial_telegram_backup_is_blocked_instead_of_retried() {
+    use nujijushi::db::posts::NewMedia;
+    use nujijushi::source::NormalizedPost;
+    use nujijushi::tg::TgError;
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config.toml"),
+        r#"
+[telegram]
+bot_token = "1:test"
+
+[storage.telegram]
+enabled = true
+chat_id = "-100123"
+"#,
+    )
+    .unwrap();
+    let cfg = Config::load_from_home(dir.path().to_path_buf()).unwrap();
+    // A photo and a video are two messages: the second one fails.
+    let mock = Arc::new(MockTransport::with_script(vec![
+        None,
+        Some(TgError::Permanent("file is too big".into())),
+    ]));
+    let transport: Arc<dyn Transport> = mock.clone();
+    let state = AppState::open(cfg, Some(transport)).unwrap();
+    let post_id = state
+        .db
+        .call(|conn| {
+            let post = NormalizedPost::new("pixiv", "backup-1");
+            let media = vec![
+                NewMedia {
+                    blob_hash: "a".repeat(64),
+                    ext: "png".into(),
+                    mime: None,
+                    width: Some(8),
+                    height: Some(8),
+                    bytes: 1,
+                    is_video: false,
+                    poster_hash: None,
+                    sensitive: false,
+                    meta_json: None,
+                },
+                NewMedia {
+                    blob_hash: "b".repeat(64),
+                    ext: "mp4".into(),
+                    mime: None,
+                    width: None,
+                    height: None,
+                    bytes: 1,
+                    is_video: true,
+                    poster_hash: None,
+                    sensitive: false,
+                    meta_json: None,
+                },
+            ];
+            let (id, _) = nujijushi::db::posts::upsert(conn, &post, &media)?;
+            Ok(id)
+        })
+        .await
+        .unwrap();
+    nujijushi::storage::enqueue(&state, &[post_id])
+        .await
+        .unwrap();
+    assert_eq!(storage::drain(&state, 10).await.unwrap(), 0);
+
+    let mirror = state
+        .db
+        .call(move |conn| nujijushi::db::mirrors::get(conn, post_id, "telegram"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(mirror.state, "blocked");
+    assert!(
+        mirror.error.as_deref().unwrap().contains("partial"),
+        "got {:?}",
+        mirror.error
+    );
+
+    let calls = mock.send_calls();
+    assert_eq!(storage::drain(&state, 10).await.unwrap(), 0);
+    assert_eq!(
+        mock.send_calls(),
+        calls,
+        "a partially uploaded backup is not retried automatically"
+    );
+}

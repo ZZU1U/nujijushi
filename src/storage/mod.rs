@@ -274,13 +274,18 @@ pub async fn drain(state: &AppState, limit: i64) -> Result<usize> {
                     done += 1;
                 }
                 Err(err) => {
+                    let partial = matches!(err, Error::Partial(_));
                     tracing::warn!(post = post_id, sink = sink.name(), "mirror failed: {err}");
                     let reason = err.to_string();
                     let sink_name = sink.name().to_string();
                     state
                         .db
                         .call(move |conn| {
-                            mirror_db::mark_failed(conn, post_id, &sink_name, &reason)
+                            if partial {
+                                mirror_db::mark_blocked(conn, post_id, &sink_name, &reason)
+                            } else {
+                                mirror_db::mark_failed(conn, post_id, &sink_name, &reason)
+                            }
                         })
                         .await?;
                 }

@@ -31,6 +31,11 @@ pub enum Error {
     #[error("telegram error: {0}")]
     Telegram(String),
 
+    /// Part of an operation completed and must not be retried blindly
+    /// (for example, some messages of a backup album were already sent).
+    #[error("partial delivery: {0}")]
+    Partial(String),
+
     #[error("{cmd} failed{}: {stderr}", match .code { Some(c) => format!(" (exit {c})"), None => String::new() })]
     Process {
         cmd: String,
