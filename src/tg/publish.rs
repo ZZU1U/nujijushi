@@ -967,7 +967,8 @@ pub fn slot_label(slot: chrono::DateTime<Utc>, now: chrono::DateTime<Utc>) -> St
     let today = now.with_timezone(&chrono::Local).date_naive();
     let days = (local.date_naive() - today).num_days();
     match days {
-        0 => local.format("%H:%M").to_string(),
+        // Today (and anything already past) is just the time, so the column stays narrow.
+        ..=0 => local.format("%H:%M").to_string(),
         1..=6 => local.format("%a %H:%M").to_string(),
         _ => local.format("%m-%d %H:%M").to_string(),
     }
@@ -1025,6 +1026,9 @@ mod tests {
         assert_eq!(slot_label(today, now).len(), 5, "HH:MM");
         assert_ne!(slot_label(tomorrow, now).len(), 5, "a day is named");
         assert_eq!(slot_label(next_week, now).len(), 11, "MM-DD HH:MM");
+        // a slot that is already past must not turn into a date string
+        let past = now - Duration::days(1);
+        assert_eq!(slot_label(past, now).len(), 5, "past days keep the time");
         // the label is the *local* time, not the UTC instant
         assert_eq!(
             slot_label(today, now),
