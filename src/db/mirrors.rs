@@ -1,6 +1,6 @@
 //! Per-post mirror bookkeeping (which sinks hold which post).
 
-use chrono::Utc;
+use chrono::{DateTime, Duration, Utc};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::error::Result;
@@ -62,24 +62,34 @@ pub fn get(conn: &Connection, post_id: i64, sink: &str) -> Result<Option<Mirror>
         .optional()?)
 }
 
-/// Oldest pending work first, so a queue drains roughly in import order.
+/// A failed upload is retried only after this delay. Without it a permanently
+/// broken row would occupy every drain batch and keep newer posts from uploading.
+pub const FAILED_RETRY_SECS: i64 = 60;
+
+/// Work the worker may upload now: pending rows, plus failures old enough to
+/// retry. Pending always comes first, so broken rows cannot starve new posts.
 pub fn pending(conn: &Connection, sink: Option<&str>, limit: i64) -> Result<Vec<Mirror>> {
-    let mut sql = format!("SELECT {COLUMNS} FROM mirrors WHERE state IN ('pending', 'failed')");
-    if sink.is_some() {
-        sql.push_str(" AND sink = ?1");
-    }
-    sql.push_str(" ORDER BY post_id, sink LIMIT ");
-    sql.push_str(&limit.max(1).to_string());
+    pending_at(conn, sink, limit, Utc::now())
+}
+
+pub(crate) fn pending_at(
+    conn: &Connection,
+    sink: Option<&str>,
+    limit: i64,
+    now: DateTime<Utc>,
+) -> Result<Vec<Mirror>> {
+    let sql = format!(
+        "SELECT {COLUMNS} FROM mirrors
+         WHERE (state = 'pending' OR (state = 'failed' AND updated_at <= ?2))
+           AND (?1 IS NULL OR sink = ?1)
+         ORDER BY CASE state WHEN 'pending' THEN 0 ELSE 1 END, post_id, sink
+         LIMIT {}",
+        limit.max(1)
+    );
+    let cutoff = fmt_ts(now - Duration::seconds(FAILED_RETRY_SECS));
     let mut stmt = conn.prepare(&sql)?;
-    let rows = match sink {
-        Some(sink) => stmt
-            .query_map([sink], from_row)?
-            .collect::<rusqlite::Result<Vec<_>>>(),
-        None => stmt
-            .query_map([], from_row)?
-            .collect::<rusqlite::Result<Vec<_>>>(),
-    }?;
-    Ok(rows)
+    let rows = stmt.query_map(params![sink, cutoff], from_row)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 pub fn mark_done(
@@ -102,6 +112,17 @@ pub fn mark_failed(conn: &Connection, post_id: i64, sink: &str, error: &str) -> 
     conn.execute(
         "UPDATE mirrors SET state = 'failed', error = ?1, attempts = attempts + 1, updated_at = ?2
          WHERE post_id = ?3 AND sink = ?4",
+        params![error, fmt_ts(Utc::now()), post_id, sink],
+    )?;
+    Ok(())
+}
+
+/// A row that cannot succeed without an operator (disabled sink, missing media).
+/// It leaves the automatic retry pool instead of being retried every drain.
+pub fn mark_blocked(conn: &Connection, post_id: i64, sink: &str, error: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE mirrors SET state = 'blocked', error = ?1, updated_at = ?2
+         WHERE post_id = ?3 AND sink = ?4 AND state != 'done'",
         params![error, fmt_ts(Utc::now()), post_id, sink],
     )?;
     Ok(())
@@ -155,7 +176,11 @@ mod tests {
     }
 
     fn post(db: &crate::db::Db) -> i64 {
-        let mut post = crate::source::NormalizedPost::new("pixiv", "1");
+        post_with(db, "1")
+    }
+
+    fn post_with(db: &crate::db::Db, source_id: &str) -> i64 {
+        let mut post = crate::source::NormalizedPost::new("pixiv", source_id);
         post.title = Some("x".into());
         db.with(|conn| {
             let (id, _) = crate::db::posts::upsert(conn, &post, &[])?;
@@ -189,14 +214,69 @@ mod tests {
         db.with(|conn| enqueue(conn, post_id, "local")).unwrap();
         assert!(db.with(|conn| pending(conn, None, 10)).unwrap().is_empty());
 
-        // failures are retried
+        // failures get a backoff before another automatic attempt
         db.with(|conn| enqueue(conn, post_id, "s3")).unwrap();
         db.with(|conn| mark_failed(conn, post_id, "s3", "boom"))
             .unwrap();
-        let retry_rows = db.with(|conn| pending(conn, Some("s3"), 10)).unwrap();
+        assert!(
+            db.with(|conn| pending(conn, Some("s3"), 10))
+                .unwrap()
+                .is_empty(),
+            "a fresh failure is not retried immediately"
+        );
+        let later = Utc::now() + Duration::seconds(FAILED_RETRY_SECS + 1);
+        let retry_rows = db
+            .with(|conn| pending_at(conn, Some("s3"), 10, later))
+            .unwrap();
         assert_eq!(retry_rows.len(), 1);
         assert_eq!(retry_rows[0].attempts, 1);
         assert_eq!(retry_rows[0].error.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn pending_uploads_are_never_starved_by_failures() {
+        let db = db();
+        let broken = post_with(&db, "1");
+        let healthy = post_with(&db, "2");
+        db.with(|conn| {
+            enqueue(conn, broken, "local")?;
+            mark_failed(conn, broken, "local", "boom")?;
+            enqueue(conn, healthy, "local")?;
+            Ok(())
+        })
+        .unwrap();
+
+        let later = Utc::now() + Duration::seconds(FAILED_RETRY_SECS + 1);
+        let first = db.with(|conn| pending_at(conn, None, 1, later)).unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].post_id, healthy, "pending work goes first");
+        let all = db.with(|conn| pending_at(conn, None, 10, later)).unwrap();
+        assert_eq!(all.len(), 2, "the failure is still retried eventually");
+    }
+
+    #[test]
+    fn blocked_rows_leave_the_automatic_retry_pool() {
+        let db = db();
+        let post_id = post(&db);
+        db.with(|conn| {
+            enqueue(conn, post_id, "local")?;
+            mark_blocked(conn, post_id, "local", "sink is no longer enabled")?;
+            Ok(())
+        })
+        .unwrap();
+
+        let later = Utc::now() + Duration::seconds(FAILED_RETRY_SECS + 1);
+        assert!(
+            db.with(|conn| pending_at(conn, None, 10, later))
+                .unwrap()
+                .is_empty()
+        );
+        let row = db
+            .with(|conn| get(conn, post_id, "local"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.state, "blocked");
+        assert_eq!(row.error.as_deref(), Some("sink is no longer enabled"));
     }
 
     #[test]

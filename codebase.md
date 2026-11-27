@@ -312,10 +312,12 @@ The notification monitor claims events before sending guest DMs.
 ## Flow 5 — storage mirrors
 
 `storage::sinks(state)` builds the enabled sinks from config. `enqueue` writes `pending`
-rows; `storage::drain` (worker, `storage sync`, dashboard button) takes pending/failed rows,
-builds the shared payload with `storage::plan` — `<source>/<artist>/<source_id>/NN.ext` plus
+rows; `storage::drain` (worker, `storage sync`, dashboard button) takes pending rows first
+and retries failures older than a minute, so a broken row cannot starve newer uploads.
+It builds the shared payload with `storage::plan` — `<source>/<artist>/<source_id>/NN.ext` plus
 a `post.json` sidecar — and calls `Sink::put`, recording `done` with an external ID or
-`failed` with the reason. Local and WebDAV sinks write the layout. The Telegram sink
+`failed` with the reason. Rows for a sink that is no longer enabled become `blocked`
+instead of being retried. Local and WebDAV sinks write the layout. The Telegram sink
 sends media groups or individual items to a backup channel and records message IDs.
 New mirror uploads use the current outgoing gallery, as does `export --share`.
 Completed mirrors keep the media from their original upload. `export --with-media`

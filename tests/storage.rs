@@ -135,14 +135,50 @@ async fn failures_are_recorded_and_retried() {
     assert!(rows.error.is_some(), "the reason is kept");
     assert_eq!(rows.attempts, 1);
 
-    // failed rows stay in the pending batch so the next tick retries them
+    // a fresh failure waits for the retry delay, so a broken row cannot starve
+    // the next drain batch
     let pending = harness
         .state
         .db
         .call(|conn| nujijushi::db::mirrors::pending(conn, None, 10))
         .await
         .unwrap();
-    assert_eq!(pending.len(), 1);
+    assert!(
+        pending.is_empty(),
+        "a fresh failure must not be retried immediately"
+    );
+
+    // once the backoff has passed it becomes eligible again
+    harness
+        .state
+        .db
+        .call({
+            let post_id = outcome.post_ids[0];
+            move |conn| {
+                conn.execute(
+                    "UPDATE mirrors SET updated_at = ?1 WHERE post_id = ?2 AND sink = 'local'",
+                    rusqlite::params![
+                        nujijushi::db::fmt_ts(
+                            chrono::Utc::now()
+                                - chrono::Duration::seconds(
+                                    nujijushi::db::mirrors::FAILED_RETRY_SECS + 1
+                                )
+                        ),
+                        post_id
+                    ],
+                )?;
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    let pending = harness
+        .state
+        .db
+        .call(|conn| nujijushi::db::mirrors::pending(conn, None, 10))
+        .await
+        .unwrap();
+    assert_eq!(pending.len(), 1, "the failure is retried after the delay");
 }
 
 #[tokio::test]

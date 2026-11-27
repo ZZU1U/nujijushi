@@ -224,7 +224,7 @@ pub async fn drain(state: &AppState, limit: i64) -> Result<usize> {
                 .call({
                     let sink_name = mirror.sink.clone();
                     let post_id = mirror.post_id;
-                    move |conn| mirror_db::mark_failed(conn, post_id, &sink_name, reason)
+                    move |conn| mirror_db::mark_blocked(conn, post_id, &sink_name, reason)
                 })
                 .await?;
             continue;
