@@ -20,10 +20,31 @@ pub const CAPTION_LIMIT: usize = 1024;
 
 const VOID_TAGS: &[&str] = &["br"];
 
-/// Fit `text` into `limit` characters, closing any HTML we cut through.
+/// Telegram measures message and caption length in UTF-16 code units, not
+/// Unicode scalar values: an emoji counts as two. Every limit check uses this.
+pub(crate) fn telegram_len(text: &str) -> usize {
+    text.encode_utf16().count()
+}
+
+/// Longest prefix of `text` that fits in `max` UTF-16 code units.
+pub(crate) fn take_units(text: &str, max: usize) -> String {
+    let mut out = String::with_capacity(text.len().min(max));
+    let mut used = 0;
+    for ch in text.chars() {
+        let width = ch.len_utf16();
+        if used + width > max {
+            break;
+        }
+        used += width;
+        out.push(ch);
+    }
+    out
+}
+
+/// Fit `text` into `limit` UTF-16 code units, closing any HTML we cut through.
 pub fn fit_caption(text: String, limit: usize) -> RenderedCaption {
     let limit = limit.max(32);
-    let length = text.chars().count();
+    let length = telegram_len(&text);
     if length <= limit {
         return RenderedCaption {
             text,
@@ -33,25 +54,25 @@ pub fn fit_caption(text: String, limit: usize) -> RenderedCaption {
         };
     }
 
-    // Closing the tags we cut through costs characters, so the cut has to leave
+    // Closing the tags we cut through costs units, so the cut has to leave
     // room for them: shrink the budget until the finished string fits, otherwise
     // a markup-heavy caption silently exceeds Telegram's hard limit.
     let mut budget = limit.saturating_sub(1);
     let text = loop {
-        let prefix = take_chars(&text, budget);
+        let prefix = take_units(&text, budget);
         let repaired = close_open_tags(&prefix);
         let trimmed = repaired
             .trim_end()
             .trim_end_matches([',', '.', ';', ':', '-'])
             .trim_end();
         let candidate = format!("{trimmed}…");
-        let overflow = candidate.chars().count().saturating_sub(limit);
+        let overflow = telegram_len(&candidate).saturating_sub(limit);
         if overflow == 0 || budget == 0 {
             break candidate;
         }
         budget = budget.saturating_sub(overflow.max(1));
     };
-    let length = text.chars().count();
+    let length = telegram_len(&text);
     RenderedCaption {
         text,
         truncated: true,
@@ -60,25 +81,21 @@ pub fn fit_caption(text: String, limit: usize) -> RenderedCaption {
     }
 }
 
-fn take_chars(text: &str, max: usize) -> String {
-    text.chars().take(max).collect()
-}
-
-/// Cut plain text to at most `max` characters, ending in an ellipsis when it had
-/// to be cut. The web `shorten` filter and the transport share this one rule.
+/// Cut plain text to at most `max` UTF-16 code units, ending in an ellipsis when
+/// it had to be cut. The web `shorten` filter and the transport share this rule.
 pub fn shorten(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
+    if telegram_len(text) <= max {
         return text.to_string();
     }
     if max == 0 {
         return String::new();
     }
-    let cut: String = take_chars(text, max - 1);
+    let cut = take_units(text, max - 1);
     format!("{cut}…")
 }
 
 /// Cut HTML to `limit` without leaving a tag open: Telegram rejects unbalanced
-/// markup outright, so a plain character cut would lose the whole message.
+/// markup outright, so a plain unit cut would lose the whole message.
 pub fn shorten_html(html: &str, limit: usize) -> String {
     fit_caption(html.to_string(), limit).text
 }
@@ -161,6 +178,33 @@ mod tests {
         let out = fit_caption(text, 50);
         assert!(out.truncated);
         assert_eq!(out.text.chars().count(), 50);
+    }
+
+    #[test]
+    fn limits_count_utf16_units_not_scalar_values() {
+        assert_eq!(telegram_len("a"), 1);
+        assert_eq!(telegram_len("🎨"), 2);
+
+        // Exactly 1024 units: 512 astral characters.
+        let fits = "🎨".repeat(512);
+        let out = fit_caption(fits.clone(), 1024);
+        assert!(!out.truncated);
+        assert_eq!(out.length, 1024);
+
+        // 600 emoji are 1200 units, so Telegram would reject them uncut.
+        let out = fit_caption("🎨".repeat(600), 1024);
+        assert!(out.truncated);
+        assert!(out.text.encode_utf16().count() <= 1024);
+        assert_eq!(out.length, out.text.encode_utf16().count());
+
+        let cut = shorten(&"🎨".repeat(10), 5);
+        assert_eq!(telegram_len(&cut), 5, "two emoji plus the ellipsis");
+        assert_eq!(cut.chars().count(), 3);
+
+        let html = format!("<b>{}</b>", "🎨".repeat(600));
+        let cut = shorten_html(&html, 100);
+        assert!(telegram_len(&cut) <= 100);
+        assert!(cut.contains("</b>"));
     }
 
     #[test]
