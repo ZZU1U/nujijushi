@@ -31,6 +31,8 @@ pub struct MockTransport {
 
 struct MockState {
     sends: Vec<RecordedSend>,
+    /// Every `send_batch` attempt, including failed ones.
+    send_calls: usize,
     /// Scripted outcomes: `Some(err)` fails that call, `None` succeeds.
     script: Option<VecDeque<Option<TgError>>>,
     failures: VecDeque<TgError>,
@@ -43,6 +45,7 @@ struct MockState {
     chat_delay: std::time::Duration,
     copies: HashMap<(String, i32), CopiedMessage>,
     copy_errors: HashMap<(String, i32), TgError>,
+    download_failures: HashMap<String, TgError>,
     files: HashMap<String, Vec<u8>>,
     downloads: Vec<(String, PathBuf)>,
     deleted: Vec<(String, i32)>,
@@ -58,6 +61,7 @@ impl MockTransport {
         Self {
             inner: Arc::new(Mutex::new(MockState {
                 sends: Vec::new(),
+                send_calls: 0,
                 script: None,
                 failures: VecDeque::new(),
                 next_id: 1,
@@ -74,6 +78,7 @@ impl MockTransport {
                 chat_delay: std::time::Duration::ZERO,
                 copies: HashMap::new(),
                 copy_errors: HashMap::new(),
+                download_failures: HashMap::new(),
                 files: HashMap::new(),
                 downloads: Vec::new(),
                 deleted: Vec::new(),
@@ -154,6 +159,15 @@ impl MockTransport {
             .insert((from.to_string(), message_id), error);
     }
 
+    /// Make `download_file` fail for this file id.
+    pub fn fail_download(&self, file_id: &str, error: TgError) {
+        self.inner
+            .lock()
+            .unwrap()
+            .download_failures
+            .insert(file_id.to_string(), error);
+    }
+
     /// Bytes served for a `file_id` (a tiny PNG by default).
     pub fn with_file(&self, file_id: &str, bytes: Vec<u8>) {
         self.inner
@@ -169,6 +183,12 @@ impl MockTransport {
 
     pub fn send_count(&self) -> usize {
         self.inner.lock().unwrap().sends.len()
+    }
+
+    /// Number of `send_batch` attempts, including failures that were not recorded
+    /// as sends (used to prove that a risky retry did not happen).
+    pub fn send_calls(&self) -> usize {
+        self.inner.lock().unwrap().send_calls
     }
 
     pub fn texts(&self) -> Vec<(String, String)> {
@@ -239,6 +259,7 @@ impl Transport for MockTransport {
         opts: SendOptions,
     ) -> TgResult<SentBatch> {
         let mut state = self.inner.lock().unwrap();
+        state.send_calls += 1;
         if let Some(err) = state.failures.pop_front() {
             return Err(err);
         }
@@ -344,6 +365,9 @@ impl Transport for MockTransport {
 
     async fn download_file(&self, file_id: &str, dest: &Path) -> TgResult<u64> {
         let mut state = self.inner.lock().unwrap();
+        if let Some(err) = state.download_failures.get(file_id).cloned() {
+            return Err(err);
+        }
         let bytes = state
             .files
             .get(file_id)
