@@ -491,6 +491,18 @@ impl Config {
             std::fs::create_dir_all(&dir)
                 .map_err(|e| Error::config(format!("cannot create {}: {e}", dir.display())))?;
         }
+        // Session cookies are credentials: keep the directory private.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(self.cookies_dir(), std::fs::Permissions::from_mode(0o700))
+                .map_err(|e| {
+                    Error::config(format!(
+                        "cannot chmod {}: {e}",
+                        self.cookies_dir().display()
+                    ))
+                })?;
+        }
         Ok(())
     }
 
@@ -742,6 +754,19 @@ pub fn restrict_permissions(_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A warning when a secret file is readable by group or others (Unix only).
+#[cfg(unix)]
+pub fn loose_permissions(path: &Path) -> Option<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(path).ok()?.permissions().mode() & 0o777;
+    (mode & 0o077 != 0).then(|| format!("mode {mode:03o}, should be 600"))
+}
+
+#[cfg(not(unix))]
+pub fn loose_permissions(_path: &Path) -> Option<String> {
+    None
+}
+
 pub fn random_token() -> String {
     use rand::Rng;
     let mut rng = rand::rng();
@@ -850,6 +875,32 @@ mod tests {
         assert!(!reloaded.guest_reputation);
         assert!(dir.path().join("config.toml").exists());
         assert!(cfg.db_path().ends_with("nujijushi.sqlite3"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_cookie_directory_is_private_and_loose_files_are_reported() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config::load_from_home(dir.path().to_path_buf()).unwrap();
+        cfg.ensure_layout().unwrap();
+        let mode = std::fs::metadata(cfg.cookies_dir())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700, "session cookies are credentials");
+
+        let cookie = cfg.cookies_dir().join("pixiv.txt");
+        std::fs::write(&cookie, "session").unwrap();
+        std::fs::set_permissions(&cookie, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(loose_permissions(&cookie), None);
+        std::fs::set_permissions(&cookie, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            loose_permissions(&cookie).unwrap().contains("644"),
+            "a readable cookie file must be flagged"
+        );
     }
 
     #[test]

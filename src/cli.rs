@@ -792,6 +792,21 @@ fn open_state(cfg: Config) -> Result<AppState> {
 
 // ---------------------------------------------------------------- init
 
+/// What `init` may print as the UI token: the value it just wrote, the token
+/// already in the config, or a warning that none exists. Printing a freshly
+/// generated token when the config already existed was misleading.
+fn displayed_ui_token<'a>(
+    wrote: bool,
+    configured: Option<&'a str>,
+    generated: Option<&'a str>,
+) -> &'a str {
+    match (wrote, configured, generated) {
+        (true, _, Some(token)) => token,
+        (false, Some(token), _) => token,
+        _ => "(not set - add [web] token to config.toml or set NUJIJUSHI_UI_TOKEN)",
+    }
+}
+
 fn cmd_init(cfg: Config, bot_token: Option<String>, force: bool) -> Result<()> {
     cfg.ensure_layout()?;
 
@@ -831,7 +846,11 @@ fn cmd_init(cfg: Config, bot_token: Option<String>, force: bool) -> Result<()> {
     );
     println!(
         "  ui token  {}",
-        effective.ui_token.as_deref().unwrap_or("-")
+        displayed_ui_token(
+            wrote,
+            cfg.ui_token.as_deref(),
+            effective.ui_token.as_deref()
+        )
     );
     println!();
     println!("Next steps:");
@@ -1058,6 +1077,13 @@ async fn cmd_doctor(cfg: Config, strict: bool, offline: bool) -> Result<()> {
                     detail: String::new(),
                 },
             });
+            if let Some(warning) = crate::config::loose_permissions(&path) {
+                checks.push(Check {
+                    level: Level::Warn,
+                    label: format!("cookie {name} perms"),
+                    detail: warning,
+                });
+            }
         }
     }
     if found_cookies == 0 {
@@ -1068,6 +1094,13 @@ async fn cmd_doctor(cfg: Config, strict: bool, offline: bool) -> Result<()> {
                 "none in {} (public content imports fine without them)",
                 cookies.display()
             ),
+        });
+    }
+    if let Some(warning) = crate::config::loose_permissions(&cfg.home.join("config.toml")) {
+        checks.push(Check {
+            level: Level::Warn,
+            label: "config perms".into(),
+            detail: warning,
         });
     }
 
@@ -3166,5 +3199,32 @@ mod parse_tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod init_tests {
+    use super::displayed_ui_token;
+
+    #[test]
+    fn init_only_prints_the_token_it_actually_saved() {
+        assert_eq!(
+            displayed_ui_token(true, None, Some("generated")),
+            "generated"
+        );
+        assert_eq!(
+            displayed_ui_token(true, Some("old"), Some("new")),
+            "new",
+            "a rewritten config gets the token it was written with"
+        );
+        assert_eq!(
+            displayed_ui_token(false, Some("existing"), Some("generated")),
+            "existing",
+            "an existing config keeps its own token, not a throwaway one"
+        );
+        assert!(
+            displayed_ui_token(false, None, Some("generated")).contains("not set"),
+            "an existing config without a token must say so instead of printing a unusable value"
+        );
     }
 }
