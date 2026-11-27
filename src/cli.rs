@@ -609,7 +609,7 @@ pub async fn run() -> Result<()> {
         Command::Doctor { strict, offline } => cmd_doctor(cfg, strict, offline).await,
         Command::Serve { bind } => {
             let state = open_state(cfg)?;
-            reconcile_interrupted_jobs(&state).await?;
+            crate::jobs::worker::reconcile_startup(&state).await?;
             println!("scheduler  not running in `serve` - `nujijushi run` publishes on schedule");
             monitor_notifications(&state, crate::web::serve(state.clone(), bind)).await
         }
@@ -2374,24 +2374,13 @@ async fn cmd_push(state: &AppState, channel: String, dry_run: bool, force: bool)
 }
 
 async fn cmd_bot(state: &AppState, once: bool) -> Result<()> {
+    if !once {
+        // Standalone polling also publishes via /publish; repair stale rows too.
+        crate::jobs::worker::reconcile_startup(state).await?;
+    }
     crate::bot::Bot::new(state).await?.run(once).await?;
     if state.cfg.bot_mode == crate::config::BotMode::Webhook && !once {
-        reconcile_interrupted_jobs(state).await?;
         crate::web::serve(state.clone(), None).await?;
-    }
-    Ok(())
-}
-
-/// Fail jobs a previous process left `running`.
-///
-/// `serve` and webhook-mode `bot` start the same worker, and `reconcile` used to
-/// run only in `run`. A job stuck in `running` would block that channel's
-/// publishing for good: `db::jobs::find_active` counts it as active, while
-/// `claim_pending` never revisits it.
-async fn reconcile_interrupted_jobs(state: &AppState) -> Result<()> {
-    let fixed = crate::jobs::worker::reconcile(state).await?;
-    if fixed > 0 {
-        tracing::warn!("reconciled {fixed} interrupted job(s)");
     }
     Ok(())
 }
@@ -2410,13 +2399,7 @@ async fn cmd_run(
              drop --no-web or set [bot] mode = \"polling\"",
         ));
     }
-    let queue_fixed = crate::queue::lease::reconcile_stale(state).await?;
-    let jobs_fixed = crate::jobs::worker::reconcile(state).await?;
-    if queue_fixed > 0 || jobs_fixed > 0 {
-        tracing::warn!(
-            "reconciled {queue_fixed} interrupted send(s) and {jobs_fixed} interrupted job(s)"
-        );
-    }
+    crate::jobs::worker::reconcile_startup(state).await?;
 
     if !no_web {
         let web_state = state.clone();

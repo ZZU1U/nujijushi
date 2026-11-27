@@ -190,6 +190,9 @@ impl JobWorker {
     where
         F: std::future::Future<Output = ()> + Send,
     {
+        // A worker started by `serve` or webhook-mode `bot` must repair the
+        // previous process too, not only the one started by `run`.
+        reconcile_startup(&self.state).await?;
         tokio::select! {
             _ = shutdown => {},
             _ = self.poll_jobs(QUICK_KINDS, QUICK_JOBS, false) => {},
@@ -203,6 +206,17 @@ impl JobWorker {
         }
         Ok(())
     }
+}
+
+/// Startup pass for every serving mode: fail abandoned jobs and turn crashed
+/// sends into `unknown` (they are never re-sent automatically).
+pub async fn reconcile_startup(state: &AppState) -> Result<()> {
+    let sends = crate::queue::lease::reconcile_stale(state).await?;
+    let jobs = reconcile(state).await?;
+    if sends > 0 || jobs > 0 {
+        tracing::warn!("reconciled {sends} interrupted send(s) and {jobs} interrupted job(s)");
+    }
+    Ok(())
 }
 
 /// Mark abandoned jobs interrupted. Pending watch checks and flushes can still run.
@@ -291,5 +305,56 @@ mod tests {
         .await
         .unwrap();
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn startup_reconciles_a_crashed_send_but_not_a_live_one() {
+        use crate::db::{channels, posts, queue};
+        use crate::model::{Channel, QueueState};
+        use crate::source::NormalizedPost;
+
+        let directory = tempfile::tempdir().unwrap();
+        let cfg = crate::config::Config::load_from_home(directory.path().to_path_buf()).unwrap();
+        let state = AppState::open(cfg, None).unwrap();
+        let (stale_id, live_id) = state
+            .db
+            .call(|conn| {
+                let channel_id = channels::insert(conn, &Channel::new("Test", "@test_channel"))?;
+                let mut ids = Vec::new();
+                for label in ["1", "2"] {
+                    let post = NormalizedPost::new("pixiv", label);
+                    let (post_id, _) = posts::upsert(conn, &post, &[])?;
+                    queue::enqueue(conn, post_id, channel_id, 0)?;
+                    ids.push(queue::for_post(conn, post_id)?[0].0);
+                }
+                assert!(queue::acquire(conn, ids[0], "dead")?);
+                assert!(queue::acquire(conn, ids[1], "live")?);
+                conn.execute(
+                    "UPDATE queue SET lease_at = ?1 WHERE id = ?2",
+                    rusqlite::params![
+                        crate::db::fmt_ts(chrono::Utc::now() - chrono::Duration::hours(1)),
+                        ids[0]
+                    ],
+                )?;
+                Ok((ids[0], ids[1]))
+            })
+            .await
+            .unwrap();
+
+        // This is what every serving mode now runs at startup.
+        reconcile_startup(&state).await.unwrap();
+
+        let (stale, live) = state
+            .db
+            .call(move |conn| {
+                Ok((
+                    queue::get(conn, stale_id)?.state,
+                    queue::get(conn, live_id)?.state,
+                ))
+            })
+            .await
+            .unwrap();
+        assert_eq!(stale, QueueState::Unknown);
+        assert_eq!(live, QueueState::Sending, "a live lease is not interrupted");
     }
 }
