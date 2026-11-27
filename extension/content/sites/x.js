@@ -40,6 +40,17 @@
     },
   });
 
+  window.NJS.displayedXStatus = function () {
+    const here = window.NJS.canonical.canonicalize(location.href);
+    if (here?.source !== "x") return null;
+    for (const clock of document.querySelectorAll('article[data-testid="tweet"] a[href*="/status/"] time')) {
+      const url = clock.closest("a").href;
+      const named = describe(new URL(url));
+      if (named?.key === here.key && named.label) return url;
+    }
+    return null;
+  };
+
   function permalink(article) {
     let fallback = null;
     for (const anchor of article.querySelectorAll('a[href*="/status/"]')) {

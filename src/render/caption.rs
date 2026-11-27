@@ -65,9 +65,9 @@ pub fn build_context(
     let hashtags = tag_block(&tags, channel.tag_style);
 
     let source_label = crate::source::source_label(&post.source);
-    let source_url = post.url.clone();
+    let source_url = post.caption_url.as_deref().or(post.url.as_deref());
     let (source_link, attribution_inline, attribution_footer) =
-        match (&source_url, channel.attribution) {
+        match (source_url, channel.attribution) {
             (Some(url), Attribution::Link) => (
                 Value::from_safe_string(format!(
                     "<a href=\"{}\">{}</a>",
@@ -209,6 +209,7 @@ pub fn sample_context() -> CaptionContext {
         source: "pixiv".into(),
         source_id: "123456".into(),
         url: Some("https://www.pixiv.net/artworks/123456".into()),
+        caption_url: None,
         author: Some(Author {
             id: 1,
             source: "pixiv".into(),
@@ -268,6 +269,7 @@ mod tests {
             source: "pixiv".into(),
             source_id: "123456".into(),
             url: Some("https://www.pixiv.net/artworks/1".into()),
+            caption_url: None,
             author: Some(Author {
                 id: 1,
                 source: "pixiv".into(),

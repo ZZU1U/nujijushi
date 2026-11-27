@@ -388,6 +388,24 @@ fn watch(state: &AppState) -> watches::Watch {
 }
 
 #[tokio::test]
+async fn pixiv_watch_author_lookup_only_fetches_artwork_metadata() {
+    let mut fixture = Fixture::default();
+    let mut animation = Artwork::from_time(date(10));
+    animation.kind = 2;
+    fixture.artworks.insert(15, animation);
+    let server = TestServer::start(fixture).await;
+    let home = tempfile::tempdir().unwrap();
+    let state = server.app(&home);
+
+    let artist = source::pixiv::watch_artist(&state.cfg, 15).await.unwrap();
+    assert_eq!(artist.id, 7);
+    assert_eq!(artist.name, "Artist Display Name");
+    let fixture = server.fixture.lock().unwrap();
+    assert_eq!(fixture.requests.len(), 1);
+    assert_eq!(fixture.requests[0].0.path(), "/ajax/illust/15");
+}
+
+#[tokio::test]
 async fn native_pixiv_watch_preserves_checkpoints_and_retries_downloads() {
     let mut fixture = Fixture::default();
     for id in 1..=50 {

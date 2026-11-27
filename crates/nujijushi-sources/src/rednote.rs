@@ -140,7 +140,9 @@ impl RedNote {
             let id = expected.ok_or(Error::ShareLink)?;
             let html = read_page(response).await?;
             let canonical = canonical_url(&url, &id);
-            return page::parse(&html, &id, canonical);
+            let mut note = page::parse(&html, &id, canonical)?;
+            note.caption_url = caption_url(url, &id);
+            return Ok(note);
         }
         Err(Error::RedirectLimit)
     }
@@ -213,6 +215,32 @@ fn valid_id(id: &str) -> bool {
 fn note_path(url: &Url) -> &str {
     let path = url.path().trim_matches('/');
     path.strip_prefix("en/").unwrap_or(path)
+}
+
+/// Keep only RedNote's share parameters on the original route used by the link.
+pub fn caption_url(mut url: Url, id: &str) -> Option<String> {
+    if !matches!(url.scheme(), "http" | "https") || !clean_authority(&url) {
+        return None;
+    }
+    let params: Vec<_> = url
+        .query_pairs()
+        .filter(|(key, value)| {
+            matches!(key.as_ref(), "xsec_token" | "xsec_source") && !value.is_empty()
+        })
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    let has_note_link = note_id(&url).is_some_and(|found| found.eq_ignore_ascii_case(id))
+        && params.iter().any(|(key, _)| key == "xsec_token");
+    if !(has_note_link || is_share_link(&url)) {
+        return None;
+    }
+    url.set_scheme("https").ok()?;
+    url.set_fragment(None);
+    url.set_query(None);
+    if !params.is_empty() {
+        url.query_pairs_mut().extend_pairs(params);
+    }
+    Some(url.into())
 }
 
 /// A presentation URL with no credentials, share query, or opaque short code.

@@ -1,4 +1,4 @@
-//! Minimal single-user auth: a signed cookie derived from the UI token.
+//! Admin authentication using the UI token or its derived session cookie.
 
 use axum::extract::{Request, State};
 use axum::http::{Uri, header};
@@ -61,6 +61,26 @@ pub fn check(req: &Request, ws: &WebState) -> bool {
         .unwrap_or(false)
 }
 
+fn check_bearer(req: &Request, ws: &WebState) -> bool {
+    let mut values = req.headers().get_all(header::AUTHORIZATION).iter();
+    let Some((scheme, token)) = values
+        .next()
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split_once(' '))
+    else {
+        return false;
+    };
+    values.next().is_none()
+        && scheme.eq_ignore_ascii_case("bearer")
+        && !token.is_empty()
+        && ws
+            .app
+            .cfg
+            .ui_token
+            .as_deref()
+            .is_some_and(|expected| constant_time_eq(token, expected.trim()))
+}
+
 /// Middleware: everything except the login page and static assets requires a session.
 pub async fn require_session(
     State(ws): State<Arc<WebState>>,
@@ -68,20 +88,39 @@ pub async fn require_session(
     next: Next,
 ) -> Response {
     let path = req.uri().path();
-    // metrics sits outside the session gate on purpose: a scraper has no cookie,
-    // and the document only carries counts (never titles, captions or tokens)
+    // Monitoring endpoints expose only health, build metadata and counts.
     if path == "/login"
         || path == "/api/v1/login"
         || path.starts_with("/admin-assets/")
         || path == "/metrics"
+        || path == "/healthz"
         || path == crate::bot::WEBHOOK_PATH
     {
         return next.run(req).await;
     }
-    if check(&req, &ws) {
+    let api = path.starts_with("/api/v1/") || path == "/api/status";
+    let has_bearer_header = api
+        && req
+            .headers()
+            .get_all(header::AUTHORIZATION)
+            .iter()
+            .any(|value| {
+                value.to_str().ok().is_some_and(|value| {
+                    value
+                        .split_ascii_whitespace()
+                        .next()
+                        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("bearer"))
+                })
+            });
+    let authorized = if has_bearer_header {
+        check_bearer(&req, &ws)
+    } else {
+        check(&req, &ws)
+    };
+    if authorized {
         return next.run(req).await;
     }
-    if path.starts_with("/api/v1/") {
+    if path.starts_with("/api/v1/") || has_bearer_header {
         return (
             axum::http::StatusCode::UNAUTHORIZED,
             [(header::CACHE_CONTROL, "no-store")],

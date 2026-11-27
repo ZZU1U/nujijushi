@@ -29,6 +29,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0022_delivery_links.sql"),
     include_str!("../../migrations/0023_daily_watches.sql"),
     include_str!("../../migrations/0024_pixiv_watch_state.sql"),
+    include_str!("../../migrations/0025_post_caption_url.sql"),
 ];
 
 pub fn schema_version(conn: &Connection) -> Result<i64> {
@@ -152,12 +153,12 @@ mod tests {
         let edit_columns: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('posts')
-                 WHERE name IN ('title_edited', 'description_edited')",
+                 WHERE name IN ('title_edited', 'description_edited', 'caption_url')",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(edit_columns, 2);
+        assert_eq!(edit_columns, 3);
         let delivery_columns: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('sends')

@@ -76,6 +76,7 @@ pub fn router(ws: Arc<WebState>) -> Router {
             get(super::curation::watches_page).post(super::curation::create_watch),
         )
         .route("/watches/{id}/check", post(super::curation::check_watch))
+        .route("/watches/resolve", post(super::curation::resolve_watch))
         .route("/watches/{id}/toggle", post(super::curation::toggle_watch))
         .route("/watches/{id}/remove", post(super::curation::remove_watch))
         .route("/duplicates", get(super::curation::duplicates_page))
@@ -117,6 +118,7 @@ pub fn router(ws: Arc<WebState>) -> Router {
     let app = Router::new()
         .nest("/api/v1", api)
         .route("/api/status", get(api_status))
+        .route("/healthz", get(health))
         .route("/admin-assets/assets/{name}", get(super::admin::asset))
         .route("/metrics", get(metrics_endpoint))
         .route(crate::bot::WEBHOOK_PATH, post(webhook))
@@ -222,6 +224,20 @@ async fn logout(State(ws): State<Arc<WebState>>, Form(form): Form<FormMap>) -> W
 }
 
 // ---------------------------------------------------------------- metrics
+
+async fn health() -> Response {
+    let dirty = option_env!("NUJIJUSHI_DIRTY").map(|value| value == "true");
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(json!({
+            "status": "ok",
+            "version": crate::VERSION,
+            "revision": option_env!("NUJIJUSHI_REVISION"),
+            "dirty": dirty,
+        })),
+    )
+        .into_response()
+}
 
 /// Prometheus scrape endpoint. It sits outside the cookie gate because a scraper
 /// has no session: it exposes counts only, never titles, captions or tokens.
@@ -2388,10 +2404,15 @@ async fn import_submit(
         return Ok(action_result("/import", "no targets given"));
     }
     let app = &ws.app;
-    let mut jobs = Vec::new();
-    for target in &targets {
-        jobs.push(crate::jobs::create_job(app, target).await?);
-    }
+    let jobs = if form.reuse_active {
+        crate::jobs::create_import_jobs_reusing_active(app, targets).await?
+    } else {
+        let mut jobs = Vec::new();
+        for target in &targets {
+            jobs.push(crate::jobs::create_job(app, target).await?);
+        }
+        jobs
+    };
     let note = format!(
         "{} import job(s) queued. Open the results to review and queue artwork.",
         jobs.len()

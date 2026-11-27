@@ -17,17 +17,19 @@
     copy: document.getElementById("copy"),
     copyAll: document.getElementById("copy-all"),
     clear: document.getElementById("clear"),
-    settings: document.getElementById("settings"),
-    settingsToggle: document.getElementById("settings-toggle"),
-    autoClear: document.getElementById("auto-clear"),
-    adapterBoxes: [...document.querySelectorAll("input[data-adapter]")],
+    options: document.getElementById("open-options"),
     paste: document.getElementById("paste"),
     pasteAdd: document.getElementById("paste-add"),
     status: document.getElementById("status"),
+    watchForm: document.getElementById("watch-form"),
+    watchTab: document.getElementById("watch-tab"),
+    watchUrl: document.getElementById("watch-url"),
+    watchName: document.getElementById("watch-name"),
+    watchBatch: document.getElementById("watch-batch"),
   };
 
   let items = [];
-  let settings = { autoClear: false, adapters: {} };
+  let autoClear = false;
 
   // ----------------------------------------------------------------- plumbing
 
@@ -46,10 +48,17 @@
     else delete els.status.dataset.kind;
   }
 
+  async function request(message) {
+    const reply = await send(message);
+    if (reply.error) throw new Error(reply.error);
+    if (!Object.keys(reply).length) throw new Error("Could not contact the extension. Try again.");
+    return reply;
+  }
+
   async function refresh() {
     const state = await store.read();
     items = store.list(state);
-    settings = state.settings;
+    autoClear = state.settings.autoClear;
     render();
   }
 
@@ -70,11 +79,6 @@
     els.copyAll.textContent = `copy all ${items.length}`;
 
     els.clear.disabled = items.length === 0;
-
-    els.autoClear.checked = !!settings.autoClear;
-    for (const box of els.adapterBoxes) {
-      box.checked = settings.adapters[box.dataset.adapter] !== false;
-    }
   }
 
   function row(item) {
@@ -82,15 +86,18 @@
     li.dataset.key = item.key;
     if (item.copied) li.dataset.copied = "1";
 
+    const displayUrl = item.source === "rednote"
+      ? (item.key.startsWith("rednote-share:") ? "RedNote app share link" : item.url.split("?")[0])
+      : item.url;
     const label = document.createElement("div");
     label.className = "label";
-    label.textContent = item.label || item.url;
-    label.title = item.url;
+    label.textContent = item.label || displayUrl;
+    label.title = displayUrl;
 
     const url = document.createElement("div");
     url.className = "url";
-    url.textContent = shortUrl(item.url);
-    url.title = item.url;
+    url.textContent = shortUrl(displayUrl);
+    url.title = displayUrl;
 
     const chip = document.createElement("div");
     chip.className = "chip";
@@ -137,7 +144,7 @@
     }
 
     await send({ type: "mark-copied", keys: list.map((item) => item.key) });
-    if (settings.autoClear) {
+    if (autoClear) {
       await send({ type: "clear-copied" });
       setStatus(`${list.length} copied, list cleared`, "ok");
     } else {
@@ -191,19 +198,46 @@
       return;
     }
     const parts = [`${result.added} added`];
+    if (result.updated) parts.push(`${result.updated} updated`);
     if (result.duplicates) parts.push(`${result.duplicates} already there`);
     if (result.skipped) parts.push(`${result.skipped} not a link`);
-    setStatus(parts.join(" · "), result.added ? "ok" : undefined);
+    setStatus(parts.join(" · "), result.added || result.updated ? "ok" : undefined);
     els.paste.value = "";
     await refresh();
   }
 
-  async function saveSettings() {
-    const adapters = {};
-    for (const box of els.adapterBoxes) adapters[box.dataset.adapter] = box.checked;
-    await send({ type: "settings", patch: { autoClear: els.autoClear.checked, adapters } });
-    setStatus("settings saved — reload the tab to apply");
-    await refresh();
+  async function fillWatch() {
+    els.watchTab.disabled = true;
+    setStatus("Looking up artist…");
+    try {
+      const result = await request({ type: "active-watch" });
+      els.watchUrl.value = result.url;
+      els.watchName.value = (result.name || "").slice(0, 100);
+      setStatus("Check the profile URL, then add the watch.");
+    } catch (error) {
+      setStatus(error.message, "error");
+    } finally {
+      els.watchTab.disabled = false;
+    }
+  }
+
+  async function submitWatch(event) {
+    event.preventDefault();
+    const button = els.watchForm.querySelector('button[type="submit"]');
+    button.disabled = true;
+    try {
+      const result = await request({
+        type: "add-watch",
+        url: els.watchUrl.value,
+        name: els.watchName.value,
+        initialBatch: els.watchBatch.value,
+      });
+      setStatus(result.message, "ok");
+    } catch (error) {
+      setStatus(error.message, "error");
+    } finally {
+      button.disabled = false;
+    }
   }
 
   // -------------------------------------------------------------------- wire
@@ -212,13 +246,11 @@
   els.copyAll.addEventListener("click", () => copyTarget("all"));
   els.clear.addEventListener("click", clearAll);
   els.pasteAdd.addEventListener("click", addPasted);
-  els.autoClear.addEventListener("change", saveSettings);
-  for (const box of els.adapterBoxes) box.addEventListener("change", saveSettings);
+  els.watchTab.addEventListener("click", fillWatch);
+  els.watchForm.addEventListener("submit", submitWatch);
 
-  els.settingsToggle.addEventListener("click", () => {
-    const open = els.settings.hidden;
-    els.settings.hidden = !open;
-    els.settingsToggle.setAttribute("aria-expanded", String(open));
+  els.options.addEventListener("click", () => {
+    chrome.runtime.openOptionsPage().catch(() => setStatus("Could not open extension options.", "error"));
   });
 
   els.paste.addEventListener("keydown", (event) => {

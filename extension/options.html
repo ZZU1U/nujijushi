@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>nujijushi clip options</title>
+    <link rel="stylesheet" href="options.css">
+  </head>
+  <body>
+    <main>
+      <h1>nujijushi clip options</h1>
+      <p id="status" role="status"></p>
+
+      <form id="connection-form">
+        <fieldset id="connection" disabled>
+          <legend>Server connection</legend>
+          <label for="server-url">Server URL</label>
+          <input id="server-url" type="text" inputmode="url" required spellcheck="false">
+          <label for="admin-token">Admin token</label>
+          <input id="admin-token" type="password" autocomplete="off" spellcheck="false" aria-describedby="token-help">
+          <p id="token-help" class="hint">Use the same token you use to sign in to nujijushi.</p>
+          <div class="actions">
+            <button type="submit">Save connection</button>
+            <button type="submit" id="test-connection">Test connection</button>
+          </div>
+        </fieldset>
+      </form>
+
+      <fieldset id="preferences" disabled>
+        <legend>Clipping preferences</legend>
+        <label class="check"><input type="checkbox" id="direct-mode"> Send directly to nujijushi</label>
+        <label class="check"><input type="checkbox" id="auto-clear"> Clear the list after copying</label>
+      </fieldset>
+
+      <fieldset id="site-buttons" disabled aria-describedby="site-help">
+        <legend>On-page buttons</legend>
+        <label class="check"><input type="checkbox" data-adapter="x"> X / Twitter</label>
+        <label class="check"><input type="checkbox" data-adapter="pixiv"> Pixiv</label>
+        <label class="check"><input type="checkbox" data-adapter="rednote"> RedNote</label>
+        <label class="check"><input type="checkbox" data-adapter="generic"> Page button, including FANBOX</label>
+        <p id="site-help" class="hint">Reload the artwork tab after changing these options.</p>
+      </fieldset>
+    </main>
+
+    <script src="lib/canonical.js"></script>
+    <script src="lib/store.js"></script>
+    <script src="lib/admin.js"></script>
+    <script src="options.js"></script>
+  </body>
+</html>

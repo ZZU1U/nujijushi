@@ -63,6 +63,28 @@
   border-color: #f0616d;
 }
 
+.njs-btn[aria-busy="true"] {
+  cursor: wait;
+  opacity: 0.65 !important;
+}
+
+.njs-status {
+  position: fixed;
+  bottom: 18px;
+  left: 18px;
+  z-index: 2147483000;
+  max-width: min(360px, calc(100vw - 80px));
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: #16161a;
+  color: #f5f5f7;
+  font: 14px/1.4 system-ui, sans-serif;
+}
+
+.njs-status[data-failed="true"] {
+  border: 1px solid #f0616d;
+}
+
 @keyframes njs-pop {
   0% {
     transform: scale(0.82);
@@ -77,8 +99,9 @@
   box-shadow: inset 3px 0 0 #57d38c !important;
 }
 
-/* pixiv thumbnails: hover-revealed toggle in the corner of the card */
-.njs-thumb {
+/* hover-revealed toggle in the corner of a thumbnail card */
+.njs-thumb:not(.njs-rednote-card),
+.njs-rednote-position {
   position: relative;
 }
 

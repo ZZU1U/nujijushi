@@ -14,6 +14,8 @@ COPY crates ./crates
 COPY migrations ./migrations
 COPY templates ./templates
 COPY --from=web /app/webui/dist ./webui/dist
+ARG NUJIJUSHI_BUILD_REVISION
+ARG NUJIJUSHI_BUILD_DIRTY
 RUN NUJIJUSHI_REQUIRE_WEBUI=1 cargo build --release --locked
 
 FROM debian:bookworm-slim

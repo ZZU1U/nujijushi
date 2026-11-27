@@ -51,6 +51,8 @@
   const PIXIV_HOSTS = /(^|\.)pixiv\.net$/;
   const BOORU_HOSTS = /(^|\.)(gelbooru\.com|safebooru\.org|rule34\.xxx)$/;
   const TELEGRAM_HOSTS = /(^|\.)(t\.me|telegram\.me|telegram\.dog)$/;
+  const REDNOTE_HOSTS = /^(?:www\.)?(?:rednote|xiaohongshu)\.com$/;
+  const REDNOTE_SHARE_HOSTS = /^xhslink\.(?:com|cn)$/;
 
   const RESERVED_X_SEGMENTS = new Set([
     "i",
@@ -81,6 +83,10 @@
     }
     if (url.protocol !== "http:" && url.protocol !== "https:") return null;
 
+    if (REDNOTE_HOSTS.test(url.hostname) || REDNOTE_SHARE_HOSTS.test(url.hostname)) {
+      return matchRedNote(url);
+    }
+
     const host = url.hostname.toLowerCase().replace(/^www\./, "");
     const path = url.pathname;
     const query = url.searchParams;
@@ -88,6 +94,7 @@
     return (
       matchX(host, path) ||
       matchPixiv(host, path, query) ||
+      matchFanbox(host, path) ||
       matchBooru(host, path, query) ||
       matchArt(host, path) ||
       matchTumblr(host, path) ||
@@ -169,6 +176,42 @@
     if (!id) return null;
     const page = Math.max(0, parseInt(query.get("p") || "", 10) || 0) || null;
     return link("pixiv", `pixiv:${id}`, `https://www.pixiv.net/artworks/${id}`, `artworks/${id}`, page);
+  }
+
+  function matchRedNote(url) {
+    if (url.username || url.password || url.port) return null;
+    const path = url.pathname.replace(/\/+$/, "");
+    const share = REDNOTE_SHARE_HOSTS.test(url.hostname);
+    const id = path.match(
+      /^\/(?:en\/)?(?:explore|discovery\/item|user\/profile\/[A-Fa-f0-9]{24})\/([A-Fa-f0-9]{24})$/,
+    )?.[1].toLowerCase();
+    if (share ? !/^\/(?:[ao]\/)?[A-Za-z0-9_-]{1,128}$/.test(path) : !id) return null;
+
+    const query = new URLSearchParams();
+    for (const [key, value] of url.searchParams) {
+      if (value && (key === "xsec_token" || key === "xsec_source")) query.append(key, value);
+    }
+    const search = query.size ? `?${query}` : "";
+    const key = share ? `rednote-share:${url.hostname}${path}` : `rednote:${id}`;
+    return link("rednote", key, `https://${url.hostname}${path}${search}`, share ? "Share link" : `Note ${id}`);
+  }
+
+  function matchFanbox(host, path) {
+    const parts = path.replace(/\/+$/, "").split("/");
+    const ownHost = /^([a-z0-9_-]+)\.fanbox\.cc$/.exec(host);
+    const creator = ownHost ? ownHost[1] : host === "fanbox.cc" ? /^@([a-z0-9_-]+)$/i.exec(parts[1])?.[1] : null;
+    const offset = ownHost ? 1 : 2;
+    if (!creator || creator.length > 63 || creator.toLowerCase() === "www"
+      || parts.length !== offset + 2 || parts[offset] !== "posts" || !/^\d+$/.test(parts[offset + 1])) {
+      return null;
+    }
+    const name = creator.toLowerCase();
+    const id = parts[offset + 1];
+    return link("fanbox", `fanbox:${name}:${id}`, `https://${name}.fanbox.cc/posts/${id}`, name);
+  }
+
+  function hasRedNoteToken(link) {
+    return link.source === "rednote" && !!new URL(link.url).searchParams.get("xsec_token");
   }
 
   function matchBooru(host, path, query) {
@@ -290,5 +333,5 @@
     return blob.split(/[\s<>"']+/).filter(Boolean);
   }
 
-  return { canonicalize, isKnownPost, splitUrls, strip };
+  return { canonicalize, hasRedNoteToken, isKnownPost, splitUrls, strip };
 });

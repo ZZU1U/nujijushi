@@ -95,6 +95,41 @@ pub async fn create_watch(
 }
 
 #[derive(Deserialize)]
+pub struct WatchResolveForm {
+    #[serde(default)]
+    csrf: String,
+    url: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct WatchTarget {
+    url: String,
+    name: Option<String>,
+}
+
+pub async fn resolve_watch(
+    State(ws): State<Arc<WebState>>,
+    Form(form): Form<WatchResolveForm>,
+) -> WebResult<Json<WatchTarget>> {
+    check_csrf(&ws, &form.csrf)?;
+    let (feed, name) = if let Some(id) = nujijushi_sources::pixiv::artwork_id(form.url.trim()) {
+        let artist = crate::source::pixiv::watch_artist(&ws.app.cfg, id)
+            .await
+            .map_err(|error| {
+                Error::invalid(format!("{error}. Enter the artist profile URL instead."))
+            })?;
+        let feed = Feed::parse(&format!("https://www.pixiv.net/users/{}", artist.id))?;
+        (feed, Some(artist.name))
+    } else {
+        (Feed::parse(&form.url)?, None)
+    };
+    Ok(Json(WatchTarget {
+        url: feed.url,
+        name,
+    }))
+}
+
+#[derive(Deserialize)]
 pub struct CsrfForm {
     #[serde(default)]
     csrf: String,

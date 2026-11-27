@@ -73,12 +73,43 @@ test("click order is preserved and unpicked items keep their place", async () =>
   );
 });
 
+test("a RedNote share token refreshes a clipped note without duplicating it", async () => {
+  reset();
+  const bare = canonicalize("https://www.rednote.com/explore/674051740000000007027a15");
+  const share = canonicalize("https://www.xiaohongshu.com/discovery/item/674051740000000007027a15?xsec_token=demo%2Bvalue%3D&xsec_source=pc_feed");
+  await store.add(bare);
+  await store.markCopied([bare.key]);
+
+  const result = await store.addMany([share, bare]);
+  assert.deepEqual(result.updated, [bare.key]);
+  assert.deepEqual(result.duplicates, [bare.key]);
+  const items = store.list(await store.read());
+  assert.deepEqual(store.urls(items), [share.url]);
+  assert.equal(items[0].copied, false);
+
+  const refreshed = canonicalize(share.url.replace("demo", "new"));
+  assert.equal((await store.add(refreshed)).updated, true);
+  assert.deepEqual(store.urls(store.list(await store.read())), [refreshed.url]);
+});
+
 test("toggle adds then removes the same key", async () => {
   reset();
   const link = canonicalize("https://x.com/a/status/9");
   assert.equal((await store.toggle(link)).added, true);
   assert.equal((await store.toggle(link)).removed, true);
   assert.equal(store.count(await store.read()), 0);
+});
+
+test("an accepted direct import marks only its clip copied", async () => {
+  reset();
+  const other = canonicalize("https://x.com/a/status/9");
+  const post = canonicalize("https://www.rednote.com/explore/674051740000000007027a15?xsec_token=sample");
+  await store.add(other);
+  await store.recordImport(post);
+  await store.recordImport(post);
+  const items = store.list(await store.read());
+  assert.deepEqual(items.map(({ key, copied }) => [key, copied]), [[other.key, false], [post.key, true]]);
+  assert.equal(items[1].url, post.url);
 });
 
 test("addMany reports duplicates instead of failing the batch", async () => {
@@ -120,7 +151,7 @@ test("settings merge instead of overwriting the adapter map", async () => {
   await store.updateSettings({ adapters: { pixiv: false } });
   const state = await store.read();
   assert.equal(state.settings.autoClear, true);
-  assert.deepEqual(state.settings.adapters, { x: true, pixiv: false, generic: true });
+  assert.deepEqual(state.settings.adapters, { x: true, pixiv: false, rednote: true, generic: true });
 });
 
 test("clearAll empties the list but keeps settings", async () => {

@@ -158,11 +158,25 @@ pub fn list(conn: &Connection, limit: i64) -> Result<Vec<Job>> {
 /// Used to refuse a duplicate request (two "publish this channel" clicks) while
 /// the first one is still in the worker.
 pub fn find_active(conn: &Connection, kind: &str, payload: &str) -> Result<Option<i64>> {
+    find_active_job(conn, kind, payload, false)
+}
+
+pub(crate) fn find_active_operator_import(conn: &Connection, payload: &str) -> Result<Option<i64>> {
+    find_active_job(conn, crate::jobs::KIND_IMPORT, payload, true)
+}
+
+fn find_active_job(
+    conn: &Connection,
+    kind: &str,
+    payload: &str,
+    operator_only: bool,
+) -> Result<Option<i64>> {
     Ok(conn
         .query_row(
             "SELECT id FROM jobs WHERE kind = ?1 AND payload = ?2
-               AND state IN ('pending', 'running') ORDER BY id DESC LIMIT 1",
-            params![kind, payload],
+               AND state IN ('pending', 'running') AND (NOT ?3 OR submitted_by IS NULL)
+               ORDER BY id DESC LIMIT 1",
+            params![kind, payload, operator_only],
             |row| row.get(0),
         )
         .optional()?)

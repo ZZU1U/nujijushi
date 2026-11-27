@@ -10,6 +10,7 @@ fn post() -> Post {
         source: "pixiv".into(),
         source_id: "123456".into(),
         url: Some("https://www.pixiv.net/artworks/123456".into()),
+        caption_url: None,
         author: Some(Author {
             id: 3,
             source: "pixiv".into(),
@@ -67,6 +68,18 @@ fn render(channel: &Channel, post: &Post, nsfw: bool, spoiler: bool) -> String {
 fn default_caption() {
     let channel = Channel::new("night shift", "@night_shift");
     insta::assert_snapshot!("default_caption", render(&channel, &post(), false, false));
+}
+
+#[test]
+fn rednote_attribution_preserves_the_share_query() {
+    let channel = Channel::new("night shift", "@night_shift");
+    let mut post = post();
+    post.source = "rednote".into();
+    post.url = Some("https://www.rednote.com/explore/674051740000000007027a15".into());
+    post.caption_url = Some("https://www.rednote.com/discovery/item/674051740000000007027a15?xsec_token=sample%3D&xsec_source=pc_feed".into());
+    post.description = None;
+    post.tags.clear();
+    insta::assert_snapshot!("rednote_caption", render(&channel, &post, false, false));
 }
 
 #[test]

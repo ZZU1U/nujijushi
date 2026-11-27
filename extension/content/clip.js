@@ -18,7 +18,9 @@
   const adapters = [];
   const clipped = new Set(); // canonical keys currently in the bin
   const warned = new Set();
-  let settings = { adapters: {}, autoClear: false };
+  const buttonLinks = new WeakMap();
+  const pending = new WeakSet();
+  let settings = { adapters: {}, direct: false };
   let started = false;
   let observing = false;
   let scanning = false;
@@ -48,11 +50,11 @@
   }
 
   async function loadState() {
-    if (!root.store) return;
-    const state = await root.store.read();
-    settings = state.settings || settings;
+    const state = await send({ type: "clip-state" });
+    if (!Array.isArray(state.keys)) return;
+    settings = { adapters: state.adapters || {}, direct: state.direct === true };
     clipped.clear();
-    for (const key of Object.keys(state.items)) clipped.add(key);
+    for (const key of state.keys) clipped.add(key);
   }
 
   // ------------------------------------------------------------------- buttons
@@ -83,29 +85,44 @@
     const button = event.currentTarget;
     event.preventDefault();
     event.stopPropagation();
-    if (button.dataset.njsBusy === "1") return;
-    button.dataset.njsBusy = "1";
+    const link = buttonLinks.get(button);
+    if (!event.isTrusted || !link || pending.has(button)) return;
+    pending.add(button);
+    button.setAttribute("aria-busy", "true");
     try {
-      const reply = await send({
-        type: "toggle",
-        link: {
-          key: button.dataset.njsKey,
-          url: button.dataset.njsUrl,
-          source: button.dataset.njsSource,
-          label: button.dataset.njsLabel,
-          page: Number(button.dataset.njsPage) || null,
-        },
-      });
-      if (reply.error) throw new Error(reply.error);
-      if (reply.added) clipped.add(button.dataset.njsKey);
-      else clipped.delete(button.dataset.njsKey);
-      paint();
+      const reply = await send({ type: "clip-post", url: link.url });
+      if (typeof reply.added !== "boolean") {
+        throw new Error(reply.error || "Could not contact the extension. Try again.");
+      }
+      if (reply.added) clipped.add(link.key);
+      else clipped.delete(link.key);
+      if (reply.jobId) showStatus(`Import job #${reply.jobId} queued.`);
       flash(button, reply.added ? "added" : "removed");
     } catch (error) {
+      showStatus(error.message, true);
       flash(button, "failed");
     } finally {
-      delete button.dataset.njsBusy;
+      pending.delete(button);
+      button.removeAttribute("aria-busy");
+      paint();
     }
+  }
+
+  let status;
+  let statusTimer;
+
+  function showStatus(text, failed = false) {
+    if (!status) {
+      status = document.createElement("p");
+      status.className = "njs-status";
+      status.setAttribute("role", "status");
+      (document.body || document.documentElement).appendChild(status);
+    }
+    status.dataset.failed = String(failed);
+    status.hidden = false;
+    status.textContent = text;
+    clearTimeout(statusTimer);
+    statusTimer = setTimeout(() => { status.hidden = true; }, 5000);
   }
 
   function flash(button, kind) {
@@ -116,10 +133,12 @@
   }
 
   function paintOne(button, row) {
-    const on = clipped.has(button.dataset.njsKey);
+    const on = clipped.has(buttonLinks.get(button)?.key);
     button.dataset.njsState = on ? "on" : "off";
     button.setAttribute("aria-pressed", on ? "true" : "false");
-    button.title = on ? "Clipped to nujijushi — click to remove" : "Clip to nujijushi";
+    button.title = settings.direct
+      ? "Send this post to nujijushi"
+      : on ? "Clipped to nujijushi — click to remove" : "Clip to nujijushi";
     if (row) {
       if (on) row.dataset.njsClipped = "1";
       else delete row.dataset.njsClipped;
@@ -149,6 +168,7 @@
       }
     }
 
+    buttonLinks.set(button, link);
     button.dataset.njsKey = link.key;
     button.dataset.njsUrl = link.url;
     button.dataset.njsSource = link.source || "web";
@@ -224,7 +244,7 @@
     if (observing) return;
     observing = true;
     const observer = new MutationObserver(scheduleScan);
-    observer.observe(document.documentElement, { childList: true, subtree: true });
+    observer.observe(document.documentElement, { childList: true, subtree: true, attributeFilter: ["href"] });
     window.addEventListener("popstate", scanAll);
     window.addEventListener("pageshow", scanAll);
   }
@@ -272,9 +292,12 @@
     observe();
   }
 
-  chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "local" || !root.store || !changes[root.store.STORAGE_KEY]) return;
-    loadState().then(paint, () => {});
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (sender.id !== chrome.runtime.id) return;
+    if (message?.type === "refresh-bin") loadState().then(paint, () => {});
+    if (message?.type === "watch-page") {
+      sendResponse({ url: location.href, permalink: root.displayedXStatus?.() });
+    }
   });
 
   setTimeout(boot, 0);

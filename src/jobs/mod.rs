@@ -388,6 +388,29 @@ pub async fn create_import_job_unique(state: &AppState, target: &str) -> Result<
     enqueue_unique(state, KIND_IMPORT, target.to_string()).await
 }
 
+/// Return one job per target, including any active import of the same URL.
+pub(crate) async fn create_import_jobs_reusing_active(
+    state: &AppState,
+    targets: Vec<String>,
+) -> Result<Vec<i64>> {
+    state
+        .db
+        .call(move |conn| {
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let mut ids = Vec::with_capacity(targets.len());
+            for target in targets {
+                let id = match job_db::find_active_operator_import(&tx, &target)? {
+                    Some(id) => id,
+                    None => job_db::create(&tx, KIND_IMPORT, &target, 0)?,
+                };
+                ids.push(id);
+            }
+            tx.commit()?;
+            Ok(ids)
+        })
+        .await
+}
+
 /// Queue "publish the next post of this channel", unless one is already queued.
 pub async fn create_publish_channel_job(state: &AppState, channel_id: i64) -> Result<Option<i64>> {
     enqueue_unique(state, KIND_PUBLISH_CHANNEL, channel_id.to_string()).await

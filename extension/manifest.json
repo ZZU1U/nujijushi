@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "nujijushi clip",
   "version": "0.1.0",
-  "description": "Click posts to collect their URLs, then copy them as a newline list for nujijushi's import box.",
+  "description": "Clip artwork URLs or send posts directly to your nujijushi server.",
   "minimum_chrome_version": "116",
   "permissions": [
     "storage",
@@ -10,6 +10,12 @@
     "contextMenus",
     "activeTab",
     "scripting"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "http://[::1]/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -19,6 +25,10 @@
   },
   "side_panel": {
     "default_path": "panel.html"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
   },
   "commands": {
     "clip-tab": {
@@ -38,14 +48,19 @@
         "https://twitter.com/*",
         "https://*.twitter.com/*",
         "https://www.pixiv.net/*",
-        "https://pixiv.net/*"
+        "https://pixiv.net/*",
+        "https://rednote.com/*",
+        "https://www.rednote.com/*",
+        "https://xiaohongshu.com/*",
+        "https://www.xiaohongshu.com/*",
+        "https://*.fanbox.cc/*"
       ],
       "js": [
         "content/clip.js",
         "lib/canonical.js",
-        "lib/store.js",
         "content/sites/x.js",
         "content/sites/pixiv.js",
+        "content/sites/rednote.js",
         "content/sites/generic.js"
       ],
       "css": ["content/clip.css"],

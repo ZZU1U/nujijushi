@@ -237,6 +237,8 @@ pub struct ImportForm {
     pub csrf: String,
     /// One target per line (URL or path), also accepts pasted encoded line breaks.
     pub targets: String,
+    #[serde(default)]
+    pub reuse_active: bool,
     #[serde(default, deserialize_with = "empty_as_none")]
     pub channel: Option<i64>,
     #[serde(default, deserialize_with = "empty_as_none")]
@@ -294,6 +296,7 @@ mod tests {
         let form = ImportForm {
             csrf: String::new(),
             targets: "https://x/1\n\n # comment\nhttps://x/2%0Ahttps://x/3  \n".into(),
+            reuse_active: false,
             channel: None,
             priority: None,
         };

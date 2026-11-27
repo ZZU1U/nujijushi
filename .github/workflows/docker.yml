@@ -32,6 +32,9 @@ jobs:
           platforms: linux/amd64
           load: true
           tags: nujijushi:smoke
+          build-args: |
+            NUJIJUSHI_BUILD_REVISION=${{ github.sha }}
+            NUJIJUSHI_BUILD_DIRTY=false
           cache-from: type=gha,scope=nujijushi-docker
       - name: Test the Compose deployment
         env:
@@ -73,5 +76,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            NUJIJUSHI_BUILD_REVISION=${{ github.sha }}
+            NUJIJUSHI_BUILD_DIRTY=false
           cache-from: type=gha,scope=nujijushi-docker
           cache-to: type=gha,scope=nujijushi-docker,mode=max,ignore-error=true

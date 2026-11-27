@@ -16,6 +16,26 @@
   box-sizing: border-box;
 }
 
+.panel-form {
+  display: grid;
+  gap: 5px;
+  margin-block: 8px;
+}
+
+.panel-form input {
+  width: 100%;
+  padding: 5px 6px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.panel-form button {
+  justify-self: start;
+}
+
 html,
 body {
   height: 100%;
@@ -103,26 +123,6 @@ button.ghost {
 button.icon {
   padding: 4px 7px;
   line-height: 1;
-}
-
-.settings {
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--line);
-  background: var(--panel);
-  display: grid;
-  gap: 6px;
-}
-
-.settings label {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-  color: var(--text);
-}
-
-.settings input[type="checkbox"] {
-  accent-color: var(--accent);
-  margin: 0;
 }
 
 main {

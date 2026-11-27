@@ -244,6 +244,8 @@ pub struct Post {
     pub source: String,
     pub source_id: String,
     pub url: Option<String>,
+    /// Attribution link for outgoing captions. The archive uses `url`.
+    pub caption_url: Option<String>,
     pub author: Option<Author>,
     pub title: Option<String>,
     pub description: Option<String>,
@@ -502,6 +504,7 @@ mod tests {
             source: "test".into(),
             source_id: "1".into(),
             url: None,
+            caption_url: None,
             author: None,
             title: None,
             description: None,

@@ -171,6 +171,16 @@ async fn gallery_import_preserves_order_and_identity_across_urls() {
     let home = tempfile::tempdir().unwrap();
     let state = server.app(&home);
     let first = jobs::import_target(&state, SHARE_LINK, None).await.unwrap();
+    let first_post = state
+        .db
+        .with(|conn| crate::db::posts::get(conn, first.post_ids[0]))
+        .unwrap();
+    assert_eq!(
+        first_post.caption_url.unwrap(),
+        format!(
+            "https://www.rednote.com/explore/{GALLERY_ID}?xsec_token={SHARE_TOKEN}&xsec_source=app_share"
+        )
+    );
     let direct = format!(
         "https://www.xiaohongshu.com/user/profile/{AUTHOR}/{GALLERY_ID}?xsec_token=second-fixture"
     );
@@ -183,6 +193,7 @@ async fn gallery_import_preserves_order_and_identity_across_urls() {
         .unwrap();
     assert_eq!(post.source, "rednote");
     assert_eq!(post.source_id, GALLERY_ID);
+    assert_eq!(post.caption_url.as_deref(), Some(direct.as_str()));
     assert_eq!(post.title.as_deref(), Some("RedNote fixture"));
     assert_eq!(
         post.description.as_deref(),

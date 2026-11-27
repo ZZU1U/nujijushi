@@ -145,6 +145,7 @@ mod tests {
             source: "pixiv".into(),
             source_id: "1".into(),
             url: Some("https://example.com/1".into()),
+            caption_url: None,
             author: Some(Author {
                 id: 1,
                 source: "pixiv".into(),

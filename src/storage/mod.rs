@@ -425,6 +425,7 @@ pub mod tests_support {
             source: "pixiv".into(),
             source_id: "123456".into(),
             url: Some("https://www.pixiv.net/artworks/123456".into()),
+            caption_url: None,
             author: Some(Author {
                 id: 1,
                 source: "pixiv".into(),

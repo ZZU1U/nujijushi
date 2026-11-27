@@ -15,7 +15,7 @@
     scan(root, location) {
       const found = window.NJS.canonical.canonicalize(location.href);
       // "web" means we could not name the post — a pill there would be noise.
-      if (!found || found.source === "web") {
+      if (!found || found.source === "web" || found.source === "rednote") {
         window.NJS.hideFloatingClip();
         return [];
       }

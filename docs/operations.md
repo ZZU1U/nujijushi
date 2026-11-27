@@ -48,6 +48,29 @@ provide a public base URL with a path or the full public webhook URL.
 Paths carried inside admin JSON and form data, such as an action's `location`
 and a login form's `next`, are relative to the application root.
 
+### Check the running build
+
+`GET /healthz` is a public liveness endpoint. With a URL prefix, place that
+prefix before `/healthz`. The JSON includes the package version, the full Git
+commit ID in `revision`, and a `dirty` flag for local edits at build time. Git
+fields are `null` when the checkout metadata is unavailable. Build systems
+without a Git checkout can set `NUJIJUSHI_BUILD_REVISION` and
+`NUJIJUSHI_BUILD_DIRTY` at compile time. The response is marked `no-store` so
+each check identifies the currently running binary.
+
+### Admin API access
+
+The WebUI token from `[web] token` or `NUJIJUSHI_UI_TOKEN` can also authenticate
+the admin API. Send it with the `Authorization: Bearer` header over HTTPS or a
+local connection. For writes, first read `csrf` from `GET /api/v1/session`
+with the same authorization, then include it in the form body.
+
+To import a post, submit `POST /api/v1/import` with the URL in `targets` and
+optionally set `reuse_active=true` to receive the existing job ID if an operator
+import of that URL is already pending or running. To add a watch, submit
+`POST /api/v1/watches` with `url`, `name`, and optionally `initial_batch`
+(default 10). Include the configured base path before `/api/v1`.
+
 ## Cookies (only when a site needs them)
 
 Export cookies for the site in Netscape format (e.g. with the "Get cookies.txt"

@@ -126,8 +126,7 @@ impl Pixiv {
     }
 
     pub async fn artwork(&self, id: u64) -> Result<Artwork, Error> {
-        let path = format!("/ajax/illust/{id}");
-        let metadata = self.get(&path, &[], "artwork detail").await?;
+        let metadata = self.artwork_detail(id).await?;
         let detail: Detail = decode(metadata.clone(), "artwork detail")?;
         if detail.id != id {
             return Err(Error::InvalidResponse("artwork identity"));
@@ -148,7 +147,7 @@ impl Pixiv {
             }]
         } else {
             decode(
-                self.get(&format!("{path}/pages"), &[], "artwork pages")
+                self.get(&format!("/ajax/illust/{id}/pages"), &[], "artwork pages")
                     .await?,
                 "artwork pages",
             )?
@@ -189,6 +188,23 @@ impl Pixiv {
             pages: originals,
             metadata,
         })
+    }
+
+    pub async fn artwork_artist(&self, id: u64) -> Result<Artist, Error> {
+        let detail: ArtworkArtist = decode(self.artwork_detail(id).await?, "artwork author")?;
+        if detail.id != id {
+            return Err(Error::InvalidResponse("artwork identity"));
+        }
+        Ok(Artist {
+            id: detail.user_id,
+            name: detail.user_name,
+            account: detail.user_account,
+        })
+    }
+
+    async fn artwork_detail(&self, id: u64) -> Result<Value, Error> {
+        self.get(&format!("/ajax/illust/{id}"), &[], "artwork detail")
+            .await
     }
 
     pub async fn creator_index(&self, id: u64) -> Result<BTreeSet<u64>, Error> {
@@ -340,6 +356,17 @@ struct Envelope {
     error: bool,
     body: Option<Value>,
     message: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArtworkArtist {
+    #[serde(deserialize_with = "deserialize_id")]
+    id: u64,
+    #[serde(deserialize_with = "deserialize_id")]
+    user_id: u64,
+    user_name: String,
+    user_account: Option<String>,
 }
 
 #[derive(Deserialize)]

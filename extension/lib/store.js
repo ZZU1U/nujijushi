@@ -4,13 +4,12 @@
  *
  *   { v: 1,
  *     items: { "x:123": { url, source, label, page, addedAt, seq, copied } },
- *     settings: { autoClear: false, adapters: { x: true, pixiv: true, generic: true } } }
+ *     settings: { autoClear: false, adapters: { x: true, pixiv: true, rednote: true, generic: true } } }
  *
  * A map (not an array) so dedupe and toggle are O(1); `seq` keeps click order.
  *
- * Reads happen from any context. Writes are serialised by the service worker:
- * content scripts and the panel send messages (see background.js) so two clicks
- * from different contexts cannot lose an update.
+ * The panel can read the bin. Content scripts get a summary from the worker,
+ * which serializes writes from every context.
  */
 (function (root, factory) {
   const api = factory();
@@ -23,7 +22,7 @@
   const STORAGE_KEY = "njs.bin";
   const DEFAULT_SETTINGS = Object.freeze({
     autoClear: false,
-    adapters: Object.freeze({ x: true, pixiv: true, generic: true }),
+    adapters: Object.freeze({ x: true, pixiv: true, rednote: true, generic: true }),
   });
 
   function empty() {
@@ -79,11 +78,23 @@
     return state.items[link.key];
   }
 
+  function refreshRedNoteLink(item, link) {
+    if (item.url === link.url || !NJS.canonical.hasRedNoteToken(link)) return false;
+    item.url = link.url;
+    item.copied = false;
+    return true;
+  }
+
   async function add(link) {
     if (!link || !link.key) return { added: false, reason: "invalid", count: 0 };
     const state = await read();
     if (state.items[link.key]) {
-      return { added: false, reason: "duplicate", item: state.items[link.key], count: count(state) };
+      const item = state.items[link.key];
+      if (refreshRedNoteLink(item, link)) {
+        await write(state);
+        return { added: false, updated: true, item, count: count(state) };
+      }
+      return { added: false, reason: "duplicate", item, count: count(state) };
     }
     const item = insert(state, link);
     await write(state);
@@ -94,16 +105,18 @@
   async function addMany(links) {
     const incoming = (links || []).filter((link) => link && link.key);
     const state = await read();
-    const result = { added: [], duplicates: [], count: count(state) };
+    const result = { added: [], updated: [], duplicates: [], count: count(state) };
     for (const link of incoming) {
-      if (state.items[link.key]) {
-        result.duplicates.push(link.key);
+      const item = state.items[link.key];
+      if (item) {
+        const group = refreshRedNoteLink(item, link) ? result.updated : result.duplicates;
+        group.push(link.key);
         continue;
       }
       insert(state, link);
       result.added.push(link.key);
     }
-    if (result.added.length) await write(state);
+    if (result.added.length || result.updated.length) await write(state);
     result.count = count(state);
     return result;
   }
@@ -127,6 +140,14 @@
     insert(state, link);
     await write(state);
     return { added: true, count: count(state) };
+  }
+
+  async function recordImport(link) {
+    const state = await read();
+    const item = state.items[link.key] || insert(state, link);
+    refreshRedNoteLink(item, link);
+    item.copied = true;
+    await write(state);
   }
 
   async function markCopied(keys) {
@@ -191,6 +212,7 @@
     addMany,
     remove,
     toggle,
+    recordImport,
     markCopied,
     clearCopied,
     clearAll,

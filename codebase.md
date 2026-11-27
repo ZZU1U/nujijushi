@@ -38,7 +38,7 @@ pub struct AppState {
 See [.env.example](.env.example) for environment overrides. `AppState::open` creates
 the home layout, opens and migrates the DB, and builds the blob store and renderer.
 
-## Data model (SQLite, schema v24 via `PRAGMA user_version`)
+## Data model (SQLite, schema v25 via `PRAGMA user_version`)
 
 | migration | tables and views | purpose |
 |---|---|---|
@@ -60,6 +60,7 @@ the home layout, opens and migrates the DB, and builds the blob store and render
 | `0022_delivery_links.sql` | `sends` | snapshot Telegram destinations for links to confirmed deliveries |
 | `0023_daily_watches.sql` | `watched_sources` | record the start of the last check and backfill older watch activity |
 | `0024_pixiv_watch_state.sql` | `watched_pixiv_seen`, `watched_sources`, `watched_items` | native Pixiv watch baseline, seen artwork IDs, and pending artwork absence counts |
+| `0025_post_caption_url.sql` | `posts` | optional attribution URL for outgoing captions |
 
 Blob bytes live at `blobs/<aa>/<blake3>.<ext>` and thumbnails at
 `thumbs/<aa>/<blake3>.webp`. Identical files across posts are stored once. SQLite
@@ -241,7 +242,9 @@ job per target. The worker dispatches each job and records its progress. The JSO
 and `GET /api/v1/jobs/{id}/status` share `JobView`. React polls active jobs and
 refreshes the current data on completion. While a channel queue is visible,
 React polls `GET /api/v1/channels/{id}/queue/status` for a revision so sends from
-the scheduler or another tab appear. `GET /api/status` remains session-gated.
+the scheduler or another tab appear. `GET /api/status` remains admin-only.
+Public `GET /healthz` reports liveness and the version, Git revision, and dirty
+state captured at build time.
 
 The grid (`db::posts::card_select`) is one projection with three shared rules: nsfw
 (`Rating::nsfw_sql`), delivered (`db::queue::DELIVERED_STATES`) and how a submitter is named

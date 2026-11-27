@@ -75,7 +75,7 @@ pub struct PostFilter {
 
 const POST_COLUMNS: &str = "
     p.id, p.source, p.source_id, p.url, p.title, p.description, p.rating, p.posted_at,
-    p.imported_at, p.nsfw_override, p.state, p.notes,
+    p.imported_at, p.nsfw_override, p.state, p.notes, p.caption_url,
     a.id AS author_id, a.source AS author_source, a.source_id AS author_source_id,
     a.name AS author_name, a.handle AS author_handle, a.url AS author_url,
     a.blocked AS author_blocked";
@@ -100,6 +100,7 @@ fn post_from_row(row: &Row<'_>) -> rusqlite::Result<Post> {
         source: row.get("source")?,
         source_id: row.get("source_id")?,
         url: row.get("url")?,
+        caption_url: row.get("caption_url")?,
         author,
         title: row.get("title")?,
         description: row.get("description")?,
@@ -263,7 +264,8 @@ fn upsert_post(
                     description = CASE WHEN description_edited = 0
                         THEN COALESCE(?4, description) ELSE description END,
                     rating = ?5, posted_at = COALESCE(?6, posted_at), updated_at = ?7,
-                    raw_json = COALESCE(?8, raw_json), notes = COALESCE(?10, notes)
+                    raw_json = COALESCE(?8, raw_json), notes = COALESCE(?10, notes),
+                    caption_url = COALESCE(?11, caption_url)
                  WHERE id = ?9",
                 params![
                     np.url,
@@ -275,7 +277,8 @@ fn upsert_post(
                     fmt_ts(now),
                     np.raw_json,
                     id,
-                    np.notes
+                    np.notes,
+                    np.caption_url,
                 ],
             )?;
             id
@@ -283,8 +286,8 @@ fn upsert_post(
         None => {
             conn.execute(
                 "INSERT INTO posts (source, source_id, url, author_id, title, description, rating,
-                    posted_at, imported_at, updated_at, raw_json, notes)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10, ?11)",
+                    posted_at, imported_at, updated_at, raw_json, notes, caption_url)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10, ?11, ?12)",
                 params![
                     np.source,
                     np.source_id,
@@ -296,7 +299,8 @@ fn upsert_post(
                     np.posted_at.map(fmt_ts),
                     fmt_ts(now),
                     np.raw_json,
-                    np.notes
+                    np.notes,
+                    np.caption_url,
                 ],
             )?;
             conn.last_insert_rowid()
@@ -400,10 +404,33 @@ pub fn get(conn: &Connection, id: i64) -> Result<Post> {
         .optional()?
         .ok_or_else(|| Error::NotFound(format!("post {id}")))?;
 
+    if post.source == "rednote" && post.caption_url.is_none() {
+        post.caption_url = previous_rednote_caption_url(conn, id, &post.source_id)?;
+    }
     post.tags = tags::for_post(conn, id)?;
 
     post.media = media(conn, id)?;
     Ok(post)
+}
+
+fn previous_rednote_caption_url(
+    conn: &Connection,
+    id: i64,
+    source_id: &str,
+) -> Result<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT payload FROM jobs WHERE post_id = ?1 AND kind = 'import'
+         AND state = 'done' AND payload IS NOT NULL ORDER BY id DESC",
+    )?;
+    let targets = stmt.query_map([id], |row| row.get::<_, String>(0))?;
+    for target in targets {
+        if let Ok(url) = url::Url::parse(&target?)
+            && let Some(link) = nujijushi_sources::rednote::caption_url(url, source_id)
+        {
+            return Ok(Some(link));
+        }
+    }
+    Ok(None)
 }
 
 pub(super) fn media(conn: &Connection, id: i64) -> Result<Vec<MediaItem>> {
@@ -1078,5 +1105,27 @@ mod tests {
             "no submitter is not the same as a guest submitter"
         );
         assert_eq!(plain_card.submitter, None);
+    }
+
+    #[test]
+    fn existing_rednote_posts_recover_attribution_from_successful_imports() {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        db.with(|conn| {
+            let source_id = "674051740000000007027a15";
+            let mut post = NormalizedPost::new("rednote", source_id);
+            post.url = Some(format!("https://www.rednote.com/explore/{source_id}"));
+            let (id, _) = upsert(conn, &post, &[])?;
+            let link = format!(
+                "https://www.rednote.com/discovery/item/{source_id}?xsec_token=sample%3D&xsec_source=pc_feed"
+            );
+            let job_id = super::super::jobs::create(conn, "import", &link, 0)?;
+            super::super::jobs::attach_post(conn, job_id, id)?;
+            super::super::jobs::set_state(conn, job_id, "done", None)?;
+            let stored = get(conn, id)?;
+            assert_eq!(stored.url, post.url);
+            assert_eq!(stored.caption_url.as_deref(), Some(link.as_str()));
+            Ok(())
+        })
+        .unwrap();
     }
 }

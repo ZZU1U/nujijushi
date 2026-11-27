@@ -50,6 +50,17 @@ pub(super) async fn fetch(cfg: &Config, target: &str) -> Result<Option<Vec<Norma
     with_timeout(cfg, fetch_artwork(cfg, id)).await
 }
 
+pub(crate) async fn watch_artist(cfg: &Config, id: u64) -> Result<pixiv::Artist> {
+    with_timeout(cfg, async {
+        let (pixiv, _) = client(cfg)?;
+        pixiv
+            .artwork_artist(id)
+            .await
+            .map_err(|error| Error::other(error.to_string()))
+    })
+    .await
+}
+
 async fn fetch_artwork(cfg: &Config, id: u64) -> Result<Option<Vec<NormalizedPost>>> {
     let (pixiv, http) = client(cfg)?;
     let artwork = match pixiv.artwork(id).await {

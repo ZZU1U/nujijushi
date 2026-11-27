@@ -32,6 +32,36 @@ const cases = [
   ["https://www.pixiv.net/member_illust.php?illust_id=456", "pixiv:456", "https://www.pixiv.net/artworks/456", "pixiv", null],
   ["https://www.pixiv.net/i/456", "pixiv:456", "https://www.pixiv.net/artworks/456", "pixiv", null],
 
+  // --- RedNote: one note identity, with the original route and share values ---
+  [
+    "https://www.rednote.com/discovery/item/674051740000000007027A15?xsec_token=fixture%2Bvalue=&utm_source=demo&xsec_source=pc_feed#here",
+    "rednote:674051740000000007027a15",
+    "https://www.rednote.com/discovery/item/674051740000000007027A15?xsec_token=fixture%2Bvalue%3D&xsec_source=pc_feed",
+    "rednote",
+    null,
+  ],
+  [
+    "https://www.xiaohongshu.com/user/profile/5c31698d0000000007018a31/674051740000000007027a15/",
+    "rednote:674051740000000007027a15",
+    "https://www.xiaohongshu.com/user/profile/5c31698d0000000007018a31/674051740000000007027a15",
+    "rednote",
+    null,
+  ],
+  [
+    "https://rednote.com/en/discovery/item/674051740000000007027a15",
+    "rednote:674051740000000007027a15",
+    "https://rednote.com/en/discovery/item/674051740000000007027a15",
+    "rednote",
+    null,
+  ],
+  [
+    "https://xhslink.cn/a/Fixture?xsec_source=app_share",
+    "rednote-share:xhslink.cn/a/Fixture",
+    "https://xhslink.cn/a/Fixture?xsec_source=app_share",
+    "rednote",
+    null,
+  ],
+
   // --- boorus ---
   ["https://danbooru.donmai.us/posts/789?q=tag", "danbooru:789", "https://danbooru.donmai.us/posts/789", "danbooru", null],
   [
@@ -86,6 +116,11 @@ const rejects = [
   "chrome://bookmarks",
   "mailto:someone@example.com",
   "not-a-url",
+  "https://www.rednote.com/explore",
+  "https://www.rednote.com/explore/not-a-note",
+  "https://www.xiaohongshu.com/user/profile/5c31698d0000000007018a31",
+  "https://name@www.rednote.com/explore/674051740000000007027a15",
+  "https://xhslink.com/bad/path",
 ];
 
 test("canonical URLs, keys and sources", () => {

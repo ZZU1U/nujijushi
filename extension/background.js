@@ -1,16 +1,21 @@
 /* nujijushi clip — service worker.
  *
- * Single writer for the bin: content scripts and the panel read storage directly
- * but send their writes here, so a click during a panel action cannot drop an item.
- * Also owns the toolbar badge, the context menus and the keyboard commands.
- *
- * No network access anywhere in this extension — it only produces a newline list
- * that you paste into nujijushi's /import box.
+ * Owns the bin, authenticated admin requests, toolbar badge and shortcuts.
  */
-importScripts("lib/canonical.js", "lib/store.js");
+importScripts("lib/canonical.js", "lib/store.js", "lib/admin.js", "server.js");
 
 const store = NJS.store;
 const { canonicalize, splitUrls } = NJS.canonical;
+const admin = NJS.admin;
+const trustedStorage = chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
+const pendingImports = new Map();
+let writes = Promise.resolve();
+
+function serialize(write) {
+  const result = writes.then(write);
+  writes = result.catch(() => {});
+  return result;
+}
 
 const MENU = {
   page: "njs-clip-page",
@@ -33,7 +38,15 @@ chrome.runtime.onStartup.addListener(() => {
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && changes[store.STORAGE_KEY]) refreshBadge();
+  if (area !== "local") return;
+  if (changes[store.STORAGE_KEY]) refreshBadge();
+  if (changes[store.STORAGE_KEY] || changes[CONNECTION_KEY]) {
+    chrome.tabs.query({}).then((tabs) => {
+      for (const tab of tabs) {
+        if (tab.id != null) chrome.tabs.sendMessage(tab.id, { type: "refresh-bin" }).catch(() => {});
+      }
+    }).catch(() => {});
+  }
 });
 
 function installMenus() {
@@ -125,8 +138,8 @@ async function clipOne(raw) {
     flashBadge("×");
     return { added: false, reason: "invalid" };
   }
-  const result = await store.add(link);
-  flashBadge(result.added ? "✓" : "=");
+  const result = await serialize(() => store.add(link));
+  flashBadge(result.added || result.updated ? "✓" : "=");
   return result;
 }
 
@@ -136,42 +149,131 @@ async function clipText(text) {
     flashBadge("×");
     return { added: 0, duplicates: 0 };
   }
-  const result = await store.addMany(links);
-  flashBadge(result.added.length ? "✓" : "=");
-  return { added: result.added.length, duplicates: result.duplicates.length, count: result.count };
+  const result = await serialize(() => store.addMany(links));
+  flashBadge(result.added.length || result.updated.length ? "✓" : "=");
+  return { added: result.added.length, updated: result.updated.length, duplicates: result.duplicates.length, count: result.count };
 }
 
 // -------------------------------------------------------------------- messages
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  handle(message).then(sendResponse, (error) => sendResponse({ error: String((error && error.message) || error) }));
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  handle(message, sender).then(sendResponse, (error) => sendResponse({ error: String((error && error.message) || error) }));
   return true; // async response
 });
 
-async function handle(message) {
-  switch (message && message.type) {
-    case "toggle": {
-      const result = await store.toggle(message.link);
-      flashBadge(result.added ? "✓" : "−");
-      return result;
+async function clipPost(raw, page) {
+  const link = admin.pagePost(raw, page);
+  if (!link) throw new Error("Could not recognize this post URL.");
+  const config = await connection();
+  if (!config.direct) {
+    const result = await serialize(() => store.toggle(link));
+    flashBadge(result.added ? "✓" : "−");
+    return result;
+  }
+  const existing = pendingImports.get(link.url);
+  if (existing) return existing;
+  const submit = (async () => {
+    const result = await adminPost(config, "import", { targets: link.url, reuse_active: "true" });
+    if (result?.job_ids?.length !== 1 || !Number.isSafeInteger(result.job_ids[0])) {
+      throw new Error("The server did not acknowledge the import. Try again.");
+    }
+    await serialize(() => store.recordImport(link));
+    flashBadge("✓");
+    return { added: true, jobId: result.job_ids[0] };
+  })();
+  pendingImports.set(link.url, submit);
+  try {
+    return await submit;
+  } finally {
+    pendingImports.delete(link.url);
+  }
+}
+
+async function activeWatch() {
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  let page;
+  if (tab?.id != null) {
+    page = await chrome.tabs.sendMessage(tab.id, { type: "watch-page" }, { frameId: 0 }).catch(() => null);
+  }
+  const candidate = admin.watchCandidate(page?.url || tab?.url, page?.permalink);
+  if (!candidate) throw new Error("Open a supported artist page or post, or paste the profile URL.");
+  const result = await adminPost(await connection(), "watches/resolve", { url: candidate.url });
+  return { url: result.url, name: result.name || candidate.name };
+}
+
+async function handleOptions(message) {
+  switch (message?.type) {
+    case "connection":
+      return publicConnection(await connection());
+    case "save-connection":
+      return serialize(async () => {
+        const config = await connectionFromInput(message);
+        await saveConnection(config);
+        return publicConnection(config);
+      });
+    case "test-connection":
+      await adminSession(await connectionFromInput(message));
+      return { connected: true };
+    case "direct-mode":
+      return serialize(async () => {
+        const config = await connection();
+        if (!config.token && message.enabled) throw new Error("Save a server and admin token first.");
+        config.direct = message.enabled === true;
+        await saveConnection(config);
+        return publicConnection(config);
+      });
+    case "settings":
+      return serialize(() => store.updateSettings(message.patch || {}));
+    default:
+      return { error: "unknown message" };
+  }
+}
+
+async function handle(message, sender) {
+  await trustedStorage;
+  const type = message?.type;
+  if (sender.id !== chrome.runtime.id) throw new Error("Unrecognized extension sender.");
+  if (sender.tab && sender.frameId === 0 && admin.postPage(sender.url)) {
+    if (type === "clip-post") return clipPost(message.url, sender.url);
+    if (type === "clip-state") {
+      const [state, config] = await Promise.all([store.read(), connection()]);
+      return { keys: Object.keys(state.items), adapters: state.settings.adapters, direct: config.direct };
+    }
+  }
+  if (sender.url === chrome.runtime.getURL("options.html")) return handleOptions(message);
+  if (sender.url !== chrome.runtime.getURL("panel.html")) throw new Error("Unsupported request.");
+  switch (type) {
+    case "active-watch":
+      return activeWatch();
+    case "add-watch": {
+      const result = await adminPost(await connection(), "watches", {
+        url: message.url,
+        name: message.name,
+        initial_batch: message.initialBatch,
+      });
+      return { message: result.message };
     }
     case "clip-many": {
       const links = (message.urls || []).map((url) => canonicalize(url)).filter(Boolean);
       const skipped = (message.urls || []).length - links.length;
-      const result = await store.addMany(links);
-      flashBadge(result.added.length ? "✓" : "=");
-      return { added: result.added.length, duplicates: result.duplicates.length, skipped, count: result.count };
+      const result = await serialize(() => store.addMany(links));
+      flashBadge(result.added.length || result.updated.length ? "✓" : "=");
+      return {
+        added: result.added.length,
+        updated: result.updated.length,
+        duplicates: result.duplicates.length,
+        skipped,
+        count: result.count,
+      };
     }
     case "remove":
-      return store.remove(message.key);
+      return serialize(() => store.remove(message.key));
     case "mark-copied":
-      return store.markCopied(message.keys || []);
+      return serialize(() => store.markCopied(message.keys || []));
     case "clear-copied":
-      return store.clearCopied();
+      return serialize(() => store.clearCopied());
     case "clear-all":
-      return store.clearAll();
-    case "settings":
-      return store.updateSettings(message.patch || {});
+      return serialize(() => store.clearAll());
     default:
       return { error: "unknown message" };
   }

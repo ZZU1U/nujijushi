@@ -17,3 +17,6 @@ cookies/
 /webui/dist/
 /webui/test-results/
 /webui/playwright-report/
+
+# local GitHub Pages site draft
+/site/

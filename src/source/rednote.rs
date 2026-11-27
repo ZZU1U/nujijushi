@@ -168,6 +168,7 @@ fn normalize_note(note: Note, files: Vec<PostFile>) -> NormalizedPost {
         }
     });
     post.url = Some(note.url);
+    post.caption_url = note.caption_url;
     post.files = files;
     post
 }

@@ -7,6 +7,7 @@ use super::{Error, map_error_code};
 pub struct Note {
     pub id: String,
     pub url: String,
+    pub caption_url: Option<String>,
     pub title: Option<String>,
     pub description: Option<String>,
     pub author: Option<Author>,
@@ -87,6 +88,7 @@ pub(super) fn parse(html: &str, id: &str, url: String) -> Result<Note, Error> {
         .map(str::to_owned)
         .collect();
     Ok(Note {
+        caption_url: None,
         id: id.to_owned(),
         url,
         title: field(note, "title").map(str::to_owned),

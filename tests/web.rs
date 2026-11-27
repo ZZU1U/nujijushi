@@ -155,6 +155,16 @@ impl Harness {
             .unwrap()
     }
 
+    fn bearer(&self, path: &str, credential: &str, form: Option<&str>) -> Request<Body> {
+        Request::builder()
+            .method(if form.is_some() { "POST" } else { "GET" })
+            .uri(format!("{}{path}", self.state.cfg.web_base_path))
+            .header(header::AUTHORIZATION, format!("Bearer {credential}"))
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(form.unwrap_or_default().to_owned()))
+            .unwrap()
+    }
+
     async fn send(&self, request: Request<Body>) -> axum::response::Response {
         let response = routes::router(self.ws.clone())
             .oneshot(request)
@@ -251,6 +261,144 @@ async fn body_text(response: axum::response::Response) -> String {
         .await
         .unwrap();
     String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+#[tokio::test]
+async fn health_reports_the_running_build_without_a_session() {
+    for prefix in ["", "/archive"] {
+        let h = harness_at(prefix);
+        let response = h
+            .send(
+                Request::get(format!("{prefix}/healthz"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(
+            Harness::json(&response),
+            &serde_json::json!({
+                "status": "ok",
+                "version": nujijushi::VERSION,
+                "revision": option_env!("NUJIJUSHI_REVISION"),
+                "dirty": option_env!("NUJIJUSHI_DIRTY").map(|value| value == "true"),
+            })
+        );
+    }
+}
+
+#[tokio::test]
+async fn bearer_auth_reuses_an_active_import_and_preserves_the_rednote_url() {
+    const URL: &str = "https://www.rednote.com/discovery/item/674051740000000007027a15?xsec_token=sample%2Bvalue%3D&xsec_source=pc_feed";
+    for prefix in ["", "/archive"] {
+        let h = harness_at(prefix);
+        let path = "/api/v1/session";
+        assert_eq!(
+            h.send(h.bearer(path, "wrong-token", None)).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let mut invalid = h.bearer(path, "wrong-token", None);
+        invalid.headers_mut().insert(
+            header::COOKIE,
+            format!("{}={}", auth::COOKIE, h.ws.session)
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(h.send(invalid).await.status(), StatusCode::UNAUTHORIZED);
+        let with_proxy_auth = Request::get(format!("{prefix}{path}"))
+            .header(header::AUTHORIZATION, "Basic fixture")
+            .header(header::COOKIE, format!("{}={}", auth::COOKIE, h.ws.session))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(h.send(with_proxy_auth).await.status(), StatusCode::OK);
+        let session = h.send(h.bearer(path, UI_TOKEN, None)).await;
+        assert_eq!(session.status(), StatusCode::OK);
+        assert_eq!(Harness::json(&session)["csrf"], h.ws.csrf);
+        assert!(session.headers().get(header::SET_COOKIE).is_none());
+        assert_eq!(
+            h.send(h.bearer("/api/status", UI_TOKEN, None))
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            h.send(h.bearer("/media/abc", UI_TOKEN, None))
+                .await
+                .status(),
+            StatusCode::SEE_OTHER
+        );
+
+        let form = |csrf: &str| {
+            url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("csrf", csrf)
+                .append_pair("targets", URL)
+                .append_pair("reuse_active", "true")
+                .finish()
+        };
+        let path = "/api/v1/import";
+        let blocked = h.send(h.bearer(path, UI_TOKEN, Some(&form("wrong")))).await;
+        assert_eq!(blocked.status(), StatusCode::BAD_REQUEST);
+        assert!(h.jobs().await.is_empty());
+        let guest_job = nujijushi::jobs::create_job_for(&h.state, URL, Some(42))
+            .await
+            .unwrap();
+        let form = form(&h.ws.csrf);
+        let (first, retry) = tokio::join!(
+            h.send(h.bearer(path, UI_TOKEN, Some(&form))),
+            h.send(h.bearer(path, UI_TOKEN, Some(&form)))
+        );
+        assert_eq!(first.status(), StatusCode::ACCEPTED);
+        assert_eq!(retry.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            Harness::json(&first)["job_ids"],
+            Harness::json(&retry)["job_ids"]
+        );
+        let jobs = h.jobs().await;
+        assert_eq!(jobs.len(), 2);
+        let job_id = Harness::json(&first)["job_ids"][0].as_i64().unwrap();
+        assert_ne!(job_id, guest_job);
+        let job = jobs.iter().find(|job| job.id == job_id).unwrap();
+        assert_eq!(job.payload.as_deref(), Some(URL));
+        assert_eq!(job.submitted_by, None);
+    }
+}
+
+#[tokio::test]
+async fn extension_watch_resolution_and_creation_use_the_admin_watch_rules() {
+    let h = harness_at("/archive");
+    let profile = "https://twitter.com/Example";
+    let form = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("csrf", &h.ws.csrf)
+        .append_pair("url", profile)
+        .finish();
+    let result = h
+        .send(h.bearer("/api/v1/watches/resolve", UI_TOKEN, Some(&form)))
+        .await;
+    assert_eq!(result.status(), StatusCode::OK);
+    let resolved = Harness::json(&result);
+    let url = resolved["url"].as_str().unwrap();
+    assert_eq!(url, "https://x.com/example/media");
+    for name in ["Example", "Second name"] {
+        let form = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("csrf", &h.ws.csrf)
+            .append_pair("name", name)
+            .append_pair("url", url)
+            .finish();
+        let created = h
+            .send(h.bearer("/api/v1/watches", UI_TOKEN, Some(&form)))
+            .await;
+        assert_eq!(created.status(), StatusCode::OK);
+    }
+    let watches = h
+        .state
+        .db
+        .with(|conn| nujijushi::db::watches::list(conn))
+        .unwrap();
+    assert_eq!(watches.len(), 1);
+    assert_eq!(watches[0].name, "Example");
+    assert_eq!(watches[0].initial_batch, 10);
+    assert!(h.jobs().await.is_empty());
 }
 
 #[tokio::test]

@@ -6,7 +6,7 @@ adapter, or the manifest. Reload the extension **and** the page between runs —
 content scripts are not injected into already-open tabs.
 
 ```bash
-node --test extension/lib/canonical.test.mjs extension/lib/store.test.mjs
+node --test extension/lib/*.test.mjs
 cargo test            # the app must stay untouched
 ```
 
@@ -93,9 +93,34 @@ https://x.com/Artist/status/777%0Ahttps://x.com/Artist/status/888%0A
 
 ## 9. settings
 
-1. Turn off *X / Twitter post buttons*, reload an X tab: no buttons on posts, no pill.
-2. Turn it back on, reload: buttons return, and previously clipped posts still show
+1. Click the side panel gear. Confirm it opens the full options tab.
+2. Turn off *X / Twitter*, reload an X tab: no buttons on posts, no pill.
+3. Turn it back on, reload: buttons return, and previously clipped posts still show
    the check mark immediately (state comes from storage, not from the DOM).
+
+## RedNote
+
+1. Open a feed on RedNote or Xiaohongshu. Click a note card's corner button and
+   verify it clips the note without opening it. Open the note and verify the
+   floating button shows the same clipped state.
+2. Paste a fresh share URL for that note and copy the list. Confirm it is still a
+   single entry and the copied link includes `xsec_token` and `xsec_source` when present.
+3. Add an `xhslink.com` or `xhslink.cn` app share URL through the panel and verify
+   that the copied URL opens the note.
+
+## Direct import and watches
+
+1. Open the extension settings and confirm direct import starts off. Click a post
+   button and confirm that the link appears as uncopied and no import job is made.
+2. Save and test a connection, then enable direct import. Click a different post
+   and confirm that only that post produces a job. Its panel row should look copied
+   after acknowledgment. A click triggered with `button.click()` in page DevTools
+   should produce no job.
+3. Repeat with a failed connection. Confirm the page shows an error, the list is
+   intact, and you can retry the click when the server is reachable.
+4. Use **Watch artist** from a profile and from an open post. Check the proposed
+   profile URL before adding the watch. Add it again and confirm the server only
+   has one watch for that feed.
 
 ## 10. resilience
 

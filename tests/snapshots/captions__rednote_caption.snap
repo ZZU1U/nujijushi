@@ -1,0 +1,7 @@
+---
+source: tests/captions.rs
+expression: "render(&channel, &post, false, false)"
+---
+<b>Nightjar</b> (nightjar_)
+
+via <a href="https://www.rednote.com/discovery/item/674051740000000007027a15?xsec_token=sample%3D&amp;xsec_source=pc_feed">RedNote</a>
