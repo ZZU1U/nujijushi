@@ -305,6 +305,60 @@ async fn transient_failures_keep_the_item_queued() {
 }
 
 #[tokio::test]
+async fn ambiguous_send_failures_become_unknown_and_are_not_retried() {
+    // A timeout after Telegram accepted the request must not be re-sent: the
+    // item is unconfirmed, and only an operator can resolve it.
+    let mock = MockTransport::with_script(vec![Some(TgError::Uncertain(
+        "timeout after the request was sent".into(),
+    ))]);
+    let harness = harness(mock);
+    let channel = harness.add_channel(NsfwPolicy::Allow).await;
+    let post_id = harness
+        .add_post("1", 1, false, &["original"], Rating::Sfw)
+        .await;
+    harness.queue(post_id, &channel).await;
+
+    let result = publish_channel(&harness.state, &channel, false, true).await;
+    assert!(result.is_err(), "an unconfirmed send is not a success");
+    assert_eq!(
+        harness.mock.send_calls(),
+        1,
+        "the ambiguous send must be attempted exactly once"
+    );
+    assert_eq!(
+        harness.mock.send_count(),
+        0,
+        "no message id was confirmed, so nothing is recorded as sent"
+    );
+    let states = harness.queue_state(&channel).await;
+    assert_eq!(
+        states[0].0,
+        QueueState::Unknown,
+        "an unconfirmed send is surfaced for review"
+    );
+    assert!(
+        states[0]
+            .1
+            .as_deref()
+            .unwrap()
+            .contains("send state unknown"),
+        "got {:?}",
+        states[0].1
+    );
+
+    let before = harness.mock.send_calls();
+    let again = publish_channel(&harness.state, &channel, false, true)
+        .await
+        .unwrap();
+    assert!(matches!(again, PublishOutcome::EmptyQueue), "got {again:?}");
+    assert_eq!(
+        harness.mock.send_calls(),
+        before,
+        "a later pass must never pick the unconfirmed item up again"
+    );
+}
+
+#[tokio::test]
 async fn permanent_failures_mark_the_item_failed_and_pause_after_three() {
     let mock = MockTransport::with_failures(vec![
         TgError::Permanent("chat not found".into()),

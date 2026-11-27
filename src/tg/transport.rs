@@ -78,6 +78,10 @@ impl ChatTarget<'_> {
 pub enum TgError {
     #[error("rate limited (retry after {retry_after}s)")]
     RateLimited { retry_after: u64 },
+    /// The request may have reached Telegram, so retrying could duplicate it.
+    /// Only send calls produce this; read calls stay `Transient`.
+    #[error("send state unknown: {0}")]
+    Uncertain(String),
     #[error("transient failure: {0}")]
     Transient(String),
     #[error("permanent failure: {0}")]
@@ -223,6 +227,13 @@ mod tests {
         let err = TgError::classify("error sending request: connection reset");
         assert!(matches!(err, TgError::Transient(_)));
         assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn an_unknown_send_is_never_retried() {
+        let err = TgError::Uncertain("timeout after the request was sent".into());
+        assert!(!err.is_retryable(), "retrying could duplicate the post");
+        assert_eq!(err.retry_after_secs(), None);
     }
 
     #[test]

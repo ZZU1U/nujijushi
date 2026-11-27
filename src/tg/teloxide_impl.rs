@@ -83,7 +83,7 @@ impl BotTransport {
                     .disable_notification(opts.silent)
                     .protect_content(opts.protect)
                     .await
-                    .map_err(map_error)
+                    .map_err(map_send_error)
             }
             MediaKind::Video => {
                 let mut req = self.bot.send_video(recip, InputFile::file(&item.path));
@@ -98,7 +98,7 @@ impl BotTransport {
                     .disable_notification(opts.silent)
                     .protect_content(opts.protect)
                     .await
-                    .map_err(map_error)
+                    .map_err(map_send_error)
             }
         }
     }
@@ -263,6 +263,18 @@ fn map_error(err: RequestError) -> TgError {
     }
 }
 
+/// A send that fails at the network/IO level may already have been accepted by
+/// Telegram. Retrying it could duplicate the message, so it is *uncertain*, not
+/// transient. Read-only calls keep the retryable `map_error` classification.
+fn map_send_error(err: RequestError) -> TgError {
+    match &err {
+        RequestError::Network(_) | RequestError::Io(_) | RequestError::InvalidJson { .. } => {
+            TgError::Uncertain(err.to_string())
+        }
+        _ => map_error(err),
+    }
+}
+
 #[async_trait]
 impl Transport for BotTransport {
     fn label(&self) -> String {
@@ -348,7 +360,7 @@ impl Transport for BotTransport {
             .disable_notification(opts.silent)
             .protect_content(opts.protect)
             .await
-            .map_err(map_error)?;
+            .map_err(map_send_error)?;
         let chat = messages.first().map(|message| &message.chat);
         Ok(SentBatch {
             chat_id: chat.map(|chat| chat.id.0),

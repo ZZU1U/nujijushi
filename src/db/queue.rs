@@ -316,6 +316,23 @@ pub fn mark_partial(
     Ok(())
 }
 
+/// A send that may have reached Telegram but returned no confirmation. The row
+/// becomes `unknown` so it is never re-sent automatically.
+pub fn mark_uncertain(
+    conn: &Connection,
+    id: i64,
+    error: &str,
+    chat: Option<i64>,
+    username: Option<&str>,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE queue SET state = 'unknown', last_error = ?1, tg_message_ids = NULL,
+            delivery_chat_id = ?2, delivery_username = ?3, lease_token = NULL, lease_at = NULL WHERE id = ?4",
+        params![error, chat, username, id],
+    )?;
+    Ok(())
+}
+
 pub fn mark_sent(
     conn: &Connection,
     id: i64,

@@ -713,6 +713,22 @@ async fn execute_plan(
                 )
             })
             .await?;
+    } else if matches!(&error, TgError::Uncertain(_)) {
+        // The request may have reached Telegram, but we have no IDs to prove it.
+        // Treat it exactly like an interrupted send: surface it for manual review.
+        let detail = error.to_string();
+        state
+            .db
+            .call(move |conn| {
+                queue_db::mark_uncertain(
+                    conn,
+                    queue_id,
+                    &detail,
+                    outcome.chat_id,
+                    outcome.chat_username.as_deref(),
+                )
+            })
+            .await?;
     } else if error.is_retryable() {
         crate::queue::lease::release(state, queue_id).await?;
     } else {
