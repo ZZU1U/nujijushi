@@ -87,6 +87,19 @@ fn photo(file_id: &str) -> BotFile {
     }
 }
 
+/// Directories left behind by the forwarded-media importer.
+fn forwarding_staging_dirs(harness: &Harness) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(harness.state.cfg.staging_dir())
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("tg-"))
+        })
+        .collect()
+}
+
 impl Harness {
     async fn send(&self, message: BotMessage) {
         let bot = Bot::new(&self.state).await.unwrap();
@@ -847,7 +860,36 @@ async fn forwarded_posts_are_imported_inline() {
             Some("Source Channel")
         );
         assert!(full.tags.contains(&"landscape".to_string()));
+        assert!(
+            forwarding_staging_dirs(&harness).is_empty(),
+            "forwarded media must not stay in staging"
+        );
     }
+}
+
+#[tokio::test]
+async fn a_failed_forward_download_leaves_no_staging_directory() {
+    let harness = harness(MockTransport::new(), OPEN_CONFIG);
+    harness
+        .mock
+        .fail_download("fw2", TgError::Transient("download failed".into()));
+    let mut message = private_message(GUEST, 1, "");
+    message.text = None;
+    message.files = vec![photo("fw1"), photo("fw2")];
+    message.forward_from_chat_id = Some(-100555);
+    message.forward_from_chat_title = Some("Source Channel".into());
+
+    let result = nujijushi::source::telegram::from_forwarded(
+        &harness.state,
+        harness.mock.as_ref(),
+        &message,
+    )
+    .await;
+    assert!(result.is_err(), "the failing download must surface");
+    assert!(
+        forwarding_staging_dirs(&harness).is_empty(),
+        "files downloaded before the failure must be removed too"
+    );
 }
 
 #[tokio::test]

@@ -178,9 +178,19 @@ impl Access {
     }
 
     pub async fn used_today(&self, state: &AppState, tg_id: i64, kind: QuotaKind) -> Result<u32> {
+        let kind = kind.as_str().to_string();
         state
             .db
-            .call(move |conn| usage::count(conn, tg_id, kind.as_str()))
+            .call(move |conn| usage::count(conn, tg_id, &kind))
+            .await
+    }
+
+    /// Hand a quota unit back when the paid action could not be started.
+    pub async fn refund(&self, state: &AppState, tg_id: i64, kind: QuotaKind) -> Result<()> {
+        let kind = kind.as_str().to_string();
+        state
+            .db
+            .call(move |conn| usage::refund(conn, tg_id, &kind))
             .await
     }
 }

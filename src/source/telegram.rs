@@ -239,10 +239,14 @@ async fn download_files(
             continue;
         }
         let dest = dir.join(format!("{}.{}", staged.len(), file.extension()));
-        let written = transport
-            .download_file(&file.file_id, &dest)
-            .await
-            .map_err(|err| Error::other(err.to_string()))?;
+        let written = match transport.download_file(&file.file_id, &dest).await {
+            Ok(written) => written,
+            Err(err) => {
+                // Do not leak the files downloaded before the failing one.
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(Error::other(err.to_string()));
+            }
+        };
         if written == 0 {
             continue;
         }

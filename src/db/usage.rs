@@ -42,6 +42,17 @@ pub fn count(conn: &Connection, tg_id: i64, kind: &str) -> Result<u32> {
     Ok(current as u32)
 }
 
+/// Give one unit back when the action it paid for could not start.
+pub fn refund(conn: &Connection, tg_id: i64, kind: &str) -> Result<()> {
+    let day = today();
+    conn.execute(
+        "UPDATE usage SET count = MAX(count - 1, 0)
+         WHERE tg_id = ?1 AND day = ?2 AND kind = ?3",
+        params![tg_id, day, kind],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -60,5 +71,15 @@ mod tests {
         for _ in 0..5 {
             assert!(db.with(|conn| bump(conn, 3, "import", 0)).unwrap());
         }
+        // a refund hands exactly one unit back
+        db.with(|conn| refund(conn, 1, "import")).unwrap();
+        assert_eq!(db.with(|conn| count(conn, 1, "import")).unwrap(), 1);
+        db.with(|conn| refund(conn, 1, "import")).unwrap();
+        db.with(|conn| refund(conn, 1, "import")).unwrap();
+        assert_eq!(
+            db.with(|conn| count(conn, 1, "import")).unwrap(),
+            0,
+            "refunds never go below zero"
+        );
     }
 }

@@ -326,7 +326,13 @@ impl<'a> Bot<'a> {
                 hit_quota = true;
                 break;
             }
-            crate::jobs::create_job_for(self.state, target, Some(user.id)).await?;
+            if let Err(err) = crate::jobs::create_job_for(self.state, target, Some(user.id)).await {
+                let _ = self
+                    .access
+                    .refund(self.state, user.id, QuotaKind::Import)
+                    .await;
+                return Err(err);
+            }
             queued.push(target.clone());
         }
         if queued.is_empty() {
@@ -379,13 +385,6 @@ impl<'a> Bot<'a> {
         if !self.allow(message, role, Perm::Import).await? {
             return Ok(());
         }
-        if !self
-            .access
-            .spend(self.state, role, user.id, QuotaKind::Import)
-            .await?
-        {
-            return self.reply(message, "Daily import limit reached.").await;
-        }
         if let (Some(chat), Some(id)) = (
             message.forward_from_chat_id,
             message.forward_from_message_id,
@@ -408,7 +407,27 @@ impl<'a> Bot<'a> {
                 .reply(message, "That message has no media I can download.")
                 .await;
         }
-        let outcome = crate::jobs::import_posts(self.state, posts, Some(user.id), None).await?;
+        // The media was staged only for this import; clean it up on every path.
+        let files: Vec<_> = posts.iter().flat_map(|post| post.files.clone()).collect();
+        // Charge only for a forward that actually produced downloadable media.
+        let spent = match self
+            .access
+            .spend(self.state, role, user.id, QuotaKind::Import)
+            .await
+        {
+            Ok(spent) => spent,
+            Err(err) => {
+                telegram::cleanup(&files);
+                return Err(err);
+            }
+        };
+        if !spent {
+            telegram::cleanup(&files);
+            return self.reply(message, "Daily import limit reached.").await;
+        }
+        let result = crate::jobs::import_posts(self.state, posts, Some(user.id), None).await;
+        telegram::cleanup(&files);
+        let outcome = result?;
         let summary = reply::esc(&outcome.summary());
         let text = if outcome.suggestions.is_empty() {
             format!("Archived {summary}.")
@@ -648,13 +667,6 @@ impl<'a> Bot<'a> {
         let Some(channel) = self.find_channel(alias).await? else {
             return self.reply(message, "No such channel.").await;
         };
-        if !self
-            .access
-            .spend(self.state, role, user.id, QuotaKind::Queue)
-            .await?
-        {
-            return self.reply(message, "Daily queue limit reached.").await;
-        }
 
         let approved_only = self.state.cfg.guest_reputation && !role.is_admin();
         let post_id = match post_id {
@@ -673,8 +685,33 @@ impl<'a> Bot<'a> {
                 .await;
         };
 
+        // Only spend once there is a concrete post to queue.
+        if !self
+            .access
+            .spend(self.state, role, user.id, QuotaKind::Queue)
+            .await?
+        {
+            return self.reply(message, "Daily queue limit reached.").await;
+        }
         let outcome =
-            crate::queue::enqueue_as(self.state, &channel, post_id, 0, role.is_admin()).await?;
+            match crate::queue::enqueue_as(self.state, &channel, post_id, 0, role.is_admin()).await
+            {
+                Ok(outcome) => outcome,
+                Err(err) => {
+                    let _ = self
+                        .access
+                        .refund(self.state, user.id, QuotaKind::Queue)
+                        .await;
+                    return Err(err);
+                }
+            };
+        if !matches!(&outcome, crate::queue::EnqueueOutcome::Queued(_)) {
+            // Already queued or vetoed: the action did not add anything.
+            let _ = self
+                .access
+                .refund(self.state, user.id, QuotaKind::Queue)
+                .await;
+        }
         self.reply(
             message,
             &format!(
