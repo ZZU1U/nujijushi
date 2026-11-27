@@ -549,6 +549,18 @@ fn card_from_row(row: &Row<'_>) -> rusqlite::Result<PostCard> {
     })
 }
 
+/// Escape SQL `LIKE` metacharacters so a search for `a_b` or `50%` is literal.
+fn escape_like(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if matches!(ch, '\\' | '%' | '_') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 /// `(WHERE …, bound values)` for a card filter; every clause only touches `posts p`,
 /// so `count_cards` can reuse it without the joins.
 fn filter_sql(filter: &PostFilter) -> (String, Vec<Value>) {
@@ -609,8 +621,11 @@ fn filter_sql(filter: &PostFilter) -> (String, Vec<Value>) {
     if let Some(search) = &filter.search
         && !search.trim().is_empty()
     {
-        clauses.push("(p.title LIKE ? OR p.description LIKE ? OR p.source_id = ?)".into());
-        let like = format!("%{}%", search.trim());
+        clauses.push(
+            "(p.title LIKE ? ESCAPE '\\' OR p.description LIKE ? ESCAPE '\\' OR p.source_id = ?)"
+                .into(),
+        );
+        let like = format!("%{}%", escape_like(search.trim()));
         values.push(Value::Text(like.clone()));
         values.push(Value::Text(like));
         values.push(Value::Text(search.trim().to_string()));
@@ -915,6 +930,35 @@ mod tests {
         let (sql, values) = filter_sql(&tagged);
         assert!(sql.contains("FROM visible_post_tag_links"), "{sql}");
         assert_eq!(values.len(), 1);
+    }
+
+    #[test]
+    fn search_treats_like_wildcards_literally() {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        db.with(|conn| {
+            for (id, title) in [("1", "axb"), ("2", "a_b"), ("3", "50x"), ("4", "50%")] {
+                let mut post = NormalizedPost::new("pixiv", id);
+                post.title = Some(title.into());
+                upsert(conn, &post, &[])?;
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        let find = |search: &str| {
+            let filter = PostFilter {
+                search: Some(search.into()),
+                ..Default::default()
+            };
+            db.with(|conn| cards(conn, &filter)).unwrap()
+        };
+        let underscore = find("a_b");
+        assert_eq!(underscore.len(), 1, "underscore is not a wildcard");
+        assert_eq!(underscore[0].source_id, "2");
+
+        let percent = find("50%");
+        assert_eq!(percent.len(), 1, "percent is not a wildcard");
+        assert_eq!(percent[0].source_id, "4");
     }
 
     /// The grid's "not rejected" default is one SQL clause, and an explicit state
