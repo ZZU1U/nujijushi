@@ -1607,9 +1607,7 @@ async fn channel_create(
 ) -> WebResult<Response> {
     check_csrf(&ws, &form.csrf)?;
     let channel = channel_from_form(Channel::new("", ""), &form)?;
-    if let Some(template) = &channel.template {
-        ws.app.renderer.validate_template(template)?;
-    }
+    ws.app.renderer.validate_channel(&channel)?;
     verify_destination(&ws.app, &channel.tg_id).await?;
     let to_insert = channel;
     let id = ws
@@ -1700,9 +1698,7 @@ async fn channel_update(
     let existing = app.db.call(move |conn| channel_db::get(conn, id)).await?;
     let mut channel = channel_from_form(existing.clone(), &form)?;
     channel.id = id;
-    if let Some(template) = &channel.template {
-        app.renderer.validate_template(template)?;
-    }
+    app.renderer.validate_channel(&channel)?;
     if existing.tg_id != channel.tg_id {
         verify_destination(app, &channel.tg_id).await?;
     }

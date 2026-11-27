@@ -65,9 +65,29 @@ impl Renderer {
     ) -> Result<RenderedCaption> {
         let source = match channel.template.as_deref() {
             Some(inline) if !inline.trim().is_empty() => inline.to_string(),
-            _ => self.template_source(&channel.template_name)?,
+            _ => match self.template_source(&channel.template_name) {
+                Ok(source) => source,
+                Err(err) => {
+                    // A bad name must not take the channel out of service. New
+                    // writes are validated, so this only heals legacy rows.
+                    tracing::warn!(
+                        channel = channel.id,
+                        template = %channel.template_name,
+                        "unknown caption template; using the default: {err}"
+                    );
+                    self.template_source("default")?
+                }
+            },
         };
         self.render_source(&source, ctx, channel.silent)
+    }
+
+    /// Validate everything a channel needs to render export/publish captions.
+    pub fn validate_channel(&self, channel: &crate::model::Channel) -> Result<()> {
+        match channel.template.as_deref() {
+            Some(inline) if !inline.trim().is_empty() => self.validate_template(inline),
+            _ => self.template_source(&channel.template_name).map(|_| ()),
+        }
     }
 
     /// Render an arbitrary template body (used by the live preview in the web UI).
@@ -168,5 +188,23 @@ mod tests {
                 .contains("author.label")
         );
         assert!(renderer.template_source("nope").is_err());
+    }
+
+    #[test]
+    fn an_unknown_template_name_is_rejected_but_still_renders() {
+        let renderer = Renderer::new().unwrap();
+        let mut channel = crate::model::Channel::new("preview", "@preview");
+        channel.template_name = "does-not-exist".into();
+        assert!(
+            renderer.validate_channel(&channel).is_err(),
+            "new writes must reject an unknown name"
+        );
+        let rendered = renderer
+            .render(&channel, &caption::sample_context())
+            .unwrap();
+        assert!(
+            !rendered.text.is_empty(),
+            "legacy rows fall back to the default template instead of breaking"
+        );
     }
 }

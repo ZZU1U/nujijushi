@@ -2025,11 +2025,7 @@ async fn cmd_channel(state: &AppState, cmd: ChannelCmd) -> Result<()> {
                 }
             }
             opts.apply(&mut channel)?;
-            if channel.template.is_some() {
-                state
-                    .renderer
-                    .validate_template(&channel.template.clone().unwrap())?;
-            }
+            state.renderer.validate_channel(&channel)?;
             let to_insert = channel.clone();
             let id = state
                 .db
@@ -2072,9 +2068,7 @@ async fn cmd_channel(state: &AppState, cmd: ChannelCmd) -> Result<()> {
         ChannelCmd::Edit { channel, opts } => {
             let mut existing = resolve_channel(state, &channel).await?;
             opts.apply(&mut existing)?;
-            if let Some(template) = &existing.template {
-                state.renderer.validate_template(template)?;
-            }
+            state.renderer.validate_channel(&existing)?;
             let to_update = existing.clone();
             state
                 .db

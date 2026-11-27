@@ -4597,6 +4597,60 @@ async fn web_channels_require_a_verified_broadcast_destination_and_posting_right
 }
 
 #[tokio::test]
+async fn channel_template_names_are_validated_before_saving() {
+    use nujijushi::db::channels;
+
+    let h = harness();
+    let form = |csrf: &str, target: &str, template: &str| {
+        url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("csrf", csrf)
+            .append_pair("title", "Template test")
+            .append_pair("alias", "template-test")
+            .append_pair("tg_id", target)
+            .append_pair("template_name", template)
+            .finish()
+    };
+
+    let response = h
+        .send(h.post(
+            "/api/v1/channels",
+            &form(&h.ws.csrf, "@template_test", "does-not-exist"),
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        body_text(response)
+            .await
+            .contains("unknown caption template"),
+        "the API must name the bad template"
+    );
+    assert!(
+        h.state
+            .db
+            .with(|conn| channels::list(conn))
+            .unwrap()
+            .is_empty(),
+        "nothing is saved when the template is invalid"
+    );
+
+    let stored = h.add_channel().await;
+    let edit = format!("/api/v1/channels/{}/edit", stored.id);
+    let response = h
+        .send(h.post(&edit, &form(&h.ws.csrf, &stored.tg_id, "does-not-exist")))
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        h.state
+            .db
+            .with(|conn| channels::get(conn, stored.id))
+            .unwrap()
+            .template_name,
+        "default",
+        "the stored channel is untouched"
+    );
+}
+
+#[tokio::test]
 async fn queue_status_tracks_worker_and_scheduled_deliveries_for_its_channel() {
     use nujijushi::db::{jobs, queue};
     use nujijushi::jobs::worker::JobWorker;
