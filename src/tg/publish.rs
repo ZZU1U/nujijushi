@@ -1,5 +1,7 @@
 //! The publish pipeline: policy -> caption -> message plan -> lease -> send -> record.
 
+use std::collections::HashSet;
+
 use chrono::{Duration, Utc};
 use rand::Rng;
 
@@ -293,6 +295,9 @@ pub async fn publish_channel(
     let mut candidates: Vec<(crate::model::QueueItem, Post, Decision, String)> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
     let mut saw_queued = false;
+    // The page query is repeated until the slot is full; without this, a small
+    // queue would be added several times and bias the weighted selection.
+    let mut seen: HashSet<i64> = HashSet::new();
 
     // Fill the *slot*, not just the first page: a veto marks the row `skipped`,
     // which removes it from the queued set, so the next pass sees fresh rows
@@ -311,6 +316,9 @@ pub async fn publish_channel(
         saw_queued = true;
         let mut progressed = false;
         for item in page {
+            if !seen.insert(item.id) {
+                continue;
+            }
             let post_id = item.post_id;
             let (post, revision) = match state
                 .db
