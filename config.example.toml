@@ -29,6 +29,9 @@ ffmpeg = "ffmpeg"
 timeout_secs = 1800
 # Parallel imports (web UI / worker).
 max_concurrent = 2
+# Create a Telegram-safe JPEG derivative when an imported still image exceeds the
+# 10 MB / 10,000 px / 20:1 photo limits. The archive keeps the original.
+auto_fit_telegram = false
 # When the bot cannot read a t.me post, scrape its public embed page instead
 # (single image, reduced resolution, marked "public embed (degraded)").
 public_telegram_fallback = true

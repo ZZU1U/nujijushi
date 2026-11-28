@@ -180,6 +180,15 @@ Set `guest_reputation = true` under `[bot]` to start counting new guest suggesti
 
 With scoring enabled, guests need admin approval before they can queue a post and admins finalize scored reviews. Disabling the setting pauses scores and DMs and retains balances. Enabling it does not award points for old reviews.
 
+### Telegram photo fitting
+
+Telegram rejects a photo above 10 MB, with width plus height over 10,000 px, or
+with an aspect ratio beyond 20:1. Set `auto_fit_telegram = true` under `[import]`
+to create a JPEG derivative during import when a still image exceeds those
+limits. The original blob stays in the archive, so the post gallery can undo the
+compression and `export --with-media` still contains the full original. Videos
+and animated images are not transcoded.
+
 ### Polling or webhook
 
 By default, nujijushi uses long polling (`getUpdates`) over an outbound connection. Use webhook mode if your host can receive HTTPS from Telegram on port 443, 80, 88, or 8443. Behind CGNAT or a router that cannot forward those ports, keep `mode = "polling"`. Polling supports `[proxy]`.

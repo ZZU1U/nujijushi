@@ -24,6 +24,8 @@ pub struct ImportOutcome {
     pub skipped: Vec<(String, String)>,
     pub suggestions: Vec<Suggestion>,
     pub gallery_edits_reset: usize,
+    /// Still images auto-fitted for Telegram during this import.
+    pub fitted: usize,
 }
 
 impl ImportOutcome {
@@ -39,6 +41,8 @@ impl ImportOutcome {
                 plural(self.gallery_edits_reset, "post")
             )
         });
+        let fitted = (self.fitted > 0)
+            .then(|| format!("{} fitted for Telegram", plural(self.fitted, "image")));
         if !self.suggestions.is_empty() {
             let mut lines = Vec::new();
             for suggestion in &self.suggestions {
@@ -49,6 +53,9 @@ impl ImportOutcome {
             }
             if !self.skipped.is_empty() {
                 lines.push(format!("{} skipped", self.skipped.len()));
+            }
+            if let Some(note) = &fitted {
+                lines.push(note.clone());
             }
             lines.extend(gallery_edits_reset);
             return lines.join("\n");
@@ -71,6 +78,9 @@ impl ImportOutcome {
             out.push_str(&format!(" · {} skipped", self.skipped.len()));
         }
         if let Some(note) = gallery_edits_reset {
+            out.push_str(&format!(" · {note}"));
+        }
+        if let Some(note) = fitted {
             out.push_str(&format!(" · {note}"));
         }
         out
@@ -212,6 +222,8 @@ pub async fn import_posts(
     for (index, post) in posts.iter().enumerate() {
         match store_post(state, post, submitted_by, false).await {
             Ok(stored) => {
+                let auto_fit = state.cfg.auto_fit_telegram && stored.suggestion.is_none();
+                let stored_id = stored.post_id;
                 outcome.post_ids.extend(stored.post_id);
                 if stored.suggestion.is_none() || stored.created {
                     outcome.files += post.files.len();
@@ -224,6 +236,14 @@ pub async fn import_posts(
                 }
                 outcome.suggestions.extend(stored.suggestion);
                 outcome.gallery_edits_reset += usize::from(stored.gallery_edits_reset);
+                if auto_fit && let Some(id) = stored_id {
+                    match media_merge::auto_fit(state, id).await {
+                        Ok(fitted) => outcome.fitted += fitted,
+                        Err(err) => {
+                            tracing::warn!(post = id, "auto-fit for Telegram failed: {err}")
+                        }
+                    }
+                }
             }
             Err(err) => outcome
                 .skipped
@@ -824,6 +844,7 @@ mod tests {
                 .collect(),
             suggestions: Vec::new(),
             gallery_edits_reset: 0,
+            fitted: 0,
         }
     }
 

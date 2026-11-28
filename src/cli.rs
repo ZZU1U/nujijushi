@@ -982,6 +982,18 @@ async fn cmd_doctor(cfg: Config, strict: bool, offline: bool) -> Result<()> {
 
     checks.push(tool_check("gallery-dl", &cfg.gallery_dl, &["--version"]).await);
     checks.push(tool_check("ffmpeg", &cfg.ffmpeg, &["-version"]).await);
+    checks.push(Check {
+        level: Level::Ok,
+        label: "auto-fit photos".into(),
+        detail: if cfg.auto_fit_telegram {
+            format!(
+                "on (JPEG derivatives up to {} bytes, originals kept)",
+                crate::media::compress::photo_limit(cfg.max_upload_bytes)
+            )
+        } else {
+            "off ([import] auto_fit_telegram = false)".into()
+        },
+    });
     let (level, detail) = match cfg.pixiv_backend {
         crate::config::PixivBackend::GalleryDl => (Level::Ok, "gallery-dl".into()),
         crate::config::PixivBackend::Native => match crate::source::pixiv::session_cookie(&cfg) {

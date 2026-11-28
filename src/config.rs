@@ -41,6 +41,8 @@ pub struct Config {
     pub gallery_dl: String,
     pub pixiv_backend: PixivBackend,
     pub twitter_backend: TwitterBackend,
+    /// Create a Telegram-safe JPEG derivative when an imported photo exceeds the limits.
+    pub auto_fit_telegram: bool,
     #[cfg(test)]
     pub(crate) pixiv_test_origin: Option<url::Url>,
     #[cfg(test)]
@@ -238,6 +240,7 @@ struct ImportSection {
     timeout_secs: Option<u64>,
     max_concurrent: Option<usize>,
     public_telegram_fallback: Option<bool>,
+    auto_fit_telegram: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -431,6 +434,7 @@ impl Config {
                 .unwrap_or_else(|| "gallery-dl".to_string()),
             pixiv_backend: file.import.pixiv_backend,
             twitter_backend: file.import.twitter_backend,
+            auto_fit_telegram: file.import.auto_fit_telegram.unwrap_or(false),
             #[cfg(test)]
             pixiv_test_origin: None,
             #[cfg(test)]
@@ -554,6 +558,8 @@ twitter_backend = "gallery-dl"  # "native" for signed-in individual X posts
 ffmpeg = "ffmpeg"
 timeout_secs = {timeout}
 max_concurrent = 2
+# Create a Telegram-safe JPEG derivative when an imported photo exceeds the photo limits.
+auto_fit_telegram = false
 
 [tag_suggestions]
 # Start a local FoidFinder server before enabling this.
@@ -868,6 +874,24 @@ mod tests {
             !Config::load_from_home(dir.path().to_path_buf())
                 .unwrap()
                 .secure_cookies
+        );
+    }
+
+    #[test]
+    fn auto_fit_telegram_is_opt_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        std::fs::write(&file, "[import]\nauto_fit_telegram = true\n").unwrap();
+        assert!(
+            Config::load_from_home(dir.path().to_path_buf())
+                .unwrap()
+                .auto_fit_telegram
+        );
+        std::fs::write(&file, "[import]\n").unwrap();
+        assert!(
+            !Config::load_from_home(dir.path().to_path_buf())
+                .unwrap()
+                .auto_fit_telegram
         );
     }
 

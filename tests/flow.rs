@@ -642,6 +642,64 @@ async fn failed_alert_is_handled_once_and_other_admins_still_get_it() {
 }
 
 #[tokio::test]
+async fn auto_fit_stores_a_telegram_safe_derivative_and_keeps_working() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config.toml"),
+        "[import]\nauto_fit_telegram = true\n[limits]\nmax_upload_bytes = 2000\n",
+    )
+    .unwrap();
+    let cfg = Config::load_from_home(dir.path().to_path_buf()).unwrap();
+    let state = AppState::open(cfg, None).unwrap();
+
+    let folder = dir.path().join("fit");
+    std::fs::create_dir_all(&folder).unwrap();
+    // Incompressible pixels: this PNG is far above the 2 KB test limit.
+    let mut seed = 1u64;
+    let mut image = image::RgbImage::new(128, 128);
+    for pixel in image.pixels_mut() {
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        *pixel = image::Rgb([(seed >> 33) as u8, (seed >> 41) as u8, (seed >> 49) as u8]);
+    }
+    image.save(folder.join("noise.png")).unwrap();
+    std::fs::write(
+        folder.join("post.json"),
+        serde_json::json!({"id": "fit-1", "artist": "Auto Fit"}).to_string(),
+    )
+    .unwrap();
+
+    let outcome = nujijushi::jobs::import_target(&state, folder.to_str().unwrap(), None)
+        .await
+        .unwrap();
+    assert!(outcome.fitted >= 1, "summary: {}", outcome.summary());
+    assert!(outcome.summary().contains("fitted for Telegram"));
+
+    let post_id = outcome.post_ids[0];
+    let post = state
+        .db
+        .call(move |conn| nujijushi::db::media_merges::outgoing_post(conn, post_id))
+        .await
+        .unwrap();
+    let limit = nujijushi::media::compress::photo_limit(2000);
+    assert!(
+        post.media
+            .iter()
+            .all(|media| media.is_video || media.bytes <= limit as i64),
+        "outgoing media must fit Telegram: {:?}",
+        post.media
+            .iter()
+            .map(|media| media.bytes)
+            .collect::<Vec<_>>()
+    );
+    let compressed = state
+        .db
+        .call(move |conn| nujijushi::db::media_merges::compressed_positions(conn, post_id))
+        .await
+        .unwrap();
+    assert!(!compressed.is_empty(), "a compression row must be stored");
+}
+
+#[tokio::test]
 async fn import_from_disk_then_publish() {
     let harness = harness(MockTransport::new());
     let channel = harness.add_channel(NsfwPolicy::Allow).await;

@@ -210,6 +210,87 @@ async fn compress_all(
     })
 }
 
+/// Fit imported still images for Telegram, keeping the originals. Returns the
+/// number of derivatives actually stored.
+pub(super) async fn auto_fit(state: &AppState, post_id: i64) -> Result<usize> {
+    let limit = state.cfg.max_upload_bytes;
+    let photo_limit = crate::media::compress::photo_limit(limit);
+    let (version, inputs, needed) = state
+        .db
+        .call(move |conn| {
+            let post = crate::db::posts::get(conn, post_id)?;
+            let version = media_merges::edit_version(conn, post_id, &post.media)?;
+            let inputs = media_merges::batch_compression_input(conn, post_id, &version)?;
+            if inputs.len() != post.media.len() {
+                return Err(Error::invalid("Invalid gallery layout"));
+            }
+            let needed = post
+                .media
+                .iter()
+                .map(|media| {
+                    !media.is_video
+                        && (media.bytes.max(0) as u64 > photo_limit
+                            || media
+                                .width
+                                .zip(media.height)
+                                .is_some_and(|(width, height)| {
+                                    crate::media::compress::geometry_error(width, height).is_some()
+                                }))
+                })
+                .collect::<Vec<_>>();
+            Ok((version, inputs, needed))
+        })
+        .await?;
+    if !needed.iter().any(|needed| *needed) {
+        return Ok(0);
+    }
+
+    let storage = state.storage_read().await?;
+    let store = state.blobs.clone();
+    let db = state.db.clone();
+    let dir = state
+        .cfg
+        .staging_dir()
+        .join(format!("auto-fit-{}", uuid::Uuid::new_v4()));
+    let settings = Compression::new(85, true)?;
+    tokio::task::spawn_blocking(move || {
+        let _storage = storage;
+        std::fs::create_dir(&dir)?;
+        let staged = StagedRenditions(dir);
+        let mut outputs = Vec::with_capacity(inputs.len());
+        for (index, input) in inputs.into_iter().enumerate() {
+            if !needed[index] {
+                outputs.push(None);
+                continue;
+            }
+            let Some(input) = input else {
+                outputs.push(None);
+                continue;
+            };
+            let path = store.path_for(&input.blob_hash, &input.ext);
+            let Some(jpeg) = crate::media::compress::compress_still(&path, settings, limit)? else {
+                outputs.push(None);
+                continue;
+            };
+            let (jpeg, thumb) = with_thumbnail(jpeg)?;
+            let position = index + 1;
+            let path = staged.0.join(format!("{position}.jpg"));
+            let thumb_path = staged.0.join(format!("{position}.webp"));
+            std::fs::write(&path, jpeg)?;
+            std::fs::write(&thumb_path, thumb)?;
+            outputs.push(Some((path, thumb_path)));
+        }
+        db.with(|conn| {
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let saved =
+                media_merges::apply_batch_compression(&tx, &store, post_id, &version, &outputs)?;
+            tx.commit()?;
+            Ok(saved)
+        })
+    })
+    .await?
+}
+
 fn with_thumbnail(bytes: Vec<u8>) -> Result<(Vec<u8>, Vec<u8>)> {
     let thumbnail = crate::blob::encode_thumbnail(&bytes, 512)?
         .ok_or_else(|| Error::other("Could not generate a thumbnail for the edited image"))?;

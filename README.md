@@ -25,6 +25,10 @@ NUJIJUSHI_REQUIRE_WEBUI=1 cargo install --path . --locked
 
 Install `gallery-dl` for gallery-site imports and `ffmpeg` if you want video thumbnails. Importing a folder of images only needs nujijushi.
 
+Set `auto_fit_telegram = true` under `[import]` to create a Telegram-safe JPEG
+derivative automatically when an imported still image exceeds the photo upload
+limits. The original stays in the archive for undo and full backups.
+
 To try native Pixiv artwork imports and creator watches, set this in `config.toml`:
 
 ```toml

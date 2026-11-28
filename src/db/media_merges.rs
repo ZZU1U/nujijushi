@@ -787,12 +787,30 @@ pub(crate) fn finish_batch_compression(
 ) -> Result<String> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     verify_running(&tx, job_id)?;
-    let media = posts::media(&tx, post_id)?;
-    verify_gallery(&tx, post_id, &media, version)?;
+    let saved = apply_batch_compression(&tx, store, post_id, version, outputs)?;
+    let total = outputs.len();
+    let message = format!("{saved} compressed · {} skipped", total - saved);
+    jobs::progress(&tx, job_id, total as i64, total as i64)?;
+    jobs::set_state(&tx, job_id, "done", Some(&message))?;
+    tx.commit()?;
+    Ok(message)
+}
+
+/// Apply staged JPEG derivatives to the outgoing gallery. Callers either own a
+/// running compression job or are the import job's auto-fit pass.
+pub(crate) fn apply_batch_compression(
+    conn: &Connection,
+    store: &BlobStore,
+    post_id: i64,
+    version: &str,
+    outputs: &[Option<(std::path::PathBuf, std::path::PathBuf)>],
+) -> Result<usize> {
+    let media = posts::media(conn, post_id)?;
+    verify_gallery(conn, post_id, &media, version)?;
     if outputs.len() != media.len() {
         return Err(Error::invalid("The gallery changed. Reload the post."));
     }
-    if super::queue::for_post(&tx, post_id)?
+    if super::queue::for_post(conn, post_id)?
         .iter()
         .any(|(_, _, state)| *state == crate::model::QueueState::Sending)
     {
@@ -812,11 +830,11 @@ pub(crate) fn finish_batch_compression(
             continue;
         }
         if retained.is_empty() {
-            retained = retain_sources(&tx, post_id, &media)?;
-            slots = layout(&tx, post_id, &retained, &merges(&tx, post_id)?)?;
+            retained = retain_sources(conn, post_id, &media)?;
+            slots = layout(conn, post_id, &retained, &merges(conn, post_id)?)?;
         }
         let output = register(
-            &tx,
+            conn,
             store,
             Rendition {
                 bytes: &bytes,
@@ -825,7 +843,7 @@ pub(crate) fn finish_batch_compression(
             },
         )?;
         save_compression(
-            &tx,
+            conn,
             post_id,
             slots[index][0],
             &output.hash,
@@ -835,14 +853,9 @@ pub(crate) fn finish_batch_compression(
         saved += 1;
     }
     if saved > 0 {
-        rebuild(&tx, post_id, &retained)?;
+        rebuild(conn, post_id, &retained)?;
     }
-    let total = outputs.len();
-    let message = format!("{saved} compressed · {} skipped", total - saved);
-    jobs::progress(&tx, job_id, total as i64, total as i64)?;
-    jobs::set_state(&tx, job_id, "done", Some(&message))?;
-    tx.commit()?;
-    Ok(message)
+    Ok(saved)
 }
 
 pub fn finish_compression(
