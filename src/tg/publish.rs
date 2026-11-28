@@ -827,20 +827,20 @@ async fn plan_ahead(
             .await?
     };
     let rules = state.db.call(|conn| tag_db::TagRules::load(conn)).await?;
+    let post_ids: Vec<i64> = items.iter().map(|item| item.post_id).collect();
+    let posts = state
+        .db
+        .call(move |conn| crate::db::media_merges::outgoing_posts(conn, &post_ids))
+        .await?;
 
     let mut candidates: Vec<(crate::model::QueueItem, Post, Decision)> = Vec::new();
     for item in items {
-        let post_id = item.post_id;
-        let Ok(post) = state
-            .db
-            .call(move |conn| crate::db::media_merges::outgoing_post(conn, post_id))
-            .await
-        else {
+        let Some(post) = posts.get(&item.post_id) else {
             continue;
         };
-        let decision = nsfw::evaluate(&post, channel, &rules);
+        let decision = nsfw::evaluate(post, channel, &rules);
         if decision.is_allowed() {
-            candidates.push((item, post, decision));
+            candidates.push((item, post.clone(), decision));
         }
     }
 

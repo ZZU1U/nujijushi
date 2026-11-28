@@ -413,6 +413,75 @@ pub fn get(conn: &Connection, id: i64) -> Result<Post> {
     Ok(post)
 }
 
+/// Load several full posts in three queries (posts+author, tags, media).
+///
+/// The queue projection used to call `get` once per candidate; that is one
+/// `Db::call` round trip each. This keeps the same row mapping in one snapshot.
+pub(crate) fn get_many(
+    conn: &Connection,
+    ids: &[i64],
+) -> Result<std::collections::HashMap<i64, Post>> {
+    use std::collections::HashMap;
+
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let slots = vec!["?"; ids.len()].join(", ");
+    let sql = format!(
+        "SELECT {POST_COLUMNS} FROM posts p LEFT JOIN authors a ON a.id = p.author_id
+         WHERE p.id IN ({slots})"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(ids), post_from_row)?;
+    let mut posts = HashMap::with_capacity(ids.len());
+    for row in rows {
+        let post = row?;
+        posts.insert(post.id, post);
+    }
+    if posts.is_empty() {
+        return Ok(posts);
+    }
+
+    let mut stmt = conn.prepare(&format!(
+        "SELECT pt.post_id, t.name FROM active_post_tags pt JOIN tags t ON t.id = pt.tag_id
+         WHERE pt.post_id IN ({slots}) ORDER BY pt.post_id, pt.position"
+    ))?;
+    let rows = stmt.query_map(params_from_iter(ids), |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (id, name) = row?;
+        if let Some(post) = posts.get_mut(&id) {
+            post.tags.push(name);
+        }
+    }
+
+    let mut stmt = conn.prepare(&format!(
+        "SELECT m.id, m.post_id, m.ordinal, m.blob_hash, m.mime, m.width, m.height, m.is_video,
+                m.poster_hash, m.sensitive, m.meta_json, b.ext, b.bytes
+         FROM media m JOIN blobs b ON b.hash = m.blob_hash
+         WHERE m.post_id IN ({slots}) ORDER BY m.post_id, m.ordinal"
+    ))?;
+    let rows = stmt.query_map(params_from_iter(ids), |row| {
+        Ok((row.get::<_, i64>("post_id")?, media_from_row(row)?))
+    })?;
+    for row in rows {
+        let (id, item) = row?;
+        if let Some(post) = posts.get_mut(&id) {
+            post.media.push(item);
+        }
+    }
+
+    // RedNote links can lose their caption URL on re-import; `get` recovers it
+    // from the successful import job, so bulk loading must too.
+    for post in posts.values_mut() {
+        if post.source == "rednote" && post.caption_url.is_none() {
+            post.caption_url = previous_rednote_caption_url(conn, post.id, &post.source_id)?;
+        }
+    }
+    Ok(posts)
+}
+
 fn previous_rednote_caption_url(
     conn: &Connection,
     id: i64,
@@ -987,6 +1056,45 @@ mod tests {
         // `?state=all` and the CLI drop the flag entirely
         let (sql, _) = filter_sql(&PostFilter::default());
         assert_eq!(sql, "", "{sql}");
+    }
+
+    #[test]
+    fn bulk_post_load_matches_single_post_get() {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        let ids = db
+            .with(|conn| {
+                let mut ids = Vec::new();
+                for (source_id, tag) in [("1", "alpha"), ("2", "beta")] {
+                    let mut post = NormalizedPost::new("pixiv", source_id);
+                    post.tags = vec![tag.into()];
+                    let media = vec![NewMedia {
+                        blob_hash: format!("hash-{source_id}"),
+                        ext: "png".into(),
+                        mime: None,
+                        width: Some(8),
+                        height: Some(8),
+                        bytes: 7,
+                        is_video: false,
+                        poster_hash: None,
+                        sensitive: false,
+                        meta_json: None,
+                    }];
+                    let (id, _) = upsert(conn, &post, &media)?;
+                    ids.push(id);
+                }
+                Ok(ids)
+            })
+            .unwrap();
+
+        db.with(|conn| {
+            let many = get_many(conn, &ids)?;
+            assert_eq!(many.len(), 2);
+            for id in &ids {
+                assert_eq!(many[id], get(conn, *id)?, "post {id}");
+            }
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]

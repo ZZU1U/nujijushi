@@ -477,6 +477,20 @@ pub fn outgoing_post(conn: &Connection, post_id: i64) -> Result<crate::model::Po
     outgoing(conn, posts::get(conn, post_id)?)
 }
 
+/// The outgoing gallery for several posts, loaded and filtered in one snapshot.
+pub fn outgoing_posts(
+    conn: &Connection,
+    ids: &[i64],
+) -> Result<std::collections::HashMap<i64, crate::model::Post>> {
+    let posts = posts::get_many(conn, ids)?;
+    let mut out = std::collections::HashMap::with_capacity(posts.len());
+    for post in posts.into_values() {
+        let id = post.id;
+        out.insert(id, outgoing(conn, post)?);
+    }
+    Ok(out)
+}
+
 pub fn publish_snapshot(
     conn: &mut Connection,
     post_id: i64,
