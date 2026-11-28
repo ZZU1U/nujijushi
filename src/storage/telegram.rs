@@ -3,8 +3,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
-use super::{MirrorPost, Sink};
+use super::{MirrorPost, Progress, Sink};
 use crate::error::{Error, Result};
 use crate::media::plan_messages;
 use crate::render::truncate::{CAPTION_LIMIT, fit_caption};
@@ -45,6 +46,26 @@ impl TelegramSink {
     }
 }
 
+/// Progress of a chunked backup. `ids` has one message id per completed group;
+/// `plan` changes when the outgoing files do, in which case a retry starts over.
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct Checkpoint {
+    plan: String,
+    groups: usize,
+    ids: Vec<String>,
+}
+
+fn plan_key(item: &MirrorPost) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for file in &item.files {
+        hasher.update(file.relative.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(&file.bytes.to_le_bytes());
+        hasher.update(if file.is_video { b"1" } else { b"0" });
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
 #[async_trait]
 impl Sink for TelegramSink {
     fn name(&self) -> &'static str {
@@ -56,12 +77,37 @@ impl Sink for TelegramSink {
     }
 
     async fn put(&self, item: &MirrorPost) -> Result<String> {
+        let mut ignore = |_: &str| {};
+        self.put_resumable(item, None, &mut ignore).await
+    }
+
+    async fn put_resumable(
+        &self,
+        item: &MirrorPost,
+        resume_from: Option<&str>,
+        progress: Progress<'_>,
+    ) -> Result<String> {
         let flags: Vec<bool> = item.files.iter().map(|file| file.is_video).collect();
         let groups = plan_messages(&flags);
-        let caption = self.caption(item);
-        let mut ids: Vec<String> = Vec::new();
+        let plan = plan_key(item);
+        let mut checkpoint = resume_from
+            .and_then(|raw| serde_json::from_str::<Checkpoint>(raw).ok())
+            .filter(|checkpoint| {
+                checkpoint.plan == plan
+                    && checkpoint.groups <= groups.len()
+                    && checkpoint.groups == checkpoint.ids.len()
+            })
+            .unwrap_or_default();
+        if checkpoint.plan.is_empty() {
+            checkpoint.plan = plan;
+        }
 
+        let caption = self.caption(item);
+        let mut ids = checkpoint.ids;
         for (index, group) in groups.iter().enumerate() {
+            if index < checkpoint.groups {
+                continue;
+            }
             let media: Vec<OutgoingMedia> = group
                 .indices
                 .iter()
@@ -88,22 +134,23 @@ impl Sink for TelegramSink {
             {
                 Ok(batch) => batch,
                 // Nothing went out, or the first attempt is unconfirmed: the
-                // normal failed/unknown handling is right for those.
+                // normal failed/blocked handling is right for those.
                 Err(err) if ids.is_empty() && !matches!(err, TgError::Uncertain(_)) => {
                     return Err(Error::Telegram(err.to_string()));
                 }
                 Err(err) => {
-                    // Some groups are already in the backup channel. Retrying the
-                    // whole post would duplicate them, so block it for review.
                     return Err(Error::Partial(format!(
-                        "sent {} message(s) before failing (ids: {}): {err}. \
+                        "sent {} group(s) before failing (ids: {}): {err}. \
                          Verify the backup channel before retrying.",
-                        ids.len(),
+                        checkpoint.groups,
                         ids.join(",")
                     )));
                 }
             };
             ids.extend(batch.message_ids.iter().map(|id| id.to_string()));
+            checkpoint.groups = index + 1;
+            checkpoint.ids = ids.clone();
+            progress(&serde_json::to_string(&checkpoint)?);
         }
         if ids.is_empty() {
             return Err(Error::other("nothing was sent to the backup channel"));
@@ -188,5 +235,42 @@ mod tests {
         assert!(matches!(error, Error::Partial(_)), "got {error:?}");
         assert!(error.to_string().contains("Verify the backup channel"));
         assert_eq!(mock.send_count(), 1, "the first group went out");
+    }
+
+    #[tokio::test]
+    async fn a_retry_resumes_after_the_last_confirmed_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let mock = Arc::new(MockTransport::with_script(vec![
+            None,
+            Some(TgError::Permanent("file is too big".into())),
+        ]));
+        let sink = TelegramSink::new(mock.clone(), "-100123".into());
+        let item = sample_mirror(&dir);
+
+        let mut saved = String::new();
+        {
+            let mut progress = |value: &str| saved = value.to_string();
+            let error = sink
+                .put_resumable(&item, None, &mut progress)
+                .await
+                .unwrap_err();
+            assert!(matches!(error, Error::Partial(_)), "got {error:?}");
+        }
+        assert_eq!(mock.send_count(), 1, "the first group went out");
+        assert!(saved.contains("\"groups\":1"), "checkpoint: {saved}");
+
+        mock.append_script(vec![None]);
+        let resume = saved.clone();
+        let mut progress = |value: &str| saved = value.to_string();
+        let external = sink
+            .put_resumable(&item, Some(&resume), &mut progress)
+            .await
+            .unwrap();
+        assert_eq!(mock.send_count(), 2, "only the failed group is resent");
+        assert_eq!(
+            external.split(',').count(),
+            2,
+            "both group ids are reported"
+        );
     }
 }

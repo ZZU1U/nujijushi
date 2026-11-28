@@ -318,7 +318,10 @@ It builds the shared payload with `storage::plan` — `<source>/<artist>/<source
 a `post.json` sidecar — and calls `Sink::put`, recording `done` with an external ID or
 `failed` with the reason. Rows for a sink that is no longer enabled become `blocked`
 instead of being retried. Local and WebDAV sinks write the layout. The Telegram sink
-sends media groups or individual items to a backup channel and records message IDs.
+sends media groups or individual items to a backup channel and records per-group
+message ids after each chunk, so a crash or retry resumes at the next group instead
+of duplicating the ones already delivered. `post.json` carries `"schema": 1` so
+future layout changes stay detectable.
 New mirror uploads use the current outgoing gallery, as does `export --share`.
 Completed mirrors keep the media from their original upload. `export --with-media`
 backs up the database and full blob store, including source images used for undo.

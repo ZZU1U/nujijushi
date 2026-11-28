@@ -80,7 +80,8 @@ pub(crate) fn pending_at(
 ) -> Result<Vec<Mirror>> {
     let sql = format!(
         "SELECT {COLUMNS} FROM mirrors
-         WHERE (state = 'pending' OR (state = 'failed' AND updated_at <= ?2))
+         WHERE (state = 'pending'
+                OR (state = 'failed' AND julianday(updated_at) <= julianday(?2)))
            AND (?1 IS NULL OR sink = ?1)
          ORDER BY CASE state WHEN 'pending' THEN 0 ELSE 1 END, post_id, sink
          LIMIT {}",
@@ -124,6 +125,22 @@ pub fn mark_blocked(conn: &Connection, post_id: i64, sink: &str, error: &str) ->
         "UPDATE mirrors SET state = 'blocked', error = ?1, updated_at = ?2
          WHERE post_id = ?3 AND sink = ?4 AND state != 'done'",
         params![error, fmt_ts(Utc::now()), post_id, sink],
+    )?;
+    Ok(())
+}
+
+/// Persist a sink's checkpoint after a chunk was accepted, so a retry can
+/// resume instead of re-sending everything.
+pub fn set_external_id(
+    conn: &Connection,
+    post_id: i64,
+    sink: &str,
+    external_id: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE mirrors SET external_id = ?1, updated_at = ?2
+         WHERE post_id = ?3 AND sink = ?4 AND state != 'done'",
+        params![external_id, fmt_ts(Utc::now()), post_id, sink],
     )?;
     Ok(())
 }
@@ -231,6 +248,18 @@ mod tests {
         assert_eq!(retry_rows.len(), 1);
         assert_eq!(retry_rows[0].attempts, 1);
         assert_eq!(retry_rows[0].error.as_deref(), Some("boom"));
+
+        // A resumable sink can checkpoint progress without marking the row done.
+        db.with(|conn| set_external_id(conn, post_id, "s3", "{\"groups\":1}"))
+            .unwrap();
+        assert_eq!(
+            db.with(|conn| get(conn, post_id, "s3"))
+                .unwrap()
+                .unwrap()
+                .external_id
+                .as_deref(),
+            Some("{\"groups\":1}")
+        );
     }
 
     #[test]

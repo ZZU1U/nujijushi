@@ -359,4 +359,36 @@ chat_id = "-100123"
         calls,
         "a partially uploaded backup is not retried automatically"
     );
+
+    let saved = mirror.external_id.clone().expect("resume checkpoint");
+    assert!(
+        saved.contains("\"groups\":1"),
+        "the first group is checkpointed: {saved}"
+    );
+
+    // After the operator verifies the channel, a retry resumes at group two.
+    mock.append_script(vec![None]);
+    state
+        .db
+        .call(move |conn| nujijushi::db::mirrors::enqueue(conn, post_id, "telegram"))
+        .await
+        .unwrap();
+    assert_eq!(storage::drain(&state, 10).await.unwrap(), 1);
+    let done = state
+        .db
+        .call(move |conn| nujijushi::db::mirrors::get(conn, post_id, "telegram"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(done.state, "done");
+    assert_eq!(
+        done.external_id.as_deref().unwrap().split(',').count(),
+        2,
+        "both groups are recorded"
+    );
+    assert_eq!(
+        mock.send_calls(),
+        calls + 1,
+        "only the missing group was sent on retry"
+    );
 }

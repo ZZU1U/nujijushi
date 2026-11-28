@@ -109,6 +109,15 @@ impl MockTransport {
         mock
     }
 
+    /// Append more scripted outcomes, e.g. to retry a partial upload.
+    pub fn append_script(&self, outcomes: Vec<Option<TgError>>) {
+        let mut state = self.inner.lock().unwrap();
+        match state.script.as_mut() {
+            Some(script) => script.extend(outcomes),
+            None => state.script = Some(outcomes.into()),
+        }
+    }
+
     pub fn with_admin(self, admin: AdminStatus) -> Self {
         self.inner.lock().unwrap().admin = admin;
         self

@@ -78,6 +78,7 @@ pub fn plan(state: &AppState, post: &Post) -> Result<MirrorPost> {
     }
 
     let meta = serde_json::json!({
+        "schema": 1,
         "id": post.id,
         "source": post.source,
         "source_id": post.source_id,
@@ -133,6 +134,9 @@ pub async fn share(state: &AppState, dir: &std::path::Path) -> Result<(usize, us
     Ok((written, skipped))
 }
 
+/// Durable checkpoint a sink may write after an independently delivered chunk.
+pub type Progress<'a> = &'a mut (dyn FnMut(&str) + Send);
+
 #[async_trait]
 pub trait Sink: Send + Sync {
     fn name(&self) -> &'static str;
@@ -140,6 +144,18 @@ pub trait Sink: Send + Sync {
     fn describe(&self) -> String;
     /// Upload the post, returning an external id (path, URL or message ids).
     async fn put(&self, item: &MirrorPost) -> Result<String>;
+    /// Upload with resumability. `resume_from` is the last checkpoint written
+    /// for this mirror; `progress` persists a new one after each sent chunk.
+    /// Sinks without chunk-level progress keep the default (no checkpoint).
+    async fn put_resumable(
+        &self,
+        item: &MirrorPost,
+        resume_from: Option<&str>,
+        progress: Progress<'_>,
+    ) -> Result<String> {
+        let _ = (resume_from, progress);
+        self.put(item).await
+    }
     /// Best-effort connectivity check.
     async fn check(&self) -> Result<String> {
         Ok(self.describe())
@@ -253,43 +269,61 @@ pub async fn drain(state: &AppState, limit: i64) -> Result<usize> {
             continue;
         }
 
+        // A chunked sink (Telegram) persists progress here, so a retry after a
+        // crash or a partial failure resumes at the next group.
+        let progress_state = state.clone();
+        let progress_sink = sink.name().to_string();
+        let mut progress = move |value: &str| {
+            if let Err(err) = progress_state
+                .db
+                .with(|conn| mirror_db::set_external_id(conn, post_id, &progress_sink, value))
+            {
+                tracing::warn!(post = post_id, "cannot record mirror progress: {err}");
+            }
+        };
+
         match plan(state, &post) {
-            Ok(item) => match sink.put(&item).await {
-                Ok(external_id) => {
-                    let sink_name = sink.name().to_string();
-                    let bytes = item.total_bytes();
-                    state
-                        .db
-                        .call(move |conn| {
-                            mirror_db::mark_done(
-                                conn,
-                                post_id,
-                                &sink_name,
-                                Some(&external_id),
-                                bytes,
-                            )
-                        })
-                        .await?;
-                    tracing::info!(post = post_id, sink = sink.name(), "mirrored");
-                    done += 1;
+            Ok(item) => {
+                match sink
+                    .put_resumable(&item, mirror.external_id.as_deref(), &mut progress)
+                    .await
+                {
+                    Ok(external_id) => {
+                        let sink_name = sink.name().to_string();
+                        let bytes = item.total_bytes();
+                        state
+                            .db
+                            .call(move |conn| {
+                                mirror_db::mark_done(
+                                    conn,
+                                    post_id,
+                                    &sink_name,
+                                    Some(&external_id),
+                                    bytes,
+                                )
+                            })
+                            .await?;
+                        tracing::info!(post = post_id, sink = sink.name(), "mirrored");
+                        done += 1;
+                    }
+                    Err(err) => {
+                        let partial = matches!(err, Error::Partial(_));
+                        tracing::warn!(post = post_id, sink = sink.name(), "mirror failed: {err}");
+                        let reason = err.to_string();
+                        let sink_name = sink.name().to_string();
+                        state
+                            .db
+                            .call(move |conn| {
+                                if partial {
+                                    mirror_db::mark_blocked(conn, post_id, &sink_name, &reason)
+                                } else {
+                                    mirror_db::mark_failed(conn, post_id, &sink_name, &reason)
+                                }
+                            })
+                            .await?;
+                    }
                 }
-                Err(err) => {
-                    let partial = matches!(err, Error::Partial(_));
-                    tracing::warn!(post = post_id, sink = sink.name(), "mirror failed: {err}");
-                    let reason = err.to_string();
-                    let sink_name = sink.name().to_string();
-                    state
-                        .db
-                        .call(move |conn| {
-                            if partial {
-                                mirror_db::mark_blocked(conn, post_id, &sink_name, &reason)
-                            } else {
-                                mirror_db::mark_failed(conn, post_id, &sink_name, &reason)
-                            }
-                        })
-                        .await?;
-                }
-            },
+            }
             Err(err) => {
                 let reason = err.to_string();
                 let sink_name = sink.name().to_string();
@@ -492,6 +526,7 @@ pub mod tests_support {
         assert_eq!(planned.total_bytes(), 2048);
 
         let meta: serde_json::Value = serde_json::from_str(&planned.meta).unwrap();
+        assert_eq!(meta["schema"], 1);
         assert_eq!(meta["source"], "pixiv");
         assert_eq!(meta["artist"]["name"], "Nightjar");
         assert_eq!(meta["tags"][1], "landscape");
