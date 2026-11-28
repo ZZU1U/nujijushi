@@ -68,6 +68,7 @@ pub(super) struct PostDetailPage {
     pub gallery_version: String,
     pub outgoing_count: usize,
     pub deliveries: Vec<crate::db::queue::DeliveryLink>,
+    pub queues: Vec<PostDeliveryView>,
     pub tag_review: Option<super::tag_suggestions::ReviewView>,
     pub can_suggest_tags: bool,
     pub captions: Vec<CaptionView>,
@@ -75,6 +76,21 @@ pub(super) struct PostDetailPage {
     pub ratings: Vec<&'static str>,
     pub states: Vec<&'static str>,
     pub channels: Vec<ChannelChoice>,
+}
+
+/// One channel's relationship to a post, for the post page's delivery panel.
+#[derive(Serialize)]
+pub(super) struct PostDeliveryView {
+    pub queue_id: Option<i64>,
+    pub channel_id: i64,
+    pub channel: String,
+    pub alias: String,
+    pub state: &'static str,
+    pub state_label: &'static str,
+    pub eta: Option<String>,
+    pub eta_in: Option<String>,
+    /// Confirmed Telegram message link, when one exists.
+    pub url: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -206,6 +222,7 @@ pub(super) struct PostCardView {
     pub nsfw: bool,
     pub snippet: Option<String>,
     pub pushed: i64,
+    pub delivered: i64,
     pub queue_badges: Vec<CardBadge>,
     pub tags: Vec<CardTag>,
     pub imported: String,

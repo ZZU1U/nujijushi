@@ -27,6 +27,7 @@ export interface Card {
   id: number; source: string; rating: string; state: string; artist: string | null
   submitter: string | null; submitter_guest: boolean; media_count: number
   thumb: string | null; nsfw: boolean; snippet: string | null; pushed: number
+  delivered: number
   queue_badges: { class: string; label: string; channel: string }[]
   tags: CardTag[]; imported: string
 }
@@ -64,12 +65,18 @@ export interface PostCaption {
   channel: string; tg_id: string; allowed: boolean; spoiler: boolean; eta?: string; eta_in?: string
   caption: string; length: number; messages: number; verdict: string
 }
+export interface PostDelivery {
+  queue_id: number | null; channel_id: number; channel: string; alias: string
+  state: string; state_label: string; eta: string | null; eta_in: string | null
+  url: string | null
+}
 export interface PostDetailPage {
   open_section: string | null; guest_review: boolean; post: Post
   submitter: { tg_id: number; label: string; admin: boolean } | null
   media_total: string; media: Media[]; can_merge: boolean; has_media_tools: boolean
   merge_job: Job | null; gallery_version: string; outgoing_count: number
   deliveries: { channel_id: number; channel: string; url: string }[]
+  queues: PostDelivery[]
   tag_review: TagSuggestions | null; can_suggest_tags: boolean; captions: PostCaption[]
   default_channel: number | null; ratings: string[]; states: string[]; channels: ChannelChoice[]
 }

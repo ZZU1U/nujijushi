@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { ActionForm, CaptionPreview, capitalize, PageLink } from '../ui'
 import { Badge } from '../components/Badge'
 import { ChannelSelect } from '../components/ChannelSelect'
-import type { PostDetailPage } from '../api'
+import type { PostDelivery, PostDetailPage } from '../api'
 import { PostGallery } from './post_gallery'
 import { PostTags } from './post_tags'
 import { usePostAutosave, type PostAutosave } from './post_autosave'
@@ -17,6 +17,7 @@ export function PostDetail({ data, reload }: { data: PostDetailPage; reload: (qu
         <PageLink href="/posts" className="hint" data-return-to-posts="">← Posts</PageLink>
         <h1>{post.title || 'Post #' + post.id}</h1>
         <div className="hint">#{post.id} · {post.source} / {post.source_id}</div>
+        <DeliverySummary queues={data.queues} />
       </div>
       <div className="post-heading-actions">
         <span className="hint" role="status">{editor.failure ? '' : editor.status}</span>
@@ -34,6 +35,7 @@ export function PostDetail({ data, reload }: { data: PostDetailPage; reload: (qu
     <div className="detail">
       <div><PostGallery data={data} editor={editor} /></div>
       <aside>
+        <DeliveryPanel queues={data.queues} />
         {channels.length > 0 && <section className="panel">
           <h2>Add to queue</h2>
           <ActionForm action={endpoint + '/queue'} className="post-buttons" beforeSubmit={editor.flush}>
@@ -63,6 +65,48 @@ export function PostDetail({ data, reload }: { data: PostDetailPage; reload: (qu
       </aside>
     </div>
   </>
+}
+
+function deliveryTone(state: string) {
+  if (state === 'sent') return 'green'
+  if (state === 'unknown' || state === 'failed') return 'red'
+  if (state === 'queued' || state === 'held' || state === 'sending') return 'accent'
+  return ''
+}
+
+function DeliverySummary({ queues }: { queues: PostDelivery[] }) {
+  if (!queues.length) return <div className="post-delivery-summary">
+    <span className="badge">Not queued</span>
+  </div>
+  return <div className="post-delivery-summary" aria-label="Delivery status">
+    {queues.map((queue) => {
+      const label = queue.state_label + ' · ' + (queue.alias || queue.channel)
+      return queue.url
+        ? <a key={queue.channel_id} className={'badge ' + deliveryTone(queue.state)} href={queue.url}
+          target="_blank" rel="noopener noreferrer" title={queue.url}>{label}</a>
+        : <span key={queue.channel_id} className={'badge ' + deliveryTone(queue.state)}>{label}</span>
+    })}
+  </div>
+}
+
+function DeliveryPanel({ queues }: { queues: PostDelivery[] }) {
+  return <section className="panel post-delivery">
+    <h2>Delivery</h2>
+    {queues.length === 0
+      ? <p className="hint">Not queued anywhere yet.</p>
+      : <ul className="delivery-list">
+        {queues.map((queue) => <li key={queue.channel_id}>
+          <span className={'badge ' + deliveryTone(queue.state)}>{queue.state_label}</span>
+          <span className="delivery-channel">{queue.alias || queue.channel}</span>
+          {queue.eta && <span className="hint">est. {queue.eta} · in {queue.eta_in}</span>}
+          {(queue.state === 'queued' || queue.state === 'unknown' || queue.state === 'sending') &&
+            <PageLink className="hint" href={'/channels/' + queue.channel_id + '/queue'}>
+              {queue.state === 'unknown' ? 'resolve' : 'queue'}
+            </PageLink>}
+          {queue.url && <a className="hint" href={queue.url} target="_blank" rel="noopener noreferrer">open message ↗</a>}
+        </li>)}
+      </ul>}
+  </section>
 }
 
 function PostFields({ data, editor }: { data: PostDetailPage; editor: PostAutosave }) {

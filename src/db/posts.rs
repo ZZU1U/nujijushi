@@ -757,6 +757,20 @@ pub fn count_cards(conn: &Connection, filter: &PostFilter) -> Result<i64> {
     Ok(conn.query_row(&sql, params_from_iter(values), |row| row.get(0))?)
 }
 
+/// Count matching posts newer than `after` (the grid's cheap "new posts" probe).
+pub fn count_newer(conn: &Connection, filter: &PostFilter, after: i64) -> Result<i64> {
+    let (mut where_sql, mut values) = filter_sql(filter);
+    where_sql.push_str(if where_sql.is_empty() {
+        " WHERE "
+    } else {
+        " AND "
+    });
+    where_sql.push_str("p.id > ?");
+    values.push(Value::Integer(after));
+    let sql = format!("SELECT COUNT(*) FROM posts p{where_sql}");
+    Ok(conn.query_row(&sql, params_from_iter(values), |row| row.get(0))?)
+}
+
 /// Posts imported through this Telegram user (`posts.submitted_by`).
 pub fn count_submitted(conn: &Connection, tg_id: i64) -> Result<i64> {
     Ok(conn.query_row(
@@ -1092,6 +1106,35 @@ mod tests {
             for id in &ids {
                 assert_eq!(many[id], get(conn, *id)?, "post {id}");
             }
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn count_newer_uses_the_same_filter_as_the_grid() {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        let ids = db
+            .with(|conn| {
+                let mut ids = Vec::new();
+                for (source, source_id) in [("pixiv", "1"), ("pixiv", "2"), ("twitter", "3")] {
+                    let post = NormalizedPost::new(source, source_id);
+                    let (id, _) = upsert(conn, &post, &[])?;
+                    ids.push(id);
+                }
+                Ok(ids)
+            })
+            .unwrap();
+
+        db.with(|conn| {
+            let all = PostFilter::default();
+            assert_eq!(count_newer(conn, &all, ids[0])?, 2);
+            let pixiv = PostFilter {
+                source: Some("pixiv".into()),
+                ..Default::default()
+            };
+            assert_eq!(count_newer(conn, &pixiv, ids[0])?, 1);
+            assert_eq!(count_newer(conn, &all, ids[2])?, 0);
             Ok(())
         })
         .unwrap();

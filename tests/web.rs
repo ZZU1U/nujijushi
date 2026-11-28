@@ -4651,6 +4651,43 @@ async fn channel_template_names_are_validated_before_saving() {
 }
 
 #[tokio::test]
+async fn post_detail_lists_each_channel_delivery_state() {
+    let h = harness();
+    let channel = h.add_channel().await;
+    let (post_id, queue_id) = h.queue_a_post("delivery", &channel).await;
+
+    let page = h.page(&format!("/posts/{post_id}")).await;
+    let queues = page["queues"].as_array().expect("queues array");
+    assert_eq!(queues.len(), 1);
+    assert_eq!(queues[0]["queue_id"], queue_id);
+    assert_eq!(queues[0]["channel_id"], channel.id);
+    assert_eq!(queues[0]["state"], "queued");
+    assert_eq!(queues[0]["state_label"], "Queued");
+    assert_eq!(queues[0]["alias"], channel.alias);
+    assert!(queues[0]["url"].is_null());
+}
+
+#[tokio::test]
+async fn the_new_posts_probe_counts_only_newer_matching_posts() {
+    let h = harness();
+    let first = h.post_only("a").await;
+    let second = h.post_only("b").await;
+
+    let response = h
+        .send(h.get(&format!("/api/v1/posts/new?after={first}")))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_str(&body_text(response).await).unwrap();
+    assert_eq!(body["count"], 1, "only the second post is newer");
+
+    let response = h
+        .send(h.get(&format!("/api/v1/posts/new?after={second}")))
+        .await;
+    let body: serde_json::Value = serde_json::from_str(&body_text(response).await).unwrap();
+    assert_eq!(body["count"], 0);
+}
+
+#[tokio::test]
 async fn a_stale_sending_row_is_resolvable_from_the_queue_page() {
     use nujijushi::db::queue;
 

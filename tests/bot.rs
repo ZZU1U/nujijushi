@@ -816,6 +816,43 @@ async fn enabling_a_discovered_channel_makes_it_schedulable() {
 }
 
 #[tokio::test]
+async fn show_post_reports_its_channel_delivery_state() {
+    let harness = harness(MockTransport::new(), OPEN_CONFIG);
+    let channel = harness.add_channel("main", NsfwPolicy::Allow).await;
+    let post = harness.add_post("showme", 1, &["original"]).await;
+    nujijushi::queue::enqueue_checked(&harness.state, &channel, post, 0)
+        .await
+        .unwrap();
+    let channel_id = channel.id;
+    harness
+        .state
+        .db
+        .call(move |conn| {
+            conn.execute(
+                "UPDATE queue SET state = 'sent', sent_at = CURRENT_TIMESTAMP,
+                    tg_message_ids = '321', delivery_target = '@test_channel'
+                 WHERE channel_id = ?1 AND post_id = ?2",
+                rusqlite::params![channel_id, post],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    harness
+        .send(private_message(GUEST, 1, &format!("/show {post}")))
+        .await;
+    let text = harness.last_text();
+    assert!(text.contains("delivery"), "got: {text}");
+    assert!(text.contains("main"), "got: {text}");
+    assert!(text.contains("sent"), "got: {text}");
+    assert!(
+        text.contains("https://t.me/test_channel/321"),
+        "got: {text}"
+    );
+}
+
+#[tokio::test]
 async fn forwarded_posts_are_imported_inline() {
     use nujijushi::model::PostState;
 

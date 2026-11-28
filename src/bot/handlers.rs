@@ -548,6 +548,18 @@ impl<'a> Bot<'a> {
             Ok(post) => post,
             Err(_) => return self.reply(message, "No such post.").await,
         };
+        let post_id = post.id;
+        let (queues, deliveries) = self
+            .state
+            .db
+            .call(move |conn| {
+                Ok((
+                    queue_db::for_post(conn, post_id)?,
+                    queue_db::delivery_links(conn, post_id)?,
+                ))
+            })
+            .await?;
+        let channels = self.state.db.call(|conn| channel_db::list(conn)).await?;
         let mut body = format!(
             "<b>#{} {}</b>\n{} · {} · {} item(s)\n",
             post.id,
@@ -567,6 +579,26 @@ impl<'a> Bot<'a> {
         }
         if let Some(url) = &post.url {
             body.push_str(&format!("\n{}", reply::esc(url)));
+        }
+        if !queues.is_empty() {
+            body.push_str("\n\n<b>delivery</b>");
+            for (queue_id, channel_id, state) in &queues {
+                let channel = channels
+                    .iter()
+                    .find(|channel| channel.id == *channel_id)
+                    .map(|channel| channel.alias.clone())
+                    .unwrap_or_else(|| format!("#{channel_id}"));
+                let url = deliveries
+                    .iter()
+                    .find(|delivery| delivery.channel_id == *channel_id)
+                    .map(|delivery| format!(" · {}", reply::esc(&delivery.url)))
+                    .unwrap_or_default();
+                body.push_str(&format!(
+                    "\n<code>q#{queue_id}</code> {} · {}{url}",
+                    reply::esc(&channel),
+                    state.as_str()
+                ));
+            }
         }
         self.reply(message, &body).await
     }
@@ -630,9 +662,34 @@ impl<'a> Bot<'a> {
                 .await;
         }
         let mut body = format!("<b>{}</b>\n", reply::esc(&channel.alias));
+        let now = chrono::Utc::now();
+        let projected = crate::tg::publish::project_queue(self.state, &channel, entries.len())
+            .await
+            .unwrap_or_default();
         for entry in &entries {
+            let eta = projected
+                .iter()
+                .find(|projected| projected.queue_id == entry.item.id)
+                .map(|projected| {
+                    format!(
+                        " · est. {}",
+                        crate::tg::publish::slot_label(projected.slot, now)
+                    )
+                })
+                .unwrap_or_default();
+            let attempts = if entry.item.attempts > 1 {
+                format!(" · {} attempts", entry.item.attempts)
+            } else {
+                String::new()
+            };
+            let error = entry
+                .item
+                .last_error
+                .as_deref()
+                .map(|error| format!("\n  {}", reply::esc(error)))
+                .unwrap_or_default();
             body.push_str(&format!(
-                "<code>q#{}</code> post #{} · {}\n",
+                "<code>q#{}</code> post #{} · {}{eta}{attempts}{error}\n",
                 entry.item.id,
                 entry.item.post_id,
                 if entry.item.pinned {

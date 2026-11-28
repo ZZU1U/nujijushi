@@ -198,6 +198,28 @@ test('FANBOX creator links share a watch that checks automatically and shows its
   await expect(watch).toHaveCount(1)
 })
 
+test('new imports are offered with a button instead of moving the grid', async ({ page }) => {
+  await signIn(page, '/posts?source=local')
+  const first = page.locator('[data-post-card]').first()
+  const original = await first.getAttribute('data-post-card')
+  const artwork = await gallery('New import banner', [12])
+  await writeFile(join(artwork, 'post.json'), JSON.stringify({
+    id: 'New import banner',
+    title: 'New import banner',
+    description: 'Fresh arrival',
+  }))
+  cli('import', artwork)
+
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+  const banner = page.locator('.new-posts')
+  await expect(banner).toContainText('1 new post matches this view')
+  await expect(first).toHaveAttribute('data-post-card', original!)
+
+  await banner.getByRole('button', { name: 'Show new posts' }).click()
+  await expect(page.locator('[data-post-card]').first()).toContainText('Fresh arrival')
+  await expect(page.locator('.new-posts')).toHaveCount(0)
+})
+
 test('queue on page 3 and return from a post in the same browser document', async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 520 })
   const documents = countDocuments(page)
@@ -207,8 +229,9 @@ test('queue on page 3 and return from a post in the same browser document', asyn
   const card = page.locator('.card.post').last()
   await card.locator('label.post-pick-area').click()
   await page.getByLabel('Destination channel').selectOption('1')
-  await page.getByRole('button', { name: 'queue', exact: true }).click()
+  await page.getByRole('button', { name: 'Queue', exact: true }).click()
   await expect(card.getByText(/queued · art/i)).toBeVisible()
+  await expect(card).not.toHaveClass(/pushed/)
   await expect(page).toHaveURL(base + path)
   const post = card.getByRole('link', { name: /Open post/ })
   await post.scrollIntoViewIfNeeded()
@@ -401,7 +424,7 @@ test('queue reflects publishes from both tabs and scheduler delivery without rel
   const own = queueRow(page, 20)
   const ownId = await own.getAttribute('data-queue')
   page.once('dialog', (dialog) => void dialog.accept())
-  await own.getByRole('button', { name: 'publish', exact: true }).click()
+  await own.getByRole('button', { name: 'Publish', exact: true }).click()
   const publishJob = (id: string | null) => page.locator('[data-publish-job]').filter({ hasText: 'Queue item #' + id })
   await expect(publishJob(ownId)).toContainText('Failed', { timeout: 12_000 })
 
@@ -412,7 +435,7 @@ test('queue reflects publishes from both tabs and scheduler delivery without rel
   other.once('dialog', (dialog) => void dialog.accept())
   const queuedElsewhere = other.waitForResponse((response) =>
     response.url().endsWith('/api/v1/publish') && response.request().method() === 'POST')
-  await elsewhere.getByRole('button', { name: 'publish', exact: true }).click()
+  await elsewhere.getByRole('button', { name: 'Publish', exact: true }).click()
   expect((await queuedElsewhere).status()).toBe(202)
   await page.bringToFront()
   await expect(publishJob(otherId)).toContainText('Failed', { timeout: 12_000 })
@@ -928,6 +951,11 @@ test('the mobile post header shows the state control and confirmed Telegram deli
   await expect(state).toHaveAccessibleName('Post state: New')
   await expect(header.getByRole('link', { name: /Delete post/ })).toBeVisible()
   await expect(page.getByRole('link', { name: /View post in .* on Telegram/ })).toHaveAttribute('href', 'https://t.me/local_test_channel/321')
+  await expect(page.getByRole('heading', { name: 'Delivery' })).toBeVisible()
+  await expect(header.getByText('Sent · art', { exact: true })).toBeVisible()
+  const delivery = page.locator('.post-delivery')
+  await expect(delivery.getByText('Sent', { exact: true })).toBeVisible()
+  await expect(delivery.getByRole('link', { name: 'open message ↗' })).toHaveAttribute('href', 'https://t.me/local_test_channel/321')
   for (const verdict of ['Rejected', 'Archived', 'Approved']) {
     await state.click()
     await expect(header.getByRole('button', { name: 'New', exact: true })).toHaveCount(0)

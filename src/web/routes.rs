@@ -58,6 +58,7 @@ pub fn router(ws: Arc<WebState>) -> Router {
     let api = Router::new()
         .route("/dashboard", get(dashboard))
         .route("/posts", get(posts_page).post(posts_bulk))
+        .route("/posts/new", get(posts_new))
         .route("/posts/{id}", get(post_page).post(post_update))
         .route(
             "/posts/{id}/delete",
@@ -584,6 +585,33 @@ async fn tag_autocomplete(
     ))
 }
 
+#[derive(serde::Deserialize)]
+struct NewPostsQuery {
+    after: i64,
+    #[serde(flatten)]
+    filter: PostFilter,
+}
+
+#[derive(serde::Serialize)]
+struct NewPostsView {
+    count: i64,
+}
+
+/// Cheap filter-aware probe for the posts grid's "new posts" bar.
+async fn posts_new(
+    State(ws): State<Arc<WebState>>,
+    Query(query): Query<NewPostsQuery>,
+) -> WebResult<Json<NewPostsView>> {
+    let filter = grid_filter(&query.filter, 1);
+    let after = query.after;
+    let count = ws
+        .app
+        .db
+        .call(move |conn| post_db::count_newer(conn, &filter, after))
+        .await?;
+    Ok(Json(NewPostsView { count }))
+}
+
 async fn posts_page(
     State(ws): State<Arc<WebState>>,
     Query(query): Query<PostFilter>,
@@ -769,6 +797,7 @@ fn grid_card_views(
                 nsfw: card.nsfw,
                 snippet: card.snippet,
                 pushed: card.pushed,
+                delivered: card.delivered,
                 queue_badges: decoration.queue,
                 tags: decoration
                     .tags
@@ -1094,6 +1123,7 @@ async fn post_page(
         .await?;
     let now = chrono::Utc::now();
     let tag_review = tag_review.map(|review| super::tag_suggestions::review_view(review, now));
+    let mut eta_by_channel = HashMap::new();
     let mut captions = Vec::new();
     for channel in &channels {
         let decision = crate::nsfw::evaluate(&outgoing, channel, &rules);
@@ -1128,11 +1158,64 @@ async fn post_page(
             };
         // when this post would go out, if it is queued in this channel
         if let Some(slot) = post_eta(app, &post_queues, channel).await? {
+            eta_by_channel.insert(channel.id, slot);
             preview.eta = Some(crate::tg::publish::slot_label(slot, now));
             preview.eta_in = Some(crate::tg::publish::format_duration(slot - now));
         }
         captions.push(preview);
     }
+
+    let mut queues: Vec<PostDeliveryView> = Vec::new();
+    for (queue_id, channel_id, state) in &post_queues {
+        let Some(channel) = channels.iter().find(|channel| channel.id == *channel_id) else {
+            continue;
+        };
+        let slot = eta_by_channel.get(channel_id).copied();
+        let url = deliveries
+            .iter()
+            .find(|delivery| delivery.channel_id == *channel_id)
+            .map(|delivery| delivery.url.clone());
+        queues.push(PostDeliveryView {
+            queue_id: Some(*queue_id),
+            channel_id: *channel_id,
+            channel: channel.title.clone(),
+            alias: channel.alias.clone(),
+            state: state.as_str(),
+            state_label: queue_state_label(*state),
+            eta: slot.map(|slot| crate::tg::publish::slot_label(slot, now)),
+            eta_in: slot.map(|slot| crate::tg::publish::format_duration(slot - now)),
+            url,
+        });
+    }
+    // Sends recorded before a queue row existed (legacy audit rows) still count.
+    for delivery in &deliveries {
+        if queues
+            .iter()
+            .any(|queue| queue.channel_id == delivery.channel_id)
+        {
+            continue;
+        }
+        queues.push(PostDeliveryView {
+            queue_id: None,
+            channel_id: delivery.channel_id,
+            channel: delivery.channel.clone(),
+            alias: String::new(),
+            state: "sent",
+            state_label: "Sent",
+            eta: None,
+            eta_in: None,
+            url: Some(delivery.url.clone()),
+        });
+    }
+    queues.sort_by_key(|queue| match queue.state {
+        "unknown" => 0,
+        "sending" => 1,
+        "held" => 2,
+        "queued" => 3,
+        "sent" => 4,
+        "failed" => 5,
+        _ => 6,
+    });
 
     let merge_undo: std::collections::HashMap<_, _> = merge_undo.into_iter().collect();
     let photo_limit = crate::media::compress::photo_limit(app.cfg.max_upload_bytes);
@@ -1225,6 +1308,7 @@ async fn post_page(
         gallery_version,
         outgoing_count: outgoing.media.len(),
         deliveries,
+        queues,
         tag_review,
         can_suggest_tags: suggestions_enabled && post.media.iter().any(|media| !media.is_video),
         captions,

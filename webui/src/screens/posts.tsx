@@ -27,7 +27,7 @@ function PostCard({ card, setup, selected, select }: {
 }) {
   const label = 'Select post #' + card.id
   const inputId = 'post-pick-' + card.id
-  return <article data-post-card={card.id} className={'card post' + (card.pushed ? ' pushed' : '')}>
+  return <article data-post-card={card.id} className={'card post' + (card.delivered ? ' pushed' : '')}>
     <input type={setup ? 'radio' : 'checkbox'} id={inputId} className="pick" aria-label={label}
       data-post-pick="" checked={selected} onChange={select} />
     <label className="post-pick-area" htmlFor={inputId} aria-hidden="true" />
@@ -62,6 +62,7 @@ export function Posts({ path, snapshots }: { path: string; snapshots: Map<string
   const [loading, setLoading] = useState(!snapshots.has(path))
   const [error, setError] = useState('')
   const [batch, setBatch] = useState<'idle' | 'loading' | 'failed'>('idle')
+  const [newCount, setNewCount] = useState(0)
   const [revision, change] = useState(0)
   const searchTimer = useRef(0)
   const append = useRef<AbortController | null>(null)
@@ -218,6 +219,53 @@ export function Posts({ path, snapshots }: { path: string; snapshots: Map<string
   const cards = grid ? [...grid.page.cards, ...grid.appended] : []
   const selected = grid?.selected ?? new Set<number>()
   const setup = data?.setup ?? false
+  const topId = data?.cards[0]?.id
+  const firstPage = data?.page_number === 1
+
+  // Light probe so an import from the bot, a watch, or another tab is visible.
+  // Never prepend automatically: it would move cards under the pointer.
+  useEffect(() => {
+    setNewCount(0)
+    if (!topId || !firstPage || setup) return
+    const params = new URL(path, location.origin).searchParams
+    for (const key of ['page', 'cursor', 'flash']) params.delete(key)
+    params.set('after', String(topId))
+    const controller = new AbortController()
+    let cancelled = false
+    const check = async () => {
+      if (document.hidden) return
+      try {
+        const result = await api<{ count: number }>('/posts/new?' + params, { signal: controller.signal })
+        if (!cancelled) setNewCount(result.count)
+      } catch (error) {
+        if (!cancelled && expired(error)) latest.current.expire()
+        // A failed probe is not worth an error banner; the next tick retries.
+      }
+    }
+    const timer = window.setInterval(() => void check(), 20_000)
+    const onVisible = () => { if (!document.hidden) void check() }
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('focus', onVisible)
+    void check()
+    return () => {
+      cancelled = true
+      controller.abort()
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('focus', onVisible)
+    }
+  }, [path, topId, firstPage, setup])
+
+  function showNewPosts() {
+    const params = new URL(path, location.origin).searchParams
+    for (const key of ['page', 'cursor', 'flash']) params.delete(key)
+    const query = params.toString()
+    page.navigate('/posts' + (query ? '?' + query : ''))
+    refresh()
+    setNewCount(0)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
   const fields = {
     back: data?.grid_url, channel: grid?.channel,
     ...(setup ? { post_id: selected.values().next().value } : Object.fromEntries([...selected].map((id) => ['sel_' + id, 'on']))),
@@ -232,6 +280,13 @@ export function Posts({ path, snapshots }: { path: string; snapshots: Map<string
       <p>Select one post and its Telegram channel. The post stays on hold until you confirm its preview.</p>
       <PageLink href="/">Back to setup</PageLink>
     </section>}
+    {newCount > 0 && <div className="new-posts" role="status">
+      <span><b>{newCount}</b> new post{newCount === 1 ? '' : 's'} {newCount === 1 ? 'matches' : 'match'} this view.</span>
+      <span className="new-posts-actions">
+        <button type="button" className="small" onClick={showNewPosts}>Show new posts</button>
+        <button type="button" className="small ghost" onClick={() => setNewCount(0)}>Dismiss</button>
+      </span>
+    </div>}
     <form className="filters panel" data-post-filters="" onSubmit={(event) => { event.preventDefault(); apply(filter) }}>
       <input ref={searchInput} name="search" aria-label="Search posts" placeholder="search title / description / id"
         value={filter.search} onChange={(event) => edit('search', event.target.value)} />
