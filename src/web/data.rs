@@ -423,6 +423,9 @@ pub(super) struct QueueRow {
     pub post_id: i64,
     pub state: &'static str,
     pub state_label: &'static str,
+    /// A `sending` row whose lease is older than the crash cutoff: its delivery
+    /// is unknown, so the queue page may offer the normal resolve actions.
+    pub stale_sending: bool,
     pub delivery: Option<queue_db::UnconfirmedDelivery>,
     pub priority: i64,
     pub pinned: bool,

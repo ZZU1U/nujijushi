@@ -431,12 +431,14 @@ pub fn delete(conn: &Connection, id: i64) -> Result<bool> {
 }
 
 /// A `sending` row older than `cutoff` means the process died mid-publish.
-/// Those become `unknown`: never silently re-sent.
+/// Those become `unknown`: never silently re-sent. A missing `lease_at` on a
+/// `sending` row is equally dead (the lease is always stamped on acquire).
 pub fn reconcile_stale(conn: &Connection, cutoff: DateTime<Utc>) -> Result<usize> {
     Ok(conn.execute(
         "UPDATE queue SET state = 'unknown', lease_token = NULL,
             last_error = COALESCE(last_error, 'interrupted while sending; delivery unconfirmed')
-         WHERE state = 'sending' AND lease_at IS NOT NULL AND lease_at < ?1",
+         WHERE state = 'sending'
+           AND (lease_at IS NULL OR julianday(lease_at) < julianday(?1))",
         [fmt_ts(cutoff)],
     )?)
 }

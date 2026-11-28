@@ -4651,6 +4651,58 @@ async fn channel_template_names_are_validated_before_saving() {
 }
 
 #[tokio::test]
+async fn a_stale_sending_row_is_resolvable_from_the_queue_page() {
+    use nujijushi::db::queue;
+
+    let h = harness();
+    let channel = h.add_channel().await;
+    let (_post_id, queue_id) = h.queue_a_post("stale", &channel).await;
+    h.state
+        .db
+        .call(move |conn| {
+            conn.execute(
+                "UPDATE queue SET state = 'sending', lease_token = 'dead', lease_at = ?1
+                 WHERE id = ?2",
+                rusqlite::params![
+                    (chrono::Utc::now() - chrono::Duration::hours(1))
+                        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    queue_id
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let path = format!("/api/v1/channels/{}/queue", channel.id);
+    let response = h.send(h.get(&path)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let page: serde_json::Value = serde_json::from_str(&body_text(response).await).unwrap();
+    let row = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"].as_i64() == Some(queue_id))
+        .expect("queue row");
+    assert_eq!(row["stale_sending"], true);
+    assert_eq!(row["state_label"], "Interrupted send");
+
+    let form = format!(
+        "csrf={}&id={queue_id}&channel={}&action=delivered",
+        h.ws.csrf, channel.id
+    );
+    let response = h.send(h.post("/queue/action", &form)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let stored = h
+        .state
+        .db
+        .call(move |conn| queue::get(conn, queue_id))
+        .await
+        .unwrap();
+    assert_eq!(stored.state, QueueState::Sent);
+}
+
+#[tokio::test]
 async fn queue_status_tracks_worker_and_scheduled_deliveries_for_its_channel() {
     use nujijushi::db::{jobs, queue};
     use nujijushi::jobs::worker::JobWorker;

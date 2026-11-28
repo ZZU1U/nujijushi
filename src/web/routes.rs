@@ -1788,6 +1788,7 @@ async fn queue_page(
     // the plan the scheduler would follow: which item takes which slot. One
     // projection, so the ETA column and the preview page cannot disagree.
     let now = chrono::Utc::now();
+    let stale_cutoff = now - chrono::Duration::seconds(crate::queue::lease::STALE_LEASE_SECS);
     let planned: std::collections::HashMap<i64, chrono::DateTime<chrono::Utc>> =
         crate::tg::publish::project_queue(app, &channel, entries.len().min(200))
             .await?
@@ -1800,11 +1801,18 @@ async fn queue_page(
         .map(|entry| {
             let post = entry.item.post_id;
             let slot = planned.get(&entry.item.id).copied();
+            let stale_sending = entry.item.state == QueueState::Sending
+                && entry.item.lease_at.is_none_or(|at| at < stale_cutoff);
             QueueRow {
                 id: entry.item.id,
                 post_id: post,
                 state: entry.item.state.as_str(),
-                state_label: queue_state_label(entry.item.state),
+                state_label: if stale_sending {
+                    "Interrupted send"
+                } else {
+                    queue_state_label(entry.item.state)
+                },
+                stale_sending,
                 delivery: unresolved.remove(&entry.item.id),
                 priority: entry.item.priority,
                 pinned: entry.item.pinned,
@@ -1862,6 +1870,24 @@ fn guarded_queue_edit(
     action(&tx)?;
     tx.commit()?;
     Ok(())
+}
+
+async fn resolve_delivery(
+    app: &AppState,
+    id: i64,
+    delivered: bool,
+    message_ids: Option<String>,
+) -> crate::error::Result<()> {
+    let cutoff =
+        chrono::Utc::now() - chrono::Duration::seconds(crate::queue::lease::STALE_LEASE_SECS);
+    app.db
+        .call(move |conn| {
+            // A crashed send is still `sending` until startup; let the operator
+            // resolve it here instead of requiring a restart first.
+            queue_db::reconcile_stale(conn, cutoff)?;
+            queue_db::resolve_unknown(conn, id, delivered, message_ids.as_deref())
+        })
+        .await
 }
 
 async fn queue_action(
@@ -1934,15 +1960,11 @@ async fn queue_action(
                 Some(_) => return Err(Error::invalid("message ID must be positive").into()),
                 None => None,
             };
-            app.db
-                .call(move |conn| queue_db::resolve_unknown(conn, id, true, message_ids.as_deref()))
-                .await?;
+            resolve_delivery(app, id, true, message_ids).await?;
             "marked as delivered".to_string()
         }
         "not_delivered" => {
-            app.db
-                .call(move |conn| queue_db::resolve_unknown(conn, id, false, None))
-                .await?;
+            resolve_delivery(app, id, false, None).await?;
             "marked as not delivered, re-queued".to_string()
         }
         other => format!("unknown action {other}"),

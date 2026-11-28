@@ -426,7 +426,8 @@ test('queue reflects publishes from both tabs and scheduler delivery without rel
   try {
     db.exec('PRAGMA busy_timeout = 5000')
     // Write the intermediate states a worker in a separate process would commit.
-    db.prepare("UPDATE queue SET state = 'sending' WHERE id = ?").run(runningId)
+    db.prepare("UPDATE queue SET state = 'sending', lease_at = ? WHERE id = ?")
+      .run(new Date().toISOString(), runningId)
     db.prepare("UPDATE queue SET state = 'unknown' WHERE id = ?").run(unknownId)
     await expect(running.getByText('Sending', { exact: true })).toBeVisible()
     await expect(uncertain.getByText('Delivery unconfirmed', { exact: true })).toBeVisible()
@@ -445,6 +446,29 @@ test('queue reflects publishes from both tabs and scheduler delivery without rel
     db.close()
   }
   expect(documents()).toBe(1)
+})
+
+test('a stale interrupted send can be resolved from the queue', async ({ page }) => {
+  cli('queue', 'add', '24', '--channel', 'art')
+  await signIn(page, '/channels/1/queue')
+  const row = page.locator('[data-queue]').filter({
+    has: page.getByRole('link', { name: '#24', exact: true }),
+  })
+  const id = Number(await row.getAttribute('data-queue'))
+  const db = new DatabaseSync(join(directory, 'archive', 'nujijushi.sqlite3'))
+  try {
+    db.exec('PRAGMA busy_timeout = 5000')
+    db.prepare("UPDATE queue SET state = 'sending', lease_token = 'dead', lease_at = ? WHERE id = ?")
+      .run(new Date(Date.now() - 3_600_000).toISOString(), id)
+  } finally {
+    db.close()
+  }
+
+  await page.reload()
+  await expect(row.getByText('Interrupted send', { exact: true })).toBeVisible()
+  await row.getByRole('button', { name: 'Confirm delivered', exact: true }).click()
+  await expect(page.getByText('marked as delivered')).toBeVisible()
+  await expect(row).toHaveCount(0, { timeout: 5000 })
 })
 
 test('navigation motion follows the reduced-motion preference', async ({ page }) => {

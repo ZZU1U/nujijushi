@@ -70,7 +70,7 @@ function QueueTable({ channel, activity, items }: Pick<QueuePage, 'channel' | 'a
       cell: (item) => <>
         <PageLink href={postPath(item.post_id)}>#{item.post_id}</PageLink>
         {item.pinned && <Badge>pinned</Badge>}
-        <Badge tone="accent" data-role="publishing" hidden={item.state !== 'sending' && !publishing.has(item.id)}>
+        <Badge tone="accent" data-role="publishing" hidden={(item.state !== 'sending' || item.stale_sending) && !publishing.has(item.id)}>
           publishing…
         </Badge>
         <div className="hint">{item.artist} — {item.snippet}</div>
@@ -79,7 +79,7 @@ function QueueTable({ channel, activity, items }: Pick<QueuePage, 'channel' | 'a
     },
     {
       label: 'state',
-      cell: (item) => <Badge tone={item.state === 'unknown' || item.state === 'failed' ? 'red' : undefined}
+      cell: (item) => <Badge tone={item.state === 'unknown' || item.state === 'failed' || item.stale_sending ? 'red' : undefined}
         data-live-state={item.state}>{item.state_label}</Badge>,
     },
     { label: 'prio', cell: (item) => item.priority },
@@ -97,13 +97,14 @@ function QueueTable({ channel, activity, items }: Pick<QueuePage, 'channel' | 'a
 
   return <DataTable label="Channel queue" id="channel-queue-items" rows={items} columns={columns}
     rowKey={(item) => item.id}
-    rowAttributes={(item) => ({ className: item.state === 'unknown' ? 'row-unknown' : undefined, 'data-queue': item.id })}
+    rowAttributes={(item) => ({ className: item.state === 'unknown' || item.stale_sending ? 'row-unknown' : undefined, 'data-queue': item.id })}
     empty={<p className="hint">Empty. Queue posts from <PageLink href="/posts">the posts grid</PageLink>.</p>} />
 }
 
 function QueueActions({ item, channel }: { item: QueueRow; channel: QueuePage['channel'] }) {
   const channelRoot = channelPath(channel.id)
-  if (item.state === 'sending') return <span className="hint">Send in progress</span>
+  if (item.state === 'sending' && !item.stale_sending) return <span className="hint">Send in progress</span>
+  const needsReview = item.state === 'unknown' || item.stale_sending
 
   return <>
     {item.state === 'queued' && <ActionForm action="/publish" className="inline"
@@ -113,7 +114,7 @@ function QueueActions({ item, channel }: { item: QueueRow; channel: QueuePage['c
     </ActionForm>}
     <ActionForm id={'queue-action-' + item.id} action="/queue/action" className="inline"
       fields={{ id: item.id, channel: channel.id }}>
-      {item.state === 'unknown'
+      {needsReview
         ? <>
           <p className="hint">Check the Telegram channel before confirming delivery or sending again.</p>
           {item.delivery?.messages.map((message, index) => <a key={message} href={message} target="_blank" rel="noopener">

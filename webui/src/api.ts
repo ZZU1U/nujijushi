@@ -126,6 +126,7 @@ export interface QueueStatus {
 }
 export interface QueueRow {
   id: number; post_id: number; state: string; state_label: string; delivery: UnknownDelivery | null
+  stale_sending: boolean
   priority: number; pinned: boolean; attempts: number; error: string | null; artist: string | null
   snippet: string | null; thumb: string | null; media_count: number; nsfw: boolean; added: string
   eta: string | null; eta_in: string | null
