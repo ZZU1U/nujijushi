@@ -1142,6 +1142,27 @@ async fn cmd_doctor(cfg: Config, strict: bool, offline: bool) -> Result<()> {
             "missing - the admin UI will refuse to start".into()
         },
     });
+    let loopback_ui = cfg.bind.starts_with("127.")
+        || cfg.bind.starts_with("localhost")
+        || cfg.bind.starts_with("[::1]");
+    let (cookie_level, cookie_detail) = if cfg.secure_cookies {
+        (Level::Ok, "enabled".to_string())
+    } else if loopback_ui {
+        (Level::Ok, "off (loopback UI)".to_string())
+    } else {
+        (
+            Level::Warn,
+            format!(
+                "off while binding {}; set [web] secure_cookies when a TLS proxy serves it",
+                cfg.bind
+            ),
+        )
+    };
+    checks.push(Check {
+        level: cookie_level,
+        label: "secure cookies".into(),
+        detail: cookie_detail,
+    });
     checks.push(Check {
         level: Level::Ok,
         label: "web base path".into(),

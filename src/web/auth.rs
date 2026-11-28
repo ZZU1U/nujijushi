@@ -146,8 +146,13 @@ pub(super) fn local_page(value: &str) -> Option<Uri> {
     (uri.scheme().is_none() && uri.authority().is_none()).then_some(uri)
 }
 
-pub(super) fn cookie(name: &str, value: &str, path: &str, max_age: u32) -> String {
-    format!("{name}={value}; Path={path}; HttpOnly; SameSite=Strict; Max-Age={max_age}")
+pub(super) fn cookie(name: &str, value: &str, path: &str, max_age: u32, secure: bool) -> String {
+    let mut cookie =
+        format!("{name}={value}; Path={path}; HttpOnly; SameSite=Strict; Max-Age={max_age}");
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
 }
 
 #[cfg(test)]
@@ -169,5 +174,14 @@ mod tests {
         assert!(constant_time_eq("abc", "abc"));
         assert!(!constant_time_eq("abc", "abd"));
         assert!(!constant_time_eq("abc", "ab"));
+    }
+
+    #[test]
+    fn cookies_can_be_marked_secure() {
+        let plain = cookie("n", "v", "/", 60, false);
+        assert!(!plain.contains("Secure"), "{plain}");
+        assert!(plain.contains("HttpOnly") && plain.contains("SameSite=Strict"));
+        let secure = cookie("n", "v", "/", 60, true);
+        assert!(secure.contains("; Secure"), "{secure}");
     }
 }

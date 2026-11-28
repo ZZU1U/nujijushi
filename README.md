@@ -55,6 +55,7 @@ To serve nujijushi at a URL like `https://example.com/archive/`, set this in `co
 ```toml
 [web]
 base_path = "/archive"
+secure_cookies = true   # the proxy terminates TLS
 ```
 
 ## Quick start

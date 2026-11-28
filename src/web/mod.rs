@@ -22,6 +22,8 @@ pub struct WebState {
     pub session: String,
     /// CSRF token embedded in every form.
     pub csrf: String,
+    /// Mark session cookies `Secure` (set when a TLS proxy serves the UI).
+    pub secure_cookies: bool,
     /// Expected `X-Telegram-Bot-Api-Secret-Token`; `None` unless webhook mode is on.
     pub webhook_secret: Option<String>,
 }
@@ -43,10 +45,12 @@ impl WebState {
         } else {
             None
         };
+        let secure_cookies = app.cfg.secure_cookies;
         Ok(Arc::new(Self {
             app,
             session,
             csrf,
+            secure_cookies,
             webhook_secret,
         }))
     }

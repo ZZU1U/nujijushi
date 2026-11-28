@@ -132,6 +132,7 @@ pub fn router(ws: Arc<WebState>) -> Router {
             ws.clone(),
             super::admin::navigation,
         ))
+        .layer(middleware::from_fn(super::admin::security_headers))
         .with_state(ws.clone());
     if ws.base_path().is_empty() {
         app
@@ -164,7 +165,13 @@ const LOGIN_PATH: &str = "/api/v1/login";
 
 async fn login_challenge(State(ws): State<Arc<WebState>>) -> Response {
     let csrf = crate::config::random_token();
-    let cookie = auth::cookie(LOGIN_COOKIE, &csrf, &ws.url(LOGIN_PATH), 600);
+    let cookie = auth::cookie(
+        LOGIN_COOKIE,
+        &csrf,
+        &ws.url(LOGIN_PATH),
+        600,
+        ws.secure_cookies,
+    );
     (
         [(header::SET_COOKIE, cookie)],
         Json(SessionView { csrf: &csrf }),
@@ -194,8 +201,14 @@ async fn login_submit(
         .unwrap_or("/");
     let mut response = action_result(target, "Signed in");
     let cookies = [
-        auth::cookie(auth::COOKIE, &ws.session, session_path(&ws), 2_592_000),
-        auth::cookie(LOGIN_COOKIE, "", &ws.url(LOGIN_PATH), 0),
+        auth::cookie(
+            auth::COOKIE,
+            &ws.session,
+            session_path(&ws),
+            2_592_000,
+            ws.secure_cookies,
+        ),
+        auth::cookie(LOGIN_COOKIE, "", &ws.url(LOGIN_PATH), 0, ws.secure_cookies),
     ];
     for cookie in cookies {
         if let Ok(value) = HeaderValue::from_str(&cookie) {
@@ -216,8 +229,13 @@ fn session_path(ws: &WebState) -> &str {
 async fn logout(State(ws): State<Arc<WebState>>, Form(form): Form<FormMap>) -> WebResult<Response> {
     check_csrf(&ws, forms::field(&form, "csrf").unwrap_or_default())?;
     let mut response = action_result("/login", "");
-    if let Ok(cookie) = HeaderValue::from_str(&auth::cookie(auth::COOKIE, "", session_path(&ws), 0))
-    {
+    if let Ok(cookie) = HeaderValue::from_str(&auth::cookie(
+        auth::COOKIE,
+        "",
+        session_path(&ws),
+        0,
+        ws.secure_cookies,
+    )) {
         response.headers_mut().insert(header::SET_COOKIE, cookie);
     }
     Ok(response)

@@ -12,6 +12,8 @@ bind = "127.0.0.1:8788"
 base_path = ""
 # Password for the admin UI. `nujijushi init` generates one if this file is created by nujijushi.
 token = "change-me-to-a-long-random-string"
+# Mark session cookies Secure when a TLS-terminating proxy serves this UI.
+secure_cookies = false
 
 [import]
 # External helpers. `nujijushi doctor` verifies both.

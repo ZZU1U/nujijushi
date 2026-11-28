@@ -29,6 +29,8 @@ pub struct Config {
     pub bind: String,
     /// Web mount path, empty for the root and without a trailing slash otherwise.
     pub web_base_path: String,
+    /// Set `Secure` on the session cookies when a TLS proxy serves the UI.
+    pub secure_cookies: bool,
     /// Where imported posts are mirrored (local folder, WebDAV, Telegram).
     pub storage: StorageConfig,
     pub tag_suggestions: TagSuggestionsConfig,
@@ -222,6 +224,7 @@ struct WebSection {
     bind: Option<String>,
     token: Option<String>,
     base_path: Option<String>,
+    secure_cookies: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -383,6 +386,13 @@ impl Config {
                 .as_deref()
                 .unwrap_or_default(),
         )?;
+        let secure_cookies = match env_str("NUJIJUSHI_SECURE_COOKIES") {
+            Some(value) => matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            ),
+            None => file.web.secure_cookies.unwrap_or(false),
+        };
 
         Ok(Config {
             home,
@@ -405,6 +415,7 @@ impl Config {
             ui_token,
             bind,
             web_base_path,
+            secure_cookies,
             storage: parse_storage(&file.storage)?,
             tag_suggestions: file.tag_suggestions,
             proxy_url: env_str("NUJIJUSHI_PROXY")
@@ -528,6 +539,8 @@ impl Config {
 bind = "{bind}"
 # Mount all web routes here. A reverse proxy should preserve this prefix.
 base_path = "{web_base_path}"  # e.g. "/archive", or "" for the root
+# Mark session cookies Secure when a TLS proxy serves this UI.
+secure_cookies = false
 # Password for the admin UI (also NUJIJUSHI_UI_TOKEN). Generated on `nujijushi init`.
 token = "{ui_token}"
 
@@ -838,6 +851,24 @@ mod tests {
         ] {
             assert!(parse_web_base_path(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn secure_cookies_are_opt_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        std::fs::write(&file, "[web]\nsecure_cookies = true\n").unwrap();
+        assert!(
+            Config::load_from_home(dir.path().to_path_buf())
+                .unwrap()
+                .secure_cookies
+        );
+        std::fs::write(&file, "[web]\n").unwrap();
+        assert!(
+            !Config::load_from_home(dir.path().to_path_buf())
+                .unwrap()
+                .secure_cookies
+        );
     }
 
     #[test]

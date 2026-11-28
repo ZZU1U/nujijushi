@@ -4928,6 +4928,53 @@ async fn admin_login_uses_a_separate_challenge_and_bootstraps_the_session() {
 }
 
 #[tokio::test]
+async fn secure_cookies_and_hardening_headers_are_applied() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config.toml"),
+        format!("[web]\ntoken = \"{UI_TOKEN}\"\nsecure_cookies = true\n"),
+    )
+    .unwrap();
+    let cfg = Config::load_from_home(dir.path().to_path_buf()).unwrap();
+    let state = AppState::open(cfg, None).unwrap();
+    let ws = WebState::new(state).unwrap();
+    let app = routes::router(ws);
+
+    let response = app
+        .clone()
+        .oneshot(Request::get("/api/v1/login").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let cookie = response.headers()[header::SET_COOKIE].to_str().unwrap();
+    assert!(cookie.contains("; Secure"), "{cookie}");
+    assert_eq!(
+        response.headers()["x-frame-options"].to_str().unwrap(),
+        "DENY"
+    );
+    assert_eq!(
+        response.headers()["x-content-type-options"]
+            .to_str()
+            .unwrap(),
+        "nosniff"
+    );
+    assert!(
+        response.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .contains("frame-ancestors 'none'")
+    );
+
+    let response = app
+        .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        response.headers()["x-frame-options"].to_str().unwrap(),
+        "DENY"
+    );
+}
+
+#[tokio::test]
 async fn the_prefixed_admin_serves_metrics_and_scopes_auth_and_redirects() {
     let prefix = "/tools/archive";
     assert_admin_login(prefix).await;

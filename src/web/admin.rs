@@ -5,7 +5,7 @@ use std::sync::Arc;
 use axum::{
     Json,
     extract::{Path, Request, State},
-    http::{Method, StatusCode, header},
+    http::{HeaderValue, Method, StatusCode, header},
     middleware::Next,
     response::{Html, IntoResponse, Response},
 };
@@ -171,6 +171,31 @@ pub(super) async fn api_headers(req: Request, next: Next) -> Response {
     response.headers_mut().insert(
         header::CACHE_CONTROL,
         header::HeaderValue::from_static("no-store"),
+    );
+    response
+}
+
+/// Response hardening for the browser UI and its JSON API. Inline styles are
+/// allowed because the job progress bar sets a width; scripts stay same-origin.
+pub(super) async fn security_headers(req: Request, next: Next) -> Response {
+    let mut response = next.run(req).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(
+            "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; \
+             script-src 'self'; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; \
+             base-uri 'self'; form-action 'self'",
+        ),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("same-origin"),
     );
     response
 }

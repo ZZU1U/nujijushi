@@ -192,6 +192,7 @@ webhook_url = "https://bot.example.com"   # public HTTPS base URL
 
 [web]
 bind = "127.0.0.1:8788"                   # stays loopback: the proxy talks to it
+secure_cookies = true                     # TLS ends at the proxy
 ```
 
 `nujijushi run` then registers `https://bot.example.com/tg/webhook` with Telegram and stops
