@@ -13,7 +13,7 @@ export function Queue({ data }: { data: QueuePage }) {
   const flushing = activity.jobs.some((job) => job.kind === 'flush_channel'
     && (job.state === 'pending' || job.state === 'running'))
   return <section className="panel" data-queue-revision={activity.revision}>
-    <h2>queue · {channel.title} <span className="hint">{channel.tg_id}</span></h2>
+    <h2>Queue · {channel.title} <span className="hint">{channel.tg_id}</span></h2>
     <p className="hint">
       <PageLink href={channelRoot + '/edit'}>settings</PageLink> · <PageLink href={channelRoot + '/preview'}>preview next slots</PageLink>
     </p>
@@ -110,7 +110,7 @@ function QueueActions({ item, channel }: { item: QueueRow; channel: QueuePage['c
     {item.state === 'queued' && <ActionForm action="/publish" className="inline"
       fields={{ queue_id: item.id, back: channelRoot + '/queue' }}
       data-confirm={`Queue post #${item.post_id} for ${channel.title}? The worker sends it in the background; this returns immediately.`}>
-      <button className="small" type="submit" title="publish this item now, ignoring the schedule">publish</button>
+      <button className="small" type="submit" title="publish this item now, ignoring the schedule">Publish</button>
     </ActionForm>}
     <ActionForm id={'queue-action-' + item.id} action="/queue/action" className="inline"
       fields={{ id: item.id, channel: channel.id }}>

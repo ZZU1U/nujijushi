@@ -15,7 +15,7 @@ export function Dashboard({ data }: { data: DashboardPage }) {
       <section className="panel setup">
         <div className="setup-heading">
           <div>
-            <h2>first run setup</h2>
+            <h2>First run setup</h2>
             <p className="hint">Complete these steps to publish your first post.</p>
           </div>
           {(setup.next && setup.next.href) ? <>
@@ -50,7 +50,7 @@ export function Dashboard({ data }: { data: DashboardPage }) {
 
     {scheduler.stale ? <>
       <section className="panel alert">
-        <h2>nothing is publishing on a schedule</h2>
+        <h2>Nothing is publishing on a schedule</h2>
         <p className="hint">
           {scheduler.last_tick ? <>The scheduler last ran {scheduler.age} ago.</> : <>The scheduler has never run in this data directory.</>}
           Scheduler slots are driven by <code>nujijushi run</code>; <code>nujijushi serve</code> only
@@ -70,7 +70,7 @@ export function Dashboard({ data }: { data: DashboardPage }) {
 
     {recent_unknown.length > 0 ? <>
       <section className="panel alert">
-        <h2>unconfirmed sends</h2>
+        <h2>Unconfirmed sends</h2>
         <p className="hint">These were interrupted mid-publish. Check the channel, then mark them delivered or not — nujijushi will never guess.</p>
         <DataTable label="Unconfirmed sends" rows={recent_unknown} columns={unconfirmedColumns}
           rowKey={(item) => item.id} />
@@ -78,17 +78,17 @@ export function Dashboard({ data }: { data: DashboardPage }) {
     </> : null}
 
     <section className="panel">
-      <h2>channels</h2>
+      <h2>Channels</h2>
       <DashboardChannels channels={channels} jobs={jobs} />
     </section>
 
     {storage.length > 0 ? <>
       <section className="panel">
-        <h2>storage mirrors</h2>
+        <h2>Storage mirrors</h2>
         <DataTable label="Storage mirrors" rows={storage} columns={storageColumns}
           rowKey={(sink) => sink.name} compact />
         <ActionForm action="/storage/drain" className="inline">
-          <button className="small" type="submit" title="queue an upload of the pending mirrors">upload pending</button>
+          <button className="small" type="submit" title="queue an upload of the pending mirrors">Upload pending</button>
           <span className="hint">queued as a job · mirrors are also drained automatically by the background worker</span>
         </ActionForm>
       </section>
@@ -96,13 +96,13 @@ export function Dashboard({ data }: { data: DashboardPage }) {
 
     <div className="cols">
       <section className="panel">
-        <h2>recent sends</h2>
+        <h2>Recent sends</h2>
         <DataTable label="Recent sends" rows={sends} columns={sendColumns} rowKey={(_, index) => index}
           compact hideHeader empty={<p className="hint">Nothing sent yet.</p>} />
       </section>
 
       <section className="panel">
-        <h2>jobs <PageLink className="hint" href="/jobs">all jobs →</PageLink></h2>
+        <h2>Jobs <PageLink className="hint" href="/jobs">all jobs →</PageLink></h2>
         <JobTable jobs={jobs} layout="recent"
           empty={<p className="hint">Nothing queued. <PageLink href="/import">Import something</PageLink>.</p>} />
       </section>
@@ -162,7 +162,7 @@ function DashboardChannels({ channels, jobs }: { channels: DashboardChannel[]; j
         <ChannelLinks channelId={channel.id} />
         <ActionForm action="/publish" className="inline" fields={{ channel_id: channel.id, back: '/' }}
           data-confirm={text('Queue a publish of the next post to ', channel.title, '? The worker sends it in the background; this returns immediately.')}>
-          <button className="small" type="submit" title="queue the next post for this channel, ignoring the schedule">publish next</button>
+          <button className="small" type="submit" title="queue the next post for this channel, ignoring the schedule">Publish next</button>
         </ActionForm>
       </>,
     },

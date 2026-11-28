@@ -6,7 +6,7 @@ export function Preview({ data }: { data: PreviewPage }) {
   const { channel, held, stopped, enable_item, items } = data
   return <>
     <section className="panel">
-      <h2>next slots · {channel.title}{" "}<span className="hint">{channel.tg_id}</span></h2>
+      <h2>Next slots · {channel.title}{" "}<span className="hint">{channel.tg_id}</span></h2>
       <p className="hint"><PageLink href={text("/channels/", channel.id, "/edit")}>settings</PageLink> · <PageLink href={text("/channels/", channel.id, "/queue")}>queue</PageLink></p>
       {stopped ? <>
         <p className="hint">Scheduling is off for this channel. These times show when posts could go out after scheduling is enabled.</p>

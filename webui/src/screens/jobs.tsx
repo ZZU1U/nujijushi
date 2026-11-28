@@ -6,7 +6,7 @@ export function Jobs({ data }: { data: JobsPage }) {
   const { parallel, waiting } = data
   const jobs = useLiveJobs(data.jobs)
   return <section className="panel">
-    <h2>jobs</h2>
+    <h2>Jobs</h2>
     <p className="hint">
       Publishing, uploading and importing all happen here, in the background: the page you
       clicked from returned at once and this list shows the real progress.

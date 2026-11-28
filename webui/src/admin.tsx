@@ -72,7 +72,7 @@ function Login({ onLogin }: { onLogin: (session: Session, path: string) => void 
     <p className="hint">Use the UI token from your nujijushi configuration.</p>
     <form className="card" method="post" action={apiUrl('/login')} onSubmit={submit}>
       <label>ui token <input name="token" type="password" value={token} onChange={(event) => setToken(event.target.value)} autoFocus required /></label>
-      <button type="submit" disabled={busy}>unlock</button>
+      <button type="submit" disabled={busy}>Unlock</button>
       {error && <p className="action-error" role="alert">{error}</p>}
     </form>
   </main>

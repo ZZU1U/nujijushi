@@ -20,16 +20,16 @@ const columns: Column<UsersPage['users'][number]>[] = [
   {
     label: 'actions', hideLabel: true, className: 'actions',
     cell: (user) => !user.config_admin && <ActionForm action="/users" className="inline" fields={{ tg_id: user.tg_id }}>
-      <button name="role" value="admin" className="small ghost">make admin</button>
-      <button name="role" value="guest" className="small ghost">guest</button>
-      <button name="role" value="banned" className="small danger">ban</button>
+      <button name="role" value="admin" className="small ghost">Make admin</button>
+      <button name="role" value="guest" className="small ghost">Guest</button>
+      <button name="role" value="banned" className="small danger">Ban</button>
     </ActionForm>,
   },
 ]
 
 export function Users({ data }: { data: UsersPage }) {
   return <section className="panel">
-    <h2>bot users</h2>
+    <h2>Bot users</h2>
     <p className="hint">
       Admins come from <code>[access] admins</code> in <code>config.toml</code> (or <code>$NUJIJUSHI_ADMINS</code>)
       and cannot be demoted here. Everyone else is a row in the <code>users</code> table.

@@ -9,7 +9,7 @@ export function Import({ data }: { data: ImportPage }) {
   const [targets, setTargets] = useState('')
   return <>
     <section className="panel">
-      <h2>import artwork</h2>
+      <h2>Import artwork</h2>
       <p className="hint">
         One target per line: a post URL (<code>https://www.pixiv.net/artworks/…</code>,
         <code>https://x.com/user/status/…</code>) or a folder on this machine.
@@ -20,12 +20,12 @@ export function Import({ data }: { data: ImportPage }) {
       }}>
         <TextArea name={"targets"} rows={6} spellCheck={"false"} placeholder={"https://www.pixiv.net/artworks/123456\nhttps://x.com/someone/status/1234567890\n/Users/me/Pictures/dump/set-01"} value={targets} onChange={(event) => setTargets(event.target.value)}></TextArea>
         <div className="fieldrow">
-          <button type="submit">start import</button>
+          <button type="submit">Start import</button>
           <span className="hint">the worker picks jobs up within a couple of seconds</span>
         </div>
       </ActionForm>
       <p className="hint">
-        {parallel} import{((parallel === 1) ? "" : "s")} run{((parallel === 1) ? "" : "")} in
+        {parallel} import{parallel === 1 ? '' : 's'} {parallel === 1 ? 'runs' : 'run'} in
         parallel{waiting ? <>, {waiting} waiting</> : null}.
         Each target is one job; a big batch therefore continues while you browse.
         Raise <code>[import] max_concurrent</code> to run more at once — gallery-dl is
@@ -34,7 +34,7 @@ export function Import({ data }: { data: ImportPage }) {
     </section>
 
     <section className="panel">
-      <h2>jobs <PageLink className="hint" href="/jobs">all jobs →</PageLink></h2>
+      <h2>Jobs <PageLink className="hint" href="/jobs">all jobs →</PageLink></h2>
       <JobTable jobs={jobs} layout="imports" empty={<p className="hint">No jobs yet.</p>} />
       {jobs.length > 0 && <p className="hint" data-live-hint="">this list updates itself while something is running</p>}
     </section>

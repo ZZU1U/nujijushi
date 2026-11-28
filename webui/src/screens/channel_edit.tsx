@@ -82,12 +82,12 @@ export function ChannelEdit({ data }: { data: ChannelEditPage }) {
             <label className="check"><TextField type="checkbox" name="silent" {...(channel.silent ? { "defaultChecked": true } : {})} /> silent</label>
             <label className="check"><TextField type="checkbox" name="protect" {...(channel.protect ? { "defaultChecked": true } : {})} /> protect content</label>
           </div>
-          <div className="form-actions"><button type="submit">save channel</button></div>
+          <div className="form-actions"><button type="submit">Save channel</button></div>
         </ActionForm>
       </section>
 
       <aside className="panel">
-        <h2>next slot preview</h2>
+        <h2>Next slot preview</h2>
         {sample ? <>
           <div className="hint">{sample.reason} · {sample.media} media · {sample.messages} message(s){sample.spoiler ? <> · spoiler</> : null}</div>
           <CaptionPreview caption={sample.caption}></CaptionPreview>

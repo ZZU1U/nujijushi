@@ -327,17 +327,17 @@ export function Posts({ path, snapshots }: { path: string; snapshots: Map<string
           <span className="hint" aria-live="polite">{selected.size} selected</span>
         </div>}
         {!setup && <>
-          <span className="hint">select posts, then:</span>
-          <button name="action" value="approve" className="small">approve</button>
-          <button name="action" value="reject" className="small ghost">reject</button>
-          <button name="action" value="nsfw_yes" className="small ghost">mark nsfw</button>
-          <button name="action" value="nsfw_no" className="small ghost">mark sfw</button>
-          <button name="action" value="nsfw_auto" className="small ghost">nsfw auto</button>
+          <span className="hint">Select posts, then:</span>
+          <button name="action" value="approve" className="small">Approve</button>
+          <button name="action" value="reject" className="small ghost">Reject</button>
+          <button name="action" value="nsfw_yes" className="small ghost">Mark NSFW</button>
+          <button name="action" value="nsfw_no" className="small ghost">Mark SFW</button>
+          <button name="action" value="nsfw_auto" className="small ghost">NSFW auto</button>
         </>}
         <ChannelSelect channels={data.channels} aria-label="Destination channel" emptyLabel="choose channel…"
           value={grid.channel} onChange={(event) => updateGrid({ ...grid, channel: event.target.value })} />
-        <button name="action" value="queue" className="small">{setup ? 'Hold for preview' : 'queue'}</button>
-        {!setup && <button name="action" value="delete" className="small danger" data-confirm="Delete the selected posts and their media links?">delete</button>}
+        <button name="action" value="queue" className="small">{setup ? 'Hold for preview' : 'Queue'}</button>
+        {!setup && <button name="action" value="delete" className="small danger" data-confirm="Delete the selected posts and their media links?">Delete</button>}
       </div>
       {cards.length ? <div className="grid">
         {cards.map((card) => <PostCard key={card.id} card={card} setup={setup} selected={selected.has(card.id)} select={() => {

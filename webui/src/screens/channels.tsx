@@ -35,13 +35,13 @@ export function Channels({ data }: { data: ChannelsPage }) {
   const { channels, timezones, templates } = data
   return <>
     <section className="panel">
-      <h2>channels</h2>
+      <h2>Channels</h2>
       <DataTable label="Channels" rows={channels} columns={columns} rowKey={(channel) => channel.id}
         empty={<p className="hint">None yet — add one below.</p>} />
     </section>
 
     <section className="panel" id="add-channel">
-      <h2>add a channel</h2>
+      <h2>Add a channel</h2>
       <p className="hint">
         Create the channel in Telegram, add your bot as an administrator with "post messages",
         then paste its <code>@username</code> or numeric id (<code>-100…</code>).
@@ -68,7 +68,7 @@ export function Channels({ data }: { data: ChannelsPage }) {
         </label>
         <label className="check"><TextField type="checkbox" name="enabled" /> enable scheduled publishing now</label>
         <label className="check"><TextField type="checkbox" name="include_source_tag" defaultChecked /> add source hashtag</label>
-        <div className="form-actions"><button type="submit">create channel</button></div>
+        <div className="form-actions"><button type="submit">Create channel</button></div>
       </ActionForm>
       <Timezones zones={timezones} />
     </section>
