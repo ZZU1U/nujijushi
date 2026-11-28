@@ -90,8 +90,43 @@ the MSRV or add a feature that needs nightly. CI uses Node.js **24** for the adm
   `RefCell` guards or `Db::with` locks across an `.await` — this already caused one bug.
 * **Files**: one concern per file, tests at the bottom of the same file under
   `#[cfg(test)] mod tests`. Prefer extracting a pure function over mocking.
-* **Commits**: conventional commits (`feat:`, `fix:`, `ci:`, `docs:`), one logical change,
-  body explains *why*.
+* **Commits**: conventional commits, one logical change each; see
+  [Commit style and consistency](#commit-style-and-consistency).
+
+## Commit style and consistency
+
+* **Format**: `<type>(<scope>): <imperative summary>`, e.g.
+  `feat(web): resolve stale sends from the queue`. Use a lowercase type and scope, an
+  imperative summary without a trailing period, and keep the subject under ~72
+  characters. Reuse the existing vocabulary: `feat`, `fix`, `perf`, `refactor`, `test`,
+  `docs`, `ci`, `style`, `chore`; scopes are module or area names such as `web`, `bot`,
+  `tg`, `queue`, `storage`, `import`, `db`, `config`, `cli`, `docs`. Check `git log`
+  before inventing a new one.
+* **One concern per commit**: a commit must be understandable and revertible on its own.
+  Do not mix unrelated fixes, formatting sweeps, dependency bumps, or documentation for
+  a different feature. Split by concern, not by file; when one file carries several
+  changes, stage individual hunks (`git add -p`) rather than committing the whole file.
+  A feature's required config, migration, tests and docs belong with that feature (or a
+  clearly named follow-up), not in a separate random commit.
+* **Body**: explain *why* the change exists — the bug or limitation, the chosen
+  trade-off, and any behavior or migration note. Reference an invariant, command, or
+  test when it makes the reason concrete. The subject says what changed; the body says
+  why it had to.
+* **Keep each commit working**: run `cargo fmt --all --check`, `cargo clippy ...` and the
+  relevant tests before the final commit; when a change spans many files, at least run
+  `cargo check --workspace --all-targets --locked` at each intermediate commit. Do not
+  leave a commit that only compiles because the next one adds a missing symbol.
+* **Consistency**: match the surrounding style in code and UI copy — same label casing
+  (sentence case for headings and actions), whitespace and spacing conventions, icon or
+  badge usage, and naming. If a commit changes user-visible text, update the tests that
+  assert it (`tests/web.rs`, `tests/bot.rs`, `webui/tests/admin.spec.ts`) in the same
+  commit. Commit messages use the same type/scope vocabulary throughout the series.
+* **Review your split before pushing**: `git log --oneline` should read as a sequence of
+  small, coherent steps; `git show --stat <commit>` should match its subject. Do not
+  rewrite shared history just to be tidy — squash or fix up only unpushed commits.
+* **Never commit** generated output (`target/`, `webui/dist`, Playwright
+  `test-results/`, build artifacts), secrets, a real `config.toml`, cookies, or a data
+  directory. `webui/dist` is a build input embedded by `build.rs`; it is not source.
 
 ## Adding things (checklists)
 
